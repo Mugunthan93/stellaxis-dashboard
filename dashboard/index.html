@@ -136,6 +136,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   </header>
 
   <div class="notice" id="feed-note" hidden></div>
+  <div class="notice" id="feed-diag" style="border-style:solid">Checking data sources…</div>
 
   <section class="kpis" id="kpis" aria-label="Summary">
     <div class="kpi"><span class="eyebrow">Baseline context</span><span class="v">—</span><span class="s">tokens loaded before your first message</span></div>
@@ -289,30 +290,43 @@ footer { font-size: 0.8rem; color: var(--muted); }
   async function loadFile() {
     try {
       const r = await fetch("snapshot.json", { cache: "no-store" });
-      if (!r.ok) return false;
+      if (!r.ok) { feed.local = "none"; renderFeed(); return false; }
       const s = await r.json();
-      if (!s || !s.items) return false;
+      if (!s || !s.items) { feed.local = "none"; renderFeed(); return false; }
+      feed.local = "ok"; renderFeed();
       const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
       if (st.mode !== "live") setData(s, local ? "local" : "static");
       if (local && !pollTimer) pollTimer = setInterval(loadFile, Math.max(15, intervalSec(s.interval)) * 1000);
       return true;
-    } catch { return false; }
+    } catch { feed.local = "none"; renderFeed(); return false; }
   }
   function intervalSec(v) { const m = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(String(v || "60s").trim()); return m ? +m[1] * ({ "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]]) : 60; }
 
   let mcp = null;
+  const feed = { app: "checking", local: "checking" };
+  function renderFeed() {
+    const el = $("#feed-diag");
+    const app = { checking: "checking…", none: "not available here (open this page in the Claude desktop app on your Mac)",
+      ok: "connected", waiting: "waiting for the Mac server…" }[feed.app] || feed.app;
+    const local = { checking: "checking…", ok: "loaded", none: "not found" }[feed.local] || feed.local;
+    el.innerHTML = `<b>Desktop live feed:</b> ${esc(app)} &nbsp;·&nbsp; <b>Snapshot file:</b> ${esc(local)}`;
+  }
   async function connectLive() {
     const c = window.claude;
-    if (!c || typeof c.use !== "function") return;
+    if (!c || typeof c.use !== "function") { feed.app = "none"; renderFeed(); return; }
     try { mcp = await c.use("mcp"); } catch { mcp = null; }
-    if (!mcp) return;
+    if (!mcp) { feed.app = "none"; renderFeed(); return; }
+    feed.app = "waiting"; renderFeed();
     const every = Math.max(30, intervalSec(st.snap?.interval || "1m")) * 1000;
     mcp.watchTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard" }, ev => {
       if (ev.type === "data") {
         const p = ev.result.payload;
-        if (p && p.items) { setData(p, "live"); note(null); }
+        if (p && p.items) { feed.app = "ok"; renderFeed(); setData(p, "live"); note(null); }
+        else { feed.app = "answered, but not with a Stellaxis snapshot"; renderFeed(); }
       } else {
         const code = ev.error?.code;
+        feed.app = "error " + code + (ev.error?.message ? ": " + ev.error.message : "");
+        renderFeed();
         if (["server_not_connected", "not_granted", "capability_disabled", "capability_removed", "not_in_manifest", "blocked_by_policy"].includes(code)) {
           if (st.mode === "live") { st.mode = st.snap ? "static" : "none"; render(); }
           note(code === "not_in_manifest"
@@ -621,7 +635,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   setInterval(() => { if (st.snap) $("#updated").textContent = "updated " + ago(st.snap.generated_at); }, 30000);
   renderTabs(null);
   loadFile().then(ok => {
-    if (!ok) note("No data yet. On your Mac run <code>python3 collector/collect.py serve</code> and open <code>http://127.0.0.1:7777</code>, or connect the stellaxis server to the Claude desktop app for the live feed.");
+    if (!ok && st.mode !== "live") note("No Mac data on this page yet. 1) On the Mac run <code>bash ~/code/stellaxis-dashboard/collector/install.sh</code>. 2) Quit and reopen the Claude desktop app. 3) Open this page there. Or open <code>http://127.0.0.1:7777</code> in a browser on the Mac.");
   });
   connectLive();
 })();
