@@ -181,6 +181,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <button role="tab" type="button" data-tab="projects" aria-selected="false">Projects<span class="count" id="c-projects"></span></button>
       <button role="tab" type="button" data-tab="sessions" aria-selected="false">Sessions<span class="count" id="c-sessions"></span></button>
       <button role="tab" type="button" data-tab="dupes" aria-selected="false">Duplicates<span class="count" id="c-dupes"></span></button>
+      <button role="tab" type="button" data-tab="cloud" aria-selected="false">Cloud<span class="count" id="c-cloud"></span></button>
     </nav>
 
     <div id="tab-items" role="tabpanel">
@@ -232,6 +233,21 @@ footer { font-size: 0.8rem; color: var(--muted); }
     <div id="tab-dupes" role="tabpanel" hidden>
       <p class="muted" style="margin:0 0 10px;font-size:0.86rem">The same name defined in more than one scope. The project copy usually wins; the global copy still costs listing tokens in every other repo.</p>
       <div class="tablewrap"><table id="dupes-table"><thead><tr><th>Kind</th><th>Name</th><th>Defined at</th></tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div id="tab-cloud" role="tabpanel" hidden>
+      <p class="muted" id="cloud-sub" style="margin:0 0 10px;font-size:0.86rem"></p>
+      <div class="tablewrap"><table id="cloud-repos"><thead><tr>
+        <th>Repository</th><th class="n">Sessions</th><th class="n">Cloud</th><th class="n">Remote Control</th><th class="n">Cloud cost</th><th class="n">Last active</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="filters" style="margin-top:14px">
+        <label for="cloud-where">Show <select id="cloud-where">
+          <option value="all">All sessions</option><option value="cloud">Cloud containers only</option><option value="remote-control">Remote Control only</option>
+        </select></label>
+      </div>
+      <div class="tablewrap" style="margin-top:10px"><table id="cloud-sessions"><thead><tr>
+        <th>Updated</th><th>Session</th><th>Where</th><th>Repository</th><th class="n">Context used</th><th class="n">Tokens</th><th class="n">Cost</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
   </section>
 
@@ -422,7 +438,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
   $$("#tabs [data-tab]").forEach(b => b.addEventListener("click", () => { st.tab = b.dataset.tab; store.set("tab", st.tab); renderTabs(st.snap); }));
   function renderTabs(s) {
     $$("#tabs [data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === st.tab)));
-    ["items", "projects", "sessions", "dupes"].forEach(t => $("#tab-" + t).hidden = t !== st.tab);
+    ["items", "projects", "sessions", "dupes", "cloud"].forEach(t => $("#tab-" + t).hidden = t !== st.tab);
+    renderCloud();
     if (!s) return;
     $("#c-items").textContent = s.items.length; $("#c-projects").textContent = s.projects.length;
     $("#c-sessions").textContent = s.sessions.length; $("#c-dupes").textContent = s.duplicates.length;
@@ -575,6 +592,31 @@ footer { font-size: 0.8rem; color: var(--muted); }
     $("#dupes-table tbody").innerHTML = s.duplicates.length ? s.duplicates.map(d => `<tr><td>${esc(KIND_LABEL[d.kind] || d.kind)}</td><td class="name">${esc(d.name)}</td><td class="mono" style="font-size:0.8rem">${d.items.map(esc).join("<br>")}</td></tr>`).join("")
       : `<tr><td colspan="3" class="empty">No duplicates between global and project scope.</td></tr>`;
   }
+
+  // cloud sessions (claude.ai/code), imported by a cloud Claude session into cloud.json
+  st.cloud = null; st.cloudWhere = "all";
+  fetch("cloud.json", { cache: "no-store" }).then(r => r.ok ? r.json() : null).then(c => { if (c && c.sessions) { st.cloud = c; renderCloud(); } }).catch(() => {});
+  function renderCloud() {
+    const c = st.cloud;
+    $("#c-cloud").textContent = c ? c.totals.sessions : "";
+    if (!c) {
+      $("#cloud-sub").textContent = "No cloud session import on this page. The cloud import is published with the Stellaxis artifact; the localhost dashboard covers this Mac only.";
+      $("#cloud-repos tbody").innerHTML = ""; $("#cloud-sessions tbody").innerHTML = "";
+      return;
+    }
+    const t = c.totals;
+    $("#cloud-sub").textContent = `${t.sessions} sessions since ${(t.first || "").slice(0, 10)}, imported ${ago(c.generated_at)}. ${t.cloud} ran in claude.ai/code containers (${fmt$(t.cloud_cost)}); ${t.remote_control} were Remote Control sessions on your computer, whose transcripts the Mac collector already counts.`;
+    $("#cloud-repos tbody").innerHTML = c.repos.map(r => `<tr><td class="name">${esc(r.repo)}</td><td class="n">${r.sessions}</td><td class="n">${r.cloud}</td><td class="n">${r.remote_control}</td><td class="n">${r.cloud ? fmt$(r.cost) : "—"}</td><td class="n">${ago(r.last)}</td></tr>`).join("");
+    const rows = c.sessions.filter(x => st.cloudWhere === "all" || x.where === st.cloudWhere);
+    $("#cloud-sessions tbody").innerHTML = rows.map(x => {
+      const tk = x.tokens ? (x.tokens.input || 0) + (x.tokens.output || 0) + (x.tokens.cache_write || 0) + (x.tokens.cache_read || 0) : null;
+      return `<tr><td class="mono" style="white-space:nowrap">${esc((x.updated || "").slice(0, 16).replace("T", " "))}</td>
+        <td><div class="name">${esc(x.title)}</div><div class="sub">${esc(x.status)}${x.model ? " · " + esc(x.model) : ""}</div></td>
+        <td><span class="pill ${x.where === "cloud" ? "acc" : ""}">${x.where === "cloud" ? "cloud" : "remote control"}</span></td>
+        <td class="sub">${esc(x.repo || "—")}</td><td class="n">${fmtT(x.context_used)}</td><td class="n">${tk == null ? "—" : fmtT(tk)}</td><td class="n">${x.cost == null ? "—" : fmt$(x.cost)}</td></tr>`;
+    }).join("") || `<tr><td colspan="7" class="empty">No sessions match.</td></tr>`;
+  }
+  $("#cloud-where").addEventListener("change", e => { st.cloudWhere = e.target.value; renderCloud(); });
 
   setInterval(() => { if (st.snap) $("#updated").textContent = "updated " + ago(st.snap.generated_at); }, 30000);
   renderTabs(null);
