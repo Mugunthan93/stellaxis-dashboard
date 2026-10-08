@@ -1,0 +1,8 @@
+{
+  "name": "stellaxis",
+  "version": "0.1.0",
+  "description": "Audit and trim always-on Claude context: inventory, usage, token cost, safe archive/restore.",
+  "author": { "name": "Mugunthan" },
+  "repository": "https://github.com/mugunthan93/stellaxis-dashboard",
+  "license": "MIT"
+}

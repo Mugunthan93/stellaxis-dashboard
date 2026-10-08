@@ -1,0 +1,16 @@
+{
+  "name": "stellaxis",
+  "owner": {
+    "name": "Mugunthan"
+  },
+  "metadata": {
+    "description": "Stellaxis: Claude context audit and dashboard"
+  },
+  "plugins": [
+    {
+      "name": "stellaxis",
+      "source": "./",
+      "description": "Audit and trim always-on Claude context: inventory, usage, token cost, safe archive/restore."
+    }
+  ]
+}

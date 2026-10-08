@@ -1,0 +1,586 @@
+<title>Stellaxis Context Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: instrument panel. Status strip → context budget (the thesis) → usage chart → tabbed ledgers. */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
+  --accent: #2c55c9; --accent-soft: #dfe6f8;
+  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
+  --c1: #2c55c9; --c2: #168a7d; --c3: #c98a1c; --c4: #b9476f; --c5: #6f55c0; --c6: #6b7a8c; --c7: #7c8e2c;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  --c1: #7c9cf0; --c2: #45c2b2; --c3: #e3ad4e; --c4: #e07a9e; --c5: #a68cf0; --c6: #9aa8b8; --c7: #b5c35a;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  --c1: #7c9cf0; --c2: #45c2b2; --c3: #e3ad4e; --c4: #e07a9e; --c5: #a68cf0; --c6: #9aa8b8; --c7: #b5c35a;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.55rem; }
+h2 { font-size: 1.12rem; }
+.num, td.n, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+button, select, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* status strip */
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.status { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; background: var(--sunk); font-size: 0.82rem; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.status[data-mode="live"] .dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+.status[data-mode="local"] .dot { background: var(--accent); }
+.status[data-mode="static"] .dot { background: var(--warn); }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.notice { border: 1px dashed var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); }
+.notice code { font-family: var(--mono); font-size: 0.82rem; background: var(--sunk); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+/* KPI row */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.kpi { background: var(--surface); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.kpi .v { font-family: var(--mono); font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 0.8rem; color: var(--muted); }
+
+/* panels */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.panel-head p { margin: 0; color: var(--muted); font-size: 0.86rem; max-width: 70ch; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* budget bar */
+.budget { display: flex; height: 34px; border-radius: 6px; overflow: hidden; background: var(--sunk); }
+.budget span { display: block; height: 100%; min-width: 2px; }
+.legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px 18px; margin: 0; padding: 0; list-style: none; }
+.legend li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; font-size: 0.86rem; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; }
+.legend b { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* segmented controls */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 4px 10px; font-size: 0.82rem; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+svg text { fill: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+/* tabs */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { border: 0; background: none; padding: 8px 12px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs .count { font-family: var(--mono); font-weight: 400; font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+.filters input[type="search"], .filters select, .filters input[type="number"] { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 5px 9px; }
+.filters input[type="number"] { width: 5.5em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 0.82rem; }
+.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; background: var(--sunk); position: sticky; top: 0; white-space: nowrap; }
+th[data-sort] { cursor: pointer; }
+th[data-sort]:hover { color: var(--ink); }
+td.n, th.n { text-align: right; white-space: nowrap; }
+tbody tr.row:hover { background: var(--sunk); cursor: pointer; }
+tr.detail td { background: var(--sunk); }
+.name { font-weight: 600; word-break: break-word; }
+.sub { font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+.pill { display: inline-block; font-size: 0.72rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.crit { background: var(--crit-soft); color: var(--crit); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.minibar { display: inline-block; height: 6px; border-radius: 3px; background: var(--accent); vertical-align: middle; margin-right: 6px; opacity: 0.75; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 0.84rem; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; word-break: break-word; }
+.selbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 0.86rem; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+footer { font-size: 0.8rem; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .budget span { transition: flex-basis 0.4s ease; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Stellaxis</h1>
+      <span class="muted">Claude context ledger</span>
+    </div>
+    <span class="status" id="status" data-mode="none"><span class="dot"></span><span id="status-text">Waiting for data</span></span>
+    <span class="spacer"></span>
+    <span class="muted mono" id="updated"></span>
+    <button class="btn" id="refresh" type="button">Refresh now</button>
+  </header>
+
+  <div class="notice" id="feed-note" hidden></div>
+
+  <section class="kpis" id="kpis" aria-label="Summary">
+    <div class="kpi"><span class="eyebrow">Baseline context</span><span class="v">—</span><span class="s">tokens loaded before your first message</span></div>
+    <div class="kpi"><span class="eyebrow">Global always-on</span><span class="v">—</span><span class="s">estimated from config files</span></div>
+    <div class="kpi"><span class="eyebrow">Today</span><span class="v">—</span><span class="s">tokens</span></div>
+    <div class="kpi"><span class="eyebrow">Last 30 days</span><span class="v">—</span><span class="s">notional API cost</span></div>
+    <div class="kpi"><span class="eyebrow">Active now</span><span class="v">—</span><span class="s">sessions</span></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel" aria-labelledby="budget-h">
+      <div class="panel-head">
+        <h2 id="budget-h">Where the baseline goes</h2>
+        <p id="budget-sub">Measured from the most recent session transcript: what Claude loads before you type.</p>
+      </div>
+      <div class="budget" id="budget" role="img" aria-label="Baseline context by source"></div>
+      <ul class="legend" id="budget-legend"></ul>
+      <div id="budget-flags" class="tags"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="trend-h">
+      <div class="panel-head">
+        <h2 id="trend-h">Usage over time</h2>
+        <span class="spacer"></span>
+        <div class="seg" role="group" aria-label="Metric">
+          <button type="button" data-metric="tokens" aria-pressed="true">Tokens</button>
+          <button type="button" data-metric="cost" aria-pressed="false">Cost</button>
+          <button type="button" data-metric="baseline" aria-pressed="false">Baseline</button>
+        </div>
+        <div class="seg" role="group" aria-label="Bucket">
+          <button type="button" data-unit="hour" aria-pressed="false">Hour</button>
+          <button type="button" data-unit="day" aria-pressed="true">Day</button>
+        </div>
+      </div>
+      <div id="chart"></div>
+      <p class="muted" id="chart-note" style="margin:0;font-size:0.82rem"></p>
+    </section>
+  </div>
+
+  <section class="panel" aria-label="Ledgers">
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" type="button" data-tab="items" aria-selected="true">Inventory<span class="count" id="c-items"></span></button>
+      <button role="tab" type="button" data-tab="projects" aria-selected="false">Projects<span class="count" id="c-projects"></span></button>
+      <button role="tab" type="button" data-tab="sessions" aria-selected="false">Sessions<span class="count" id="c-sessions"></span></button>
+      <button role="tab" type="button" data-tab="dupes" aria-selected="false">Duplicates<span class="count" id="c-dupes"></span></button>
+    </nav>
+
+    <div id="tab-items" role="tabpanel">
+      <div class="filters">
+        <div class="chips" id="kind-chips" role="group" aria-label="Kind"></div>
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <input type="search" id="q" placeholder="Search name, path, description" aria-label="Search">
+        <label for="scope">Scope <select id="scope"></select></label>
+        <label for="unused-on"><input type="checkbox" id="unused-on"> Not used in</label>
+        <input type="number" id="unused-days" min="0" value="30" aria-label="Days"> <span class="muted" style="font-size:0.85rem">days</span>
+        <label for="hide-managed"><input type="checkbox" id="hide-managed"> Only items I can remove here</label>
+      </div>
+      <div class="selbar" id="selbar" hidden style="margin-top:10px">
+        <span id="sel-count"></span>
+        <button class="btn primary" type="button" id="copy-request">Copy request for the agent</button>
+        <button class="btn" type="button" id="clear-sel">Clear</button>
+        <span class="muted" id="copy-msg"></span>
+      </div>
+      <div class="tablewrap" style="margin-top:10px">
+        <table id="items-table">
+          <thead><tr>
+            <th aria-label="Select"></th>
+            <th data-sort="name">Item</th><th data-sort="kind">Kind</th><th data-sort="scope">Scope</th>
+            <th class="n" data-sort="tokens_always">Always-on ~tok</th><th class="n" data-sort="calls">Calls</th>
+            <th class="n" data-sort="sessions">Sessions</th><th class="n" data-sort="last">Last used</th><th>Source</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" id="items-foot" style="font-size:0.82rem;margin:8px 0 0"></p>
+      <button class="btn" type="button" id="show-all" hidden style="margin-top:8px"></button>
+    </div>
+
+    <div id="tab-projects" role="tabpanel" hidden>
+      <div class="tablewrap"><table id="projects-table"><thead><tr>
+        <th>Project</th><th class="n">Sessions</th><th class="n">Tokens</th><th class="n">Cost</th>
+        <th class="n">Own always-on</th><th class="n">Total est.</th><th class="n">Baseline median</th><th>Project items</th><th class="n">Last active</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div id="tab-sessions" role="tabpanel" hidden>
+      <div class="filters"><label for="sess-proj">Project <select id="sess-proj"></select></label></div>
+      <div class="tablewrap" style="margin-top:10px"><table id="sessions-table"><thead><tr>
+        <th>When</th><th>Project</th><th class="n">Turns</th><th class="n">Baseline</th><th class="n">Tokens</th><th class="n">Cost</th><th>Skills · agents · MCP used</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div id="tab-dupes" role="tabpanel" hidden>
+      <p class="muted" style="margin:0 0 10px;font-size:0.86rem">The same name defined in more than one scope. The project copy usually wins; the global copy still costs listing tokens in every other repo.</p>
+      <div class="tablewrap"><table id="dupes-table"><thead><tr><th>Kind</th><th>Name</th><th>Defined at</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <footer id="footer">Collector: <span class="mono">python3 collector/collect.py serve</span>. Token figures for config files are estimates (bytes ÷ 3.7); baselines come from real API usage. Cost is the API-equivalent price, notional on a Max plan.</footer>
+</div>
+
+<script>
+(() => {
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtT = n => n == null ? "—" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(Math.round(n));
+  const fmt$ = n => n == null ? "—" : "$" + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
+  const ago = iso => {
+    if (!iso) return "never";
+    const s = (Date.now() - Date.parse(iso)) / 1000;
+    if (s < 90) return "just now";
+    if (s < 5400) return Math.round(s / 60) + " min ago";
+    if (s < 129600) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " d ago";
+  };
+  const store = { get(k, d) { try { const v = localStorage.getItem("stx:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+                  set(k, v) { try { localStorage.setItem("stx:" + k, JSON.stringify(v)); } catch {} } };
+
+  const KIND_LABEL = { claude_md: "CLAUDE.md", rule: "Rules", memory: "Memory", skill: "Skills", command: "Commands", agent: "Agents", mcp: "MCP servers", plugin: "Plugins" };
+  const SCOPE_HINT = { user: "~/.claude (every session)", project: "repo .claude/", local: "this repo, private", account: "claude.ai account", builtin: "bundled", connector: "claude.ai connector" };
+  const CTX = [
+    ["system", "System prompt", "--c6"], ["tools_builtin", "Built-in tool schemas", "--c1"], ["tools_mcp", "MCP tool schemas", "--c4"],
+    ["deferred", "Deferred tool names", "--c5"], ["mcp_instructions", "MCP instructions", "--c3"], ["skills", "Skill listing", "--c2"], ["agents", "Agent listing", "--c7"]];
+
+  const st = {
+    snap: null, mode: "none", tab: store.get("tab", "items"), kind: store.get("kind", "all"), scope: "all", q: "",
+    unusedOn: store.get("unusedOn", false), unusedDays: store.get("unusedDays", 30), hideManaged: false,
+    sort: { key: "tokens_always", dir: -1 }, limit: 60, open: new Set(), sel: new Set(), metric: "tokens", unit: store.get("unit", "day"), sessProj: "all",
+  };
+
+  // ---------- data feeds
+  let pollTimer = null;
+  async function loadFile() {
+    try {
+      const r = await fetch("snapshot.json", { cache: "no-store" });
+      if (!r.ok) return false;
+      const s = await r.json();
+      if (!s || !s.items) return false;
+      const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+      if (st.mode !== "live") setData(s, local ? "local" : "static");
+      if (local && !pollTimer) pollTimer = setInterval(loadFile, Math.max(15, intervalSec(s.interval)) * 1000);
+      return true;
+    } catch { return false; }
+  }
+  function intervalSec(v) { const m = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(String(v || "60s").trim()); return m ? +m[1] * ({ "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]]) : 60; }
+
+  let mcp = null;
+  async function connectLive() {
+    const c = window.claude;
+    if (!c || typeof c.use !== "function") return;
+    try { mcp = await c.use("mcp"); } catch { mcp = null; }
+    if (!mcp) return;
+    const every = Math.max(30, intervalSec(st.snap?.interval || "1m")) * 1000;
+    mcp.watchTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard" }, ev => {
+      if (ev.type === "data") {
+        const p = ev.result.payload;
+        if (p && p.items) { setData(p, "live"); note(null); }
+      } else {
+        const code = ev.error?.code;
+        if (["server_not_connected", "not_granted", "capability_disabled", "capability_removed", "not_in_manifest", "blocked_by_policy"].includes(code)) {
+          if (st.mode === "live") { st.mode = st.snap ? "static" : "none"; render(); }
+          note(code === "not_in_manifest"
+            ? "Live feed is turned off for this page. Allow the stellaxis server in the page's Permissions menu to see your Mac's data live."
+            : "Live feed is off. To see your Mac live, run <code>bash collector/install.sh</code> on the Mac, then open this page in the Claude desktop app. Or use the local dashboard at <code>http://127.0.0.1:7777</code>.");
+        } else if (code === "approval_required") {
+          note("The Claude app needs your approval to read the stellaxis server. Press Refresh now to approve once.");
+        } else if (code === "tool_error") {
+          note("The collector reported an error: " + esc(ev.error?.message || "unknown"));
+        }
+      }
+    }, { refetchInterval: every });
+  }
+  function note(html) { const n = $("#feed-note"); n.hidden = !html; if (html) n.innerHTML = html; }
+
+  $("#refresh").addEventListener("click", async () => {
+    const b = $("#refresh"); b.disabled = true; b.textContent = "Refreshing…";
+    try {
+      if (mcp && st.mode !== "local") {
+        const r = await mcp.callTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard", refresh: true }, { cache: false });
+        if (r.payload?.items) { setData(r.payload, "live"); note(null); }
+      } else if (st.mode === "local") {
+        await fetch("api/refresh", { cache: "no-store" }).catch(() => {});
+        await new Promise(r => setTimeout(r, 2500));
+        await loadFile();
+      } else { await loadFile(); }
+    } catch (e) { if (e?.code) note("Refresh failed (" + esc(e.code) + "). " + esc(e.message || "")); }
+    b.disabled = false; b.textContent = "Refresh now";
+  });
+
+  function setData(s, mode) { st.snap = s; st.mode = mode; render(); }
+
+  // ---------- render
+  function render() {
+    const s = st.snap;
+    const status = $("#status");
+    status.dataset.mode = s ? st.mode : "none";
+    $("#status-text").textContent = !s ? "Waiting for data" : st.mode === "live" ? `Live · ${s.host}` : st.mode === "local" ? `Local · ${s.host}` : `Snapshot · ${s.host}`;
+    $("#updated").textContent = s ? "updated " + ago(s.generated_at) : "";
+    if (!s) return;
+    renderKpis(s); renderBudget(s); renderChart(s); renderTabs(s);
+  }
+
+  function renderKpis(s) {
+    const t = s.totals, k = $$("#kpis .kpi");
+    const set = (i, v, sub) => { $(".v", k[i]).textContent = v; if (sub) $(".s", k[i]).textContent = sub; };
+    set(0, fmtT(t.baseline_latest), t.baseline_median ? `median ${fmtT(t.baseline_median)} over recent sessions` : "no sessions yet");
+    set(1, fmtT(t.global_always_tokens_est), "estimated from config files and listings");
+    set(2, fmtT(t.today.tokens), `${fmt$(t.today.cost)} · ${t.today.sessions} sessions`);
+    set(3, fmt$(t.month.cost), `${fmtT(t.month.tokens)} tokens · ${t.month.sessions} sessions`);
+    set(4, String(t.active_sessions), `of ${t.sessions} sessions in ${t.projects} projects`);
+  }
+
+  function renderBudget(s) {
+    const lc = s.latest_context, bar = $("#budget"), leg = $("#budget-legend");
+    if (!lc) {
+      bar.innerHTML = ""; leg.innerHTML = `<li style="grid-template-columns:1fr" class="muted">This Claude Code version doesn't write context records to its transcripts. Use the Inventory tab's estimates.</li>`;
+      return;
+    }
+    const total = CTX.reduce((a, [k]) => a + (lc[k] || 0), 0) || 1;
+    bar.innerHTML = CTX.map(([k, label, c]) => lc[k] ? `<span style="flex-basis:${(lc[k] / total * 100).toFixed(2)}%;background:var(${c})" title="${label}: ${fmtT(lc[k])}"></span>` : "").join("");
+    leg.innerHTML = CTX.map(([k, label, c]) => `<li><i style="background:var(${c})"></i><span>${label}</span><b>${fmtT(lc[k] || 0)}</b></li>`).join("");
+    const m = s.sessions[0]?.measured_context;
+    const flags = [];
+    if (m?.skill_count) flags.push(`<span class="pill acc">${m.skill_count} skills listed</span>`);
+    (m?.needs_auth_mcp || []).forEach(x => flags.push(`<span class="pill warn">needs auth: ${esc(x)}</span>`));
+    (m?.pending_mcp || []).forEach(x => flags.push(`<span class="pill">connecting: ${esc(x)}</span>`));
+    $("#budget-flags").innerHTML = flags.join("");
+    $("#budget-sub").textContent = `Measured from the latest session (${ago(s.sessions[0]?.first_ts)}, ${s.sessions[0]?.project || ""}). ~${fmtT(total)} of ${fmtT(s.totals.baseline_latest)} baseline tokens attributed.`;
+  }
+
+  function bucketSeries(s) {
+    if (st.metric === "baseline") {
+      return (s.history || []).filter(r => r.baseline).map(r => ({ t: r.t, v: r.baseline }));
+    }
+    const out = new Map();
+    for (const r of s.series || []) {
+      const key = st.unit === "day" ? r.t.slice(0, 10) : r.t.slice(0, 13);
+      const v = st.metric === "cost" ? r.cost : r.input + r.cache_write + r.cache_read + r.output;
+      out.set(key, (out.get(key) || 0) + v);
+    }
+    return [...out].map(([t, v]) => ({ t, v }));
+  }
+
+  function renderChart(s) {
+    const data = bucketSeries(s), el = $("#chart");
+    $$("[data-metric]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.metric === st.metric)));
+    $$("[data-unit]").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.unit === st.unit)); b.disabled = st.metric === "baseline"; });
+    if (data.length === 0) { el.innerHTML = `<div class="empty">No ${st.metric === "baseline" ? "baseline history" : "usage"} yet. It fills in as the collector runs.</div>`; $("#chart-note").textContent = ""; return; }
+    const W = 560, H = 210, L = 46, R = 10, T = 12, B = 26;
+    const max = Math.max(...data.map(d => d.v)) || 1;
+    const nice = niceMax(max), iw = W - L - R, ih = H - T - B;
+    const x = i => L + (data.length === 1 ? iw / 2 : i * iw / (data.length - 1));
+    const y = v => T + ih - v / nice * ih;
+    const fmtV = st.metric === "cost" ? fmt$ : fmtT;
+    let g = "";
+    for (let i = 0; i <= 4; i++) {
+      const v = nice * i / 4, yy = y(v);
+      g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--line)" stroke-width="1"/><text x="${L - 6}" y="${yy + 3}" text-anchor="end">${fmtV(v)}</text>`;
+    }
+    const pts = data.map((d, i) => `${x(i).toFixed(1)},${y(d.v).toFixed(1)}`);
+    const area = `M${x(0)},${y(0)} L${pts.join(" L")} L${x(data.length - 1)},${y(0)} Z`;
+    const step = Math.max(1, Math.ceil(data.length / 6));
+    let xl = "";
+    data.forEach((d, i) => { if (i % step === 0 || i === data.length - 1) xl += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${label(d.t)}</text>`; });
+    const last = data[data.length - 1];
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${st.metric} per ${st.unit}">
+      ${g}<path d="${area}" fill="var(--accent)" fill-opacity="0.12"/>
+      <polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="${x(data.length - 1)}" cy="${y(last.v)}" r="4" fill="var(--accent)"/>${xl}</svg>`;
+    const total = data.reduce((a, d) => a + d.v, 0);
+    $("#chart-note").textContent = st.metric === "baseline"
+      ? `Latest ${fmtT(last.v)} tokens. Watch this drop after pruning.`
+      : `${fmtV(total)} over ${data.length} ${st.unit}${data.length === 1 ? "" : "s"}; latest ${fmtV(last.v)}. Cache reads count fully in tokens; cost prices them at the cache-read rate.`;
+  }
+  function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
+  function label(t) { return t.length > 10 ? t.slice(5, 10) + " " + t.slice(11, 13) + "h" : t.length === 10 ? t.slice(5) : t.slice(5, 10); }
+
+  $$("[data-metric]").forEach(b => b.addEventListener("click", () => { st.metric = b.dataset.metric; renderChart(st.snap || {}); }));
+  $$("[data-unit]").forEach(b => b.addEventListener("click", () => { st.unit = b.dataset.unit; store.set("unit", st.unit); renderChart(st.snap || {}); }));
+
+  // ---------- tabs
+  $$("#tabs [data-tab]").forEach(b => b.addEventListener("click", () => { st.tab = b.dataset.tab; store.set("tab", st.tab); renderTabs(st.snap); }));
+  function renderTabs(s) {
+    $$("#tabs [data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === st.tab)));
+    ["items", "projects", "sessions", "dupes"].forEach(t => $("#tab-" + t).hidden = t !== st.tab);
+    if (!s) return;
+    $("#c-items").textContent = s.items.length; $("#c-projects").textContent = s.projects.length;
+    $("#c-sessions").textContent = s.sessions.length; $("#c-dupes").textContent = s.duplicates.length;
+    renderItems(s); renderProjects(s); renderSessions(s); renderDupes(s);
+  }
+
+  // inventory
+  function srcPill(it) {
+    const m = { measured: ["good", "measured"], probe: ["acc", "probed"], estimate: ["", "estimate"], file: ["", "file size"], rollup: ["", "sum of parts"], unknown: ["warn", "unknown"], "probe-failed": ["crit", "probe failed"] }[it.source] || ["", it.source || "—"];
+    return `<span class="pill ${m[0]}">${m[1]}</span>`;
+  }
+  function filtered(s) {
+    const q = st.q.toLowerCase();
+    return s.items.filter(it => {
+      if (st.kind !== "all" && it.kind !== st.kind) return false;
+      if (st.scope !== "all" && it.scope !== st.scope) return false;
+      if (st.hideManaged && it.removable === false) return false;
+      if (st.unusedOn) {
+        const u = it.usage || {};
+        if (u.calls && (u.days_since_used ?? 0) < st.unusedDays) return false;
+      }
+      if (q && !`${it.name} ${it.path || ""} ${it.description || ""} ${it.scope_path || ""} ${it.plugin || ""}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }
+  function sortVal(it, k) {
+    const u = it.usage || {};
+    return k === "calls" ? u.calls || 0 : k === "sessions" ? u.sessions || 0 : k === "last" ? (u.last_used || "") : k === "tokens_always" ? it.tokens_always : String(it[k] || "").toLowerCase();
+  }
+  function renderItems(s) {
+    const kinds = ["all", ...Object.keys(KIND_LABEL).filter(k => s.items.some(i => i.kind === k))];
+    $("#kind-chips").innerHTML = kinds.map(k => {
+      const n = k === "all" ? s.items.length : s.items.filter(i => i.kind === k).length;
+      return `<button type="button" class="chip" data-kind="${k}" aria-pressed="${st.kind === k}">${k === "all" ? "All" : KIND_LABEL[k]} <span class="mono">${n}</span></button>`;
+    }).join("");
+    const scopes = ["all", ...new Set(s.items.map(i => i.scope))];
+    const sel = $("#scope");
+    if (sel.options.length !== scopes.length) sel.innerHTML = scopes.map(x => `<option value="${x}">${x === "all" ? "All scopes" : x + (SCOPE_HINT[x] ? " — " + SCOPE_HINT[x] : "")}</option>`).join("");
+    sel.value = st.scope;
+    $("#unused-on").checked = st.unusedOn; $("#unused-days").value = st.unusedDays; $("#hide-managed").checked = st.hideManaged;
+
+    const rows = filtered(s).sort((a, b) => { const va = sortVal(a, st.sort.key), vb = sortVal(b, st.sort.key); return (va > vb ? 1 : va < vb ? -1 : 0) * st.sort.dir; });
+    const maxTok = Math.max(1, ...rows.map(r => r.tokens_always));
+    const tb = $("#items-table tbody");
+    if (!rows.length) { tb.innerHTML = `<tr><td colspan="9" class="empty">Nothing matches these filters.</td></tr>`; }
+    else tb.innerHTML = rows.slice(0, st.limit).map(it => {
+      const u = it.usage || {};
+      const open = st.open.has(it.id);
+      const scopeTxt = it.scope_path ? `${it.scope}<div class="sub">${esc(it.scope_path)}</div>` : esc(it.scope);
+      const lastTxt = u.last_used ? ago(u.last_used) : `<span class="pill ${it.removable === false ? "" : "warn"}">never</span>`;
+      const disabled = it.enabled === false ? ` <span class="pill">disabled</span>` : "";
+      const managed = it.removable === false ? ` <span class="pill" title="${esc(it.manage || "")}">managed</span>` : "";
+      let html = `<tr class="row" data-id="${esc(it.id)}">
+        <td><input type="checkbox" aria-label="Select ${esc(it.name)}" data-sel="${esc(it.id)}" ${st.sel.has(it.id) ? "checked" : ""}></td>
+        <td><div class="name">${esc(it.name)}${disabled}${managed}</div>${it.plugin ? `<div class="sub">plugin ${esc(it.plugin)}</div>` : ""}</td>
+        <td>${esc(KIND_LABEL[it.kind] || it.kind).replace(/s$/, "")}</td><td>${scopeTxt}</td>
+        <td class="n"><span class="minibar" style="width:${Math.max(2, it.tokens_always / maxTok * 60)}px"></span>${fmtT(it.tokens_always)}</td>
+        <td class="n">${u.calls || 0}</td><td class="n">${u.sessions || 0}</td><td class="n">${lastTxt}</td><td>${srcPill(it)}</td></tr>`;
+      if (open) {
+        const d = it.detail ? Object.entries(it.detail).map(([k, v]) => `${esc(k)}: ${esc(typeof v === "object" ? JSON.stringify(v) : v)}`).join(" · ") : "";
+        html += `<tr class="detail"><td></td><td colspan="8"><dl class="kv">
+          <dt>Id</dt><dd class="mono">${esc(it.id)} <button class="btn" type="button" data-copy="${esc(it.id)}" style="padding:1px 8px;font-size:0.78rem">Copy</button></dd>
+          ${it.path ? `<dt>Path</dt><dd class="mono">${esc(it.path)}</dd>` : ""}
+          ${it.description ? `<dt>Description</dt><dd>${esc(it.description)}</dd>` : ""}
+          <dt>Cost</dt><dd>~${fmtT(it.tokens_always)} tokens every session${it.tokens_on_use ? `, ~${fmtT(it.tokens_on_use)} more when used` : ""}${u.agent_tokens ? `; subagent runs used ${fmtT(u.agent_tokens)} tokens` : ""}</dd>
+          ${d ? `<dt>Detail</dt><dd>${d}</dd>` : ""}
+          ${u.projects?.length ? `<dt>Used in</dt><dd>${u.projects.map(esc).join(", ")}</dd>` : ""}
+          ${it.manage ? `<dt>Managed at</dt><dd>${esc(it.manage)}</dd>` : ""}
+          ${it.imports?.length ? `<dt>Imports</dt><dd class="mono">${it.imports.map(esc).join(", ")}</dd>` : ""}
+          ${it.target ? `<dt>Server</dt><dd class="mono">${esc(it.transport)} · ${esc(it.target)}</dd>` : ""}
+        </dl></td></tr>`;
+      }
+      return html;
+    }).join("");
+    const tot = rows.reduce((a, r) => a + (r.kind === "plugin" ? 0 : r.tokens_always), 0);
+    const more = $("#show-all");
+    more.hidden = rows.length <= st.limit;
+    more.textContent = `Show all ${rows.length} items`;
+    $("#items-foot").textContent = `${Math.min(rows.length, st.limit)} of ${rows.length} items shown · ~${fmtT(tot)} always-on tokens (plugins excluded from the sum; their parts are listed separately).`;
+    $$("#items-table th[data-sort]").forEach(th => th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (th.dataset.sort === st.sort.key ? (st.sort.dir > 0 ? " ↑" : " ↓") : ""));
+    renderSel();
+  }
+  function renderSel() {
+    $("#selbar").hidden = st.sel.size === 0;
+    $("#sel-count").textContent = `${st.sel.size} selected`;
+  }
+
+  $("#kind-chips").addEventListener("click", e => { const b = e.target.closest("[data-kind]"); if (!b) return; st.kind = b.dataset.kind; store.set("kind", st.kind); renderItems(st.snap); });
+  $("#q").addEventListener("input", e => { st.q = e.target.value; renderItems(st.snap); });
+  $("#scope").addEventListener("change", e => { st.scope = e.target.value; renderItems(st.snap); });
+  $("#unused-on").addEventListener("change", e => { st.unusedOn = e.target.checked; store.set("unusedOn", st.unusedOn); renderItems(st.snap); });
+  $("#unused-days").addEventListener("input", e => { st.unusedDays = Math.max(0, +e.target.value || 0); store.set("unusedDays", st.unusedDays); if (st.unusedOn) renderItems(st.snap); });
+  $("#hide-managed").addEventListener("change", e => { st.hideManaged = e.target.checked; renderItems(st.snap); });
+  $("#items-table thead").addEventListener("click", e => {
+    const th = e.target.closest("th[data-sort]"); if (!th) return;
+    const k = th.dataset.sort; st.sort = { key: k, dir: st.sort.key === k ? -st.sort.dir : (["name", "kind", "scope"].includes(k) ? 1 : -1) }; renderItems(st.snap);
+  });
+  $("#items-table tbody").addEventListener("click", e => {
+    const cb = e.target.closest("[data-sel]");
+    if (cb) { cb.checked ? st.sel.add(cb.dataset.sel) : st.sel.delete(cb.dataset.sel); renderSel(); return; }
+    const cp = e.target.closest("[data-copy]");
+    if (cp) { copy(cp.dataset.copy, cp); return; }
+    const tr = e.target.closest("tr.row"); if (!tr) return;
+    const id = tr.dataset.id; st.open.has(id) ? st.open.delete(id) : st.open.add(id); renderItems(st.snap);
+  });
+  $("#show-all").addEventListener("click", () => { st.limit = Infinity; renderItems(st.snap); });
+  $("#clear-sel").addEventListener("click", () => { st.sel.clear(); renderItems(st.snap); });
+  $("#copy-request").addEventListener("click", e => {
+    const ids = [...st.sel];
+    const text = `Use stellaxis to archive these ${ids.length} item(s); show me the dry-run plan first:\n` + ids.map(i => "- " + i).join("\n");
+    copy(text, e.currentTarget, "#copy-msg");
+  });
+  async function copy(text, btn, msgSel) {
+    const msg = msgSel ? $(msgSel) : null;
+    try { await navigator.clipboard.writeText(text); if (msg) msg.textContent = "Copied. Paste it to the stellaxis agent."; else { const o = btn.textContent; btn.textContent = "Copied"; setTimeout(() => btn.textContent = o, 1200); } }
+    catch {
+      if (msg) { msg.innerHTML = `<textarea readonly rows="3" style="width:100%;font-family:var(--mono);font-size:0.78rem">${esc(text)}</textarea>`; $("textarea", msg).select(); }
+    }
+  }
+
+  // projects
+  function renderProjects(s) {
+    $("#projects-table tbody").innerHTML = s.projects.length ? s.projects.map(p => {
+      const counts = Object.entries(p.counts || {}).map(([k, n]) => `<span class="pill">${n} ${esc((KIND_LABEL[k] || k).toLowerCase())}</span>`).join(" ");
+      return `<tr><td><div class="name">${esc(p.path)}</div>${p.missing ? `<div class="sub">folder not found on this machine</div>` : ""}${p.ancestor_claude_md?.length ? `<div class="sub">also loads ${p.ancestor_claude_md.map(esc).join(", ")}</div>` : ""}</td>
+        <td class="n">${p.sessions}</td><td class="n">${fmtT(p.tokens)}</td><td class="n">${fmt$(p.cost)}</td>
+        <td class="n">${fmtT(p.own_always_tokens)}</td><td class="n">${fmtT(p.est_always_tokens)}</td><td class="n">${fmtT(p.baseline_median)}</td>
+        <td><div class="tags">${counts || '<span class="muted">none</span>'}</div></td><td class="n">${ago(p.last_active)}</td></tr>`;
+    }).join("") : `<tr><td colspan="9" class="empty">No projects found yet.</td></tr>`;
+  }
+
+  // sessions
+  function renderSessions(s) {
+    const projs = ["all", ...new Set(s.sessions.map(x => x.project))];
+    const sel = $("#sess-proj");
+    if (sel.options.length !== projs.length) sel.innerHTML = projs.map(p => `<option value="${esc(p)}">${p === "all" ? "All projects" : esc(p)}</option>`).join("");
+    sel.value = st.sessProj;
+    const rows = s.sessions.filter(x => st.sessProj === "all" || x.project === st.sessProj);
+    const tag = (o, cls) => Object.entries(o || {}).map(([k, n]) => `<span class="pill ${cls}">${esc(k)}${n > 1 ? " ×" + n : ""}</span>`).join(" ");
+    $("#sessions-table tbody").innerHTML = rows.length ? rows.map(x => `<tr>
+        <td class="mono" style="white-space:nowrap">${esc((x.last_ts || "").slice(0, 16).replace("T", " "))}<div class="sub">${esc(x.entrypoint || "")} ${esc(x.version || "")}</div></td>
+        <td>${esc(x.project)}${x.branch ? `<div class="sub">${esc(x.branch)}</div>` : ""}</td>
+        <td class="n">${x.turns}</td><td class="n">${fmtT(x.baseline_tokens)}</td><td class="n">${fmtT(x.tokens.total)}</td><td class="n">${fmt$(x.cost)}</td>
+        <td><div class="tags">${tag(x.skills, "good")} ${tag(x.slash, "good")} ${tag(x.agents, "acc")} ${tag(x.mcp, "warn")}</div>${x.subagent_files ? `<div class="sub">${x.subagent_files} subagent transcript(s)</div>` : ""}</td></tr>`).join("")
+      : `<tr><td colspan="7" class="empty">No sessions recorded.</td></tr>`;
+  }
+  $("#sess-proj").addEventListener("change", e => { st.sessProj = e.target.value; renderSessions(st.snap); });
+
+  function renderDupes(s) {
+    $("#dupes-table tbody").innerHTML = s.duplicates.length ? s.duplicates.map(d => `<tr><td>${esc(KIND_LABEL[d.kind] || d.kind)}</td><td class="name">${esc(d.name)}</td><td class="mono" style="font-size:0.8rem">${d.items.map(esc).join("<br>")}</td></tr>`).join("")
+      : `<tr><td colspan="3" class="empty">No duplicates between global and project scope.</td></tr>`;
+  }
+
+  setInterval(() => { if (st.snap) $("#updated").textContent = "updated " + ago(st.snap.generated_at); }, 30000);
+  renderTabs(null);
+  loadFile().then(ok => {
+    if (!ok) note("No data yet. On your Mac run <code>python3 collector/collect.py serve</code> and open <code>http://127.0.0.1:7777</code>, or connect the stellaxis server to the Claude desktop app for the live feed.");
+  });
+  connectLive();
+})();
+</script>

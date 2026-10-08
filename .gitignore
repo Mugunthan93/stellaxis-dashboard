@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+# local data never belongs in the repo
+.stellaxis/
+snapshot.json
