@@ -48,6 +48,9 @@ header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: 
 .status[data-mode="live"] .dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
 .status[data-mode="local"] .dot { background: var(--accent); }
 .status[data-mode="static"] .dot { background: var(--warn); }
+.routes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.routes a { padding: 5px 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
+.routes a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .spacer { flex: 1; }
 .btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
 .btn:hover { border-color: var(--accent); }
@@ -129,6 +132,10 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <h1>Stellaxis</h1>
       <span class="muted">Claude context ledger</span>
     </div>
+    <nav class="routes" aria-label="Pages">
+      <a href="./" aria-current="page">Overview</a>
+      <a href="hierarchy">Hierarchy</a>
+    </nav>
     <span class="status" id="status" data-mode="none"><span class="dot"></span><span id="status-text">Waiting for data</span></span>
     <span class="spacer"></span>
     <span class="muted mono" id="updated"></span>
@@ -259,6 +266,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
 (() => {
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  // the Hierarchy route is served by the local collector; the artifact host has only this page
+  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) $(".routes")?.remove();
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmtT = n => n == null ? "—" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(Math.round(n));
   const fmt$ = n => n == null ? "—" : "$" + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));

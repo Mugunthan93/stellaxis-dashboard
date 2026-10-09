@@ -1,0 +1,560 @@
+<title>Stellaxis Hierarchy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: full-width two-pane. Left: Global → projects → worktrees tree. Right: the selected level's
+   ownership split (inherited vs own), cost share, sessions, then MCP / skills / plugins / agents / CLAUDE.md. */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
+  --accent: #2c55c9; --accent-soft: #dfe6f8;
+  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
+  --c1: #2c55c9; --c2: #168a7d; --c3: #c98a1c; --c4: #b9476f; --c5: #6f55c0; --c6: #6b7a8c; --c7: #7c8e2c;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  --c1: #7c9cf0; --c2: #45c2b2; --c3: #e3ad4e; --c4: #e07a9e; --c5: #a68cf0; --c6: #9aa8b8; --c7: #b5c35a;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  --c1: #7c9cf0; --c2: #45c2b2; --c3: #e3ad4e; --c4: #e07a9e; --c5: #a68cf0; --c6: #9aa8b8; --c7: #b5c35a;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
+.wrap { max-width: 1680px; margin: 0 auto; padding: 20px 16px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.55rem; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1rem; }
+.mono, td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.routes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.routes a { padding: 5px 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
+.routes a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
+.btn:hover { border-color: var(--accent); }
+.notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); }
+
+.layout { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; min-width: 0; align-content: start; }
+
+/* tree */
+.treepane { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+@media (max-width: 900px) { .treepane { position: static; max-height: 60vh; } }
+.tree-search { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; width: 100%; }
+ul.tree { list-style: none; margin: 0; padding: 0; }
+ul.tree ul { list-style: none; margin: 0; padding-left: 16px; border-left: 1px solid var(--line); margin-left: 9px; }
+.node { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.node:hover { background: var(--sunk); }
+.node[aria-selected="true"] { background: var(--accent-soft); }
+.node .tw { border: 0; background: none; padding: 0; width: 18px; height: 18px; color: var(--muted); font-size: 0.7rem; line-height: 18px; }
+.node .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node .lbl b { font-weight: 600; }
+.node .lbl .k { font-size: 0.7rem; color: var(--muted); margin-left: 4px; }
+.node .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); white-space: nowrap; }
+.node.dim .lbl { color: var(--muted); }
+
+/* detail */
+.crumbs { font-size: 0.82rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.crumbs button { border: 0; background: none; padding: 0; color: var(--accent); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.kpi { background: var(--surface); padding: 12px 14px; display: grid; gap: 2px; align-content: start; }
+.kpi .v { font-family: var(--mono); font-size: 1.3rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 0.78rem; color: var(--muted); }
+.stack { display: flex; height: 30px; border-radius: 6px; overflow: hidden; background: var(--sunk); }
+.stack span { display: block; height: 100%; min-width: 2px; }
+.legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 18px; margin: 0; padding: 0; list-style: none; }
+.legend li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; font-size: 0.86rem; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; }
+.legend b { font-family: var(--mono); font-weight: 600; }
+.legend small { grid-column: 2 / 4; color: var(--muted); font-size: 0.76rem; margin-top: -4px; }
+.sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 18px; }
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.sec-head p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+
+.tablewrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; max-height: 460px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.84rem; }
+th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; background: var(--sunk); position: sticky; top: 0; white-space: nowrap; z-index: 1; }
+td.n, th.n { text-align: right; white-space: nowrap; }
+td:first-child { min-width: 220px; }
+.sections { align-items: start; }
+.name { font-weight: 600; word-break: break-word; }
+.sub { font-size: 0.76rem; color: var(--muted); word-break: break-all; }
+.pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.minibar { display: inline-block; height: 6px; border-radius: 3px; background: var(--accent); vertical-align: middle; margin-right: 6px; opacity: 0.75; }
+.split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--sunk); min-width: 120px; }
+.split span { display: block; height: 100%; }
+.empty { padding: 18px; text-align: center; color: var(--muted); font-size: 0.86rem; }
+footer { font-size: 0.8rem; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Stellaxis</h1>
+      <span class="muted">Claude context ledger</span>
+    </div>
+    <nav class="routes" aria-label="Pages">
+      <a href="./">Overview</a>
+      <a href="hierarchy" aria-current="page">Hierarchy</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="muted mono" id="updated"></span>
+    <button class="btn" id="refresh" type="button">Refresh now</button>
+  </header>
+
+  <div class="notice" id="note">Loading snapshot…</div>
+
+  <div class="layout">
+    <aside class="panel treepane" aria-label="Hierarchy">
+      <input class="tree-search" id="q" type="search" placeholder="Filter projects" aria-label="Filter projects">
+      <ul class="tree" id="tree" role="tree"></ul>
+    </aside>
+    <main class="panel" id="detail" aria-live="polite"></main>
+  </div>
+
+  <footer>Inherited = loaded into every session at this level but owned by a level above it (Claude Code itself, your global setup, or a parent folder). Own = defined at this level.
+    Carry cost = shared tokens × turns × the model's cache-read price, an estimate of what each project pays to re-read the shared context every turn. Token figures for config files are estimates (bytes ÷ 3.7); MCP, skill and agent listing sizes come from real session transcripts where available.</footer>
+</div>
+
+<script>
+(() => {
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtT = n => n == null ? "—" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "K" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(Math.round(n));
+  const fmt$ = n => n == null ? "—" : "$" + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
+  const ago = iso => {
+    if (!iso) return "never";
+    const s = (Date.now() - Date.parse(iso)) / 1000;
+    if (s < 90) return "just now";
+    if (s < 5400) return Math.round(s / 60) + " min ago";
+    if (s < 129600) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " d ago";
+  };
+  const store = { get(k, d) { try { const v = localStorage.getItem("stx:h:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+                  set(k, v) { try { localStorage.setItem("stx:h:" + k, JSON.stringify(v)); } catch {} } };
+  const sum = a => a.reduce((x, y) => x + (y || 0), 0);
+  const addTo = (m, k, n) => { m[k] = (m[k] || 0) + (n || 0); };
+
+  const GLOBAL = "@global";
+  const GLOBAL_SCOPES = new Set(["user", "account", "connector", "builtin"]);
+  const SCOPE_LABEL = { user: "global · ~/.claude", account: "global · claude.ai account", connector: "global · connector", builtin: "Claude Code built-in",
+                        project: "project", local: "project · private" };
+  const LAYERS = [
+    ["builtin", "Claude Code built-in", "--c6", "System prompt and built-in tool schemas. Owned by Claude Code; you can't trim these."],
+    ["global", "Global setup", "--c1", "Skills, MCP servers, agents and plugins from ~/.claude, your claude.ai account and connectors."],
+    ["parent", "Parent folders", "--c3", "CLAUDE.md files in folders above this one, loaded too."],
+    ["own", "Own", "--c2", "Defined at this level: CLAUDE.md, memory, project skills, agents, MCP, plugins."]];
+  // Fallback cache-read $/Mtok if the snapshot predates meta.pricing
+  const FALLBACK_PRICING = { "claude-fable": 0.25, "claude-opus-5-5": 0.20, "claude-opus": 0.50, "claude-sonnet-5": 0.20, "claude-sonnet": 0.30, "claude-haiku-5": 0.01, "claude-haiku": 0.10 };
+
+  const st = { snap: null, sel: store.get("sel", GLOBAL), open: new Set(store.get("open", [GLOBAL])), q: "" };
+  let M = null; // derived model
+
+  // ---------- model
+  function cacheRate(model, pricing) {
+    if (!model) return 0.3;
+    if (pricing) {
+      const k = Object.keys(pricing).filter(p => model.startsWith(p)).sort((a, b) => b.length - a.length)[0];
+      if (k) { const p = pricing[k]; return p.cache_read ?? p.in * 0.1; }
+    }
+    const k = Object.keys(FALLBACK_PRICING).filter(p => model.startsWith(p)).sort((a, b) => b.length - a.length)[0];
+    return k ? FALLBACK_PRICING[k] : 0.3;
+  }
+
+  function build(s) {
+    const items = new Map(s.items.map(i => [i.id, i]));
+    const byPath = new Map(s.items.filter(i => i.path).map(i => [i.path, i]));
+    const pricing = s.meta?.pricing;
+    const globalItems = s.items.filter(i => GLOBAL_SCOPES.has(i.scope));
+    const globalTokens = s.totals.global_always_tokens_est || sum(globalItems.filter(i => i.scope !== "builtin").map(i => i.tokens_always));
+
+    // project nodes, nested by worktree_of or longest path prefix
+    const nodes = new Map();
+    nodes.set(GLOBAL, { id: GLOBAL, label: "Global", kind: "global", children: [], parent: null, sessions: [] });
+    const paths = s.projects.map(p => p.path);
+    for (const p of s.projects) nodes.set(p.path, { id: p.path, label: p.path, kind: p.worktree_of || /\/\.claude\/worktrees\//.test(p.path) ? "worktree" : "project", proj: p, children: [], sessions: [] });
+    for (const p of s.projects) {
+      let parent = p.worktree_of && nodes.has(p.worktree_of) ? p.worktree_of : null;
+      if (!parent) {
+        const cands = paths.filter(q => q !== p.path && p.path.startsWith(q + "/"));
+        parent = cands.sort((a, b) => b.length - a.length)[0] || GLOBAL;
+      }
+      const n = nodes.get(p.path);
+      n.parent = parent;
+      nodes.get(parent).children.push(n);
+    }
+    for (const x of s.sessions) {
+      const n = nodes.get(x.project);
+      if (n) n.sessions.push(x); else nodes.get(GLOBAL).sessions.push(x); // sessions outside any project
+    }
+
+    // per session: layer tokens and carry cost
+    const projOwn = p => sum((p?.items || []).map(id => items.get(id)?.tokens_always));
+    const projParent = p => sum((p?.ancestor_claude_md || []).map(path => byPath.get(path)?.tokens_always ?? 0));
+    const sessCalc = new Map();
+    for (const x of s.sessions) {
+      const p = nodes.get(x.project)?.proj;
+      const mc = x.measured_context;
+      const builtin = mc ? (mc.system || 0) + (mc.tools_builtin || 0) : 0;
+      const global = mc ? sum(Object.values(mc.tools_mcp || {})) + (mc.skills || 0) + (mc.agents || 0) + (mc.mcp_instructions || 0) + (mc.deferred || 0) : globalTokens;
+      const layers = { builtin, global, parent: projParent(p), own: projOwn(p) };
+      const rate = cacheRate((x.models || [])[0], pricing);
+      const carry = t => t * (x.turns || 0) * rate / 1e6;
+      sessCalc.set(x.id, { layers, rate, carry, carryShared: carry(layers.builtin + layers.global + layers.parent), carryOwn: carry(layers.own) });
+    }
+
+    // rollups (node + descendants)
+    const roll = n => {
+      const ss = [...n.sessions];
+      for (const c of n.children) ss.push(...roll(c));
+      n.all = ss;
+      n.tokens = sum(ss.map(x => x.tokens?.total));
+      n.cost = sum(ss.map(x => x.cost));
+      n.carryShared = sum(ss.map(x => sessCalc.get(x.id).carryShared));
+      n.last = ss.map(x => x.last_ts).sort().pop() || n.proj?.last_active || null;
+      n.children.sort((a, b) => (b.cost - a.cost) || a.label.localeCompare(b.label));
+      return ss;
+    };
+    const g = nodes.get(GLOBAL);
+    for (const c of g.children) roll(c);
+    roll(g);
+    // folders with no sessions anywhere below fold into one dimmed group
+    const idle = g.children.filter(c => !c.all.length);
+    g.children = g.children.filter(c => c.all.length);
+    if (idle.length) {
+      const grp = { id: "@idle", label: `No sessions (${idle.length})`, kind: "group", children: idle, parent: GLOBAL, sessions: [], all: [], tokens: 0, cost: 0, carryShared: 0 };
+      idle.forEach(c => c.parent = "@idle");
+      nodes.set(grp.id, grp);
+      g.children.push(grp);
+    }
+    return { s, items, byPath, nodes, sessCalc, globalItems, pricing };
+  }
+
+  // ---------- per-node aggregation of usage
+  function usage(sessions) {
+    const u = { mcp: {}, mcpTools: {}, skills: {}, agents: {}, agentTok: {}, slash: {}, mcpLoaded: {}, mcpLoadedSess: {} };
+    for (const x of sessions) {
+      for (const [k, v] of Object.entries(x.mcp || {})) addTo(u.mcp, k, v);
+      for (const [srv, tools] of Object.entries(x.mcp_tools || {})) { u.mcpTools[srv] ??= {}; for (const [t, n] of Object.entries(tools)) addTo(u.mcpTools[srv], t, n); }
+      for (const [k, v] of Object.entries(x.skills || {})) addTo(u.skills, k, v);
+      for (const [k, v] of Object.entries(x.agents || {})) addTo(u.agents, k, v);
+      for (const [k, v] of Object.entries(x.agent_tokens || {})) addTo(u.agentTok, k, v);
+      for (const [k, v] of Object.entries(x.slash || {})) addTo(u.slash, k, v);
+      for (const [k, v] of Object.entries(x.measured_context?.tools_mcp || {})) { u.mcpLoaded[k] = Math.max(u.mcpLoaded[k] || 0, v); addTo(u.mcpLoadedSess, k, 1); }
+    }
+    return u;
+  }
+
+  // items visible at a node: global items + parent CLAUDE.md + own items
+  function scopeItems(n) {
+    const own = (n.proj?.items || []).map(id => M.items.get(id)).filter(Boolean);
+    const parent = (n.proj?.ancestor_claude_md || []).map(p => M.byPath.get(p)).filter(Boolean);
+    return { own, parent, global: M.globalItems };
+  }
+  const findItem = (kind, name) => M.s.items.filter(i => i.kind === kind && (i.name === name || i.name.endsWith(":" + name) || i.name.split("@")[0] === name));
+  const owner = (i, n) => !i ? "unknown" : GLOBAL_SCOPES.has(i.scope) ? (i.scope === "builtin" ? "builtin" : "global") : i.scope_path === n.id ? "own" : "parent";
+  const OWNER_PILL = { builtin: '<span class="pill">built-in</span>', global: '<span class="pill acc">global</span>', own: '<span class="pill good">own</span>', parent: '<span class="pill warn">parent</span>', unknown: '<span class="pill">unlisted</span>' };
+
+  // ---------- render tree
+  function renderTree() {
+    const q = st.q.toLowerCase();
+    const match = n => !q || n.label.toLowerCase().includes(q) || n.children.some(match);
+    const li = n => {
+      if (!match(n)) return "";
+      const kids = n.children.filter(match);
+      const open = q ? true : st.open.has(n.id);
+      const meta = n.kind === "group" ? "" : n.all.length ? `${n.all.length} · ${fmt$(n.cost)}` : "idle";
+      const tag = n.kind === "worktree" ? '<span class="k">worktree</span>' : n.kind === "global" ? '<span class="k">~/.claude · account · connectors</span>' : "";
+      const name = n.kind === "project" || n.kind === "worktree" ? shortLabel(n) : n.label;
+      return `<li role="treeitem" aria-expanded="${kids.length ? open : ""}">
+        <div class="node${!n.all.length && n.kind !== "global" ? " dim" : ""}" data-id="${esc(n.id)}" aria-selected="${st.sel === n.id}" title="${esc(n.label)}">
+          ${kids.length ? `<button class="tw" type="button" data-tw="${esc(n.id)}" aria-label="${open ? "Collapse" : "Expand"}">${open ? "▼" : "▶"}</button>` : "<span></span>"}
+          <span class="lbl"><b>${esc(name)}</b>${tag}</span><span class="meta">${meta}</span>
+        </div>
+        ${kids.length && open ? `<ul role="group">${kids.map(li).join("")}</ul>` : ""}</li>`;
+    };
+    $("#tree").innerHTML = li(M.nodes.get(GLOBAL));
+  }
+  function shortLabel(n) {
+    const par = M.nodes.get(n.parent);
+    if (par?.proj && n.label.startsWith(par.label + "/")) return n.label.slice(par.label.length + 1).replace(/^\.claude\/worktrees\//, "");
+    return n.label;
+  }
+  $("#tree").addEventListener("click", e => {
+    const tw = e.target.closest("[data-tw]");
+    if (tw) { const id = tw.dataset.tw; st.open.has(id) ? st.open.delete(id) : st.open.add(id); store.set("open", [...st.open]); renderTree(); return; }
+    const nd = e.target.closest(".node");
+    if (nd) select(nd.dataset.id);
+  });
+  $("#q").addEventListener("input", e => { st.q = e.target.value; renderTree(); });
+
+  function select(id) {
+    if (!M.nodes.has(id)) id = GLOBAL;
+    st.sel = id; store.set("sel", id);
+    for (let p = M.nodes.get(id).parent; p; p = M.nodes.get(p)?.parent) st.open.add(p);
+    store.set("open", [...st.open]);
+    history.replaceState(null, "", "#" + encodeURIComponent(id));
+    renderTree(); renderDetail();
+  }
+
+  // ---------- render detail
+  function stackBar(layers) {
+    const total = sum(LAYERS.map(([k]) => layers[k])) || 1;
+    return `<div class="stack" role="img" aria-label="Context by owner">${LAYERS.map(([k, , c]) => layers[k] ? `<span style="flex-basis:${(layers[k] / total * 100).toFixed(2)}%;background:var(${c})" title="${esc(k)}"></span>` : "").join("")}</div>
+      <ul class="legend">${LAYERS.map(([k, label, c, hint]) => `<li><i style="background:var(${c})"></i><span>${label}</span><b>${fmtT(layers[k])}</b><small>${hint}</small></li>`).join("")}</ul>`;
+  }
+
+  function avgLayers(sessions, n) {
+    const withMc = sessions.filter(x => x.measured_context);
+    const base = withMc.length ? withMc : sessions;
+    if (!base.length) {
+      const so = scopeItems(n);
+      return { builtin: (M.s.latest_context?.system || 0) + (M.s.latest_context?.tools_builtin || 0), global: M.s.totals.global_always_tokens_est || 0,
+               parent: sum(so.parent.map(i => i.tokens_always)), own: sum(so.own.map(i => i.tokens_always)) };
+    }
+    const L = { builtin: 0, global: 0, parent: 0, own: 0 };
+    for (const x of base) { const c = M.sessCalc.get(x.id).layers; for (const k in L) L[k] += c[k]; }
+    for (const k in L) L[k] = Math.round(L[k] / base.length);
+    return L;
+  }
+
+  function renderDetail() {
+    const n = M.nodes.get(st.sel);
+    const isGlobal = n.id === GLOBAL;
+    const sessions = isGlobal ? M.s.sessions : n.sessions;   // own sessions (not descendants) for project detail
+    const scopeSess = isGlobal ? M.s.sessions : n.all;
+    const crumbs = [];
+    for (let p = n; p; p = M.nodes.get(p.parent)) crumbs.unshift(p);
+    const u = usage(scopeSess);
+    const layers = avgLayers(scopeSess, n);
+    const carryShared = sum(scopeSess.map(x => M.sessCalc.get(x.id).carryShared));
+    const carryOwn = sum(scopeSess.map(x => M.sessCalc.get(x.id).carryOwn));
+    const p = n.proj;
+
+    let html = `<div class="crumbs">${crumbs.map((c, i) => i < crumbs.length - 1 ? `<button type="button" data-go="${esc(c.id)}">${esc(c.kind === "project" || c.kind === "worktree" ? shortLabel(c) : c.label)}</button><span>›</span>` : "").join("")}</div>
+      <div class="sec-head"><h2>${esc(isGlobal ? "Global" : n.label)}</h2>
+        ${n.kind === "worktree" ? `<span class="pill">git worktree${p?.worktree_of ? " of " + esc(p.worktree_of) : ""}</span>` : ""}
+        ${p?.missing ? '<span class="pill warn">folder not found</span>' : ""}
+        <p>${isGlobal ? "~/.claude, claude.ai account plugins and skills, connectors, and Claude Code built-ins. Every session below inherits this." : n.kind === "group" ? "Folders with Claude config but no recorded sessions." : `Last active ${esc(ago(n.last))}. ${n.children.length ? `Totals include ${n.children.length} nested folder${n.children.length > 1 ? "s" : ""}.` : ""}`}</p></div>`;
+
+    if (n.kind === "group") {
+      html += table(["Folder", "Own tokens", "Items"], n.children.map(c => [`<button class="btn" type="button" data-go="${esc(c.id)}">${esc(c.label)}</button>`, fmtT(c.proj?.own_always_tokens), Object.entries(c.proj?.counts || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "—"]), [1]);
+      $("#detail").innerHTML = html; return;
+    }
+
+    html += `<div class="kpis">
+      ${kpi("Sessions", String(scopeSess.length), isGlobal ? `${M.s.totals.projects} projects` : `${n.sessions.length} here${n.children.length ? ` · ${scopeSess.length - n.sessions.length} nested` : ""}`)}
+      ${kpi("Tokens", fmtT(sum(scopeSess.map(x => x.tokens?.total))), "input + cache + output")}
+      ${kpi("Cost", fmt$(sum(scopeSess.map(x => x.cost))), "API-equivalent")}
+      ${kpi("Baseline / session", fmtT(sum(LAYERS.map(([k]) => layers[k]))), "avg context before first message")}
+      ${kpi(isGlobal ? "Shared carry cost" : "Shared carry cost", fmt$(carryShared), isGlobal ? "re-reading built-in + global context each turn" : `inherited context · ${fmt$(carryOwn)} for own`)}
+    </div>`;
+
+    html += `<section class="panel"><div class="sec-head"><h3>Who owns this context</h3><p>${isGlobal ? "Average across all sessions with measured context." : "Average per session at this level. Change inherited parts at the level that owns them."}</p></div>${stackBar(layers)}</section>`;
+
+    if (isGlobal) html += costShareSection();
+    else html += inheritSection(n);
+
+    html += `<div class="sections">
+      ${mcpSection(n, u, scopeSess)}
+      ${skillsSection(n, u, scopeSess)}
+      ${pluginsSection(n, u)}
+      ${agentsSection(n, u)}
+      ${filesSection(n)}
+      ${sessionsSection(isGlobal ? M.s.sessions : scopeSess, isGlobal)}
+    </div>`;
+    $("#detail").innerHTML = html;
+  }
+  $("#detail").addEventListener("click", e => { const b = e.target.closest("[data-go]"); if (b) select(b.dataset.go); });
+
+  const kpi = (e, v, s) => `<div class="kpi"><span class="eyebrow">${esc(e)}</span><span class="v">${v}</span><span class="s">${esc(s)}</span></div>`;
+  function table(head, rows, numeric = [], empty = "Nothing here.") {
+    if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
+    return `<div class="tablewrap"><table><thead><tr>${head.map((h, i) => `<th${numeric.includes(i) ? ' class="n"' : ""}>${esc(h)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${r.map((c, i) => `<td${numeric.includes(i) ? ' class="n"' : ""}>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  const section = (title, sub, body) => `<section class="panel"><div class="sec-head"><h3>${title}</h3><p>${sub}</p></div>${body}</section>`;
+
+  // Global: which projects pay for each shared item
+  function costShareSection() {
+    const projOf = x => { let id = x.project; while (id && M.nodes.get(id)?.parent && M.nodes.get(id).parent !== GLOBAL && M.nodes.get(id).parent !== "@idle") id = M.nodes.get(id).parent; return id || "(no project)"; };
+    const palette = ["--c1", "--c2", "--c3", "--c4", "--c5"];
+    const rows = [];
+    const shared = M.globalItems.filter(i => i.tokens_always > 0 && i.scope !== "builtin" && i.kind !== "plugin"); // plugin cost is the sum of its parts
+    for (const i of shared) {
+      const per = {};
+      for (const x of M.s.sessions) {
+        const mc = x.measured_context;
+        if (i.kind === "mcp" && mc && !(i.name in (mc.tools_mcp || {}))) continue; // server wasn't loaded in this session
+        addTo(per, projOf(x), M.sessCalc.get(x.id).carry(i.tokens_always));
+      }
+      const total = sum(Object.values(per));
+      if (total > 0) rows.push({ i, per, total });
+    }
+    rows.sort((a, b) => b.total - a.total);
+    const grand = sum(rows.map(r => r.total));
+    const top = rows.slice(0, 40).map(r => {
+      const parts = Object.entries(r.per).sort((a, b) => b[1] - a[1]);
+      const bar = parts.slice(0, 5).map(([pid, v], k) => `<span style="flex-basis:${(v / r.total * 100).toFixed(1)}%;background:var(${palette[k]})" title="${esc(pid)} ${fmt$(v)}"></span>`).join("");
+      const names = parts.slice(0, 3).map(([pid, v]) => `${esc(pid.replace(/^~\//, ""))} ${Math.round(v / r.total * 100)}%`).join(" · ") + (parts.length > 3 ? ` · +${parts.length - 3} more` : "");
+      return [`<div class="name">${esc(r.i.name)}</div><div class="sub">${esc(SCOPE_LABEL[r.i.scope] || r.i.scope)} · ${esc(r.i.kind)}</div>`,
+              fmtT(r.i.tokens_always), String(r.i.usage?.calls ?? 0), fmt$(r.total), `<div class="split">${bar}</div><div class="sub">${names}</div>`];
+    });
+    return section("Shared cost: who pays for global items", `Each global item is re-read on every turn of every session that loads it. ${fmt$(grand)} total across ${rows.length} items; the bar shows which top-level projects pay for it.`,
+      table(["Item", "Tokens", "Calls", "Carry cost", "Paid by"], top, [1, 2, 3]));
+  }
+
+  // Project: inherited vs own list
+  function inheritSection(n) {
+    const so = scopeItems(n);
+    const gTop = M.globalItems.filter(i => i.tokens_always > 0 && i.kind !== "plugin").sort((a, b) => b.tokens_always - a.tokens_always);
+    const rows = [
+      ...so.own.map(i => [OWNER_PILL.own, esc(i.name), esc(i.kind), fmtT(i.tokens_always)]),
+      ...so.parent.map(i => [OWNER_PILL.parent, `${esc(i.name)}<div class="sub">${esc(i.path)}</div>`, esc(i.kind), fmtT(i.tokens_always)]),
+      [OWNER_PILL.global, `<button class="btn" type="button" data-go="${GLOBAL}">${gTop.length} global items</button>`, "mixed", fmtT(sum(gTop.map(i => i.tokens_always)))],
+    ];
+    return section("Inherited vs own", `${so.own.length} own items, ${so.parent.length} from parent folders, plus everything Global loads. Duplicates of global items are flagged in the Skills and MCP panels.`, table(["Owner", "Item", "Kind", "Tokens"], rows, [3]));
+  }
+
+  function mcpSection(n, u, sessions) {
+    const isGlobal = n.id === GLOBAL;
+    const so = scopeItems(n);
+    const servers = new Map();
+    const cand = isGlobal ? M.s.items.filter(i => i.kind === "mcp" && GLOBAL_SCOPES.has(i.scope)) : [...so.own.filter(i => i.kind === "mcp"), ...M.globalItems.filter(i => i.kind === "mcp")];
+    for (const i of cand) servers.set(i.name, { i, name: i.name });
+    for (const k of new Set([...Object.keys(u.mcpLoaded), ...Object.keys(u.mcp)])) if (!servers.has(k)) servers.set(k, { i: findItem("mcp", k)[0], name: k });
+    const ownNames = new Set(so.own.filter(i => i.kind === "mcp").map(i => i.name));
+    const rows = [...servers.values()].map(v => {
+      const calls = u.mcp[v.name] || 0;
+      const loaded = u.mcpLoadedSess[v.name] || 0;
+      const tools = Object.entries(u.mcpTools[v.name] || {}).sort((a, b) => b[1] - a[1]);
+      const own = ownNames.has(v.name) ? "own" : owner(v.i, n);
+      const dup = !isGlobal && own === "own" && M.globalItems.some(g => g.kind === "mcp" && g.name === v.name);
+      return { calls, loaded, tok: u.mcpLoaded[v.name] ?? v.i?.tokens_always ?? 0, html: [
+        `<div class="name">${esc(v.name)}</div>${tools.length ? `<div class="sub">${tools.slice(0, 6).map(([t, c]) => `${esc(t)} ${c}`).join(" · ")}${tools.length > 6 ? ` · +${tools.length - 6}` : ""}</div>` : ""}`,
+        OWNER_PILL[own] + (dup ? ' <span class="pill warn">also global</span>' : ""),
+        fmtT(u.mcpLoaded[v.name] ?? v.i?.tokens_always), String(loaded), String(calls),
+        sessions.length && !calls && (loaded || v.i?.tokens_always) ? '<span class="pill warn">unused here</span>' : calls ? '<span class="pill good">used</span>' : ""] };
+    }).sort((a, b) => b.calls - a.calls || b.tok - a.tok);
+    return section("MCP servers &amp; tools", `${rows.length} servers. Tokens = schema size measured in sessions; tool calls listed under each server.`,
+      table(["Server / tools", "Owner", "Tokens", "Sessions", "Calls", ""], rows.map(r => r.html), [2, 3, 4]));
+  }
+
+  function skillsSection(n, u, sessions) {
+    const isGlobal = n.id === GLOBAL;
+    const so = scopeItems(n);
+    const listed = isGlobal ? M.globalItems.filter(i => i.kind === "skill") : [...so.own.filter(i => i.kind === "skill"), ...M.globalItems.filter(i => i.kind === "skill")];
+    const listing = Math.max(0, ...sessions.map(x => x.measured_context?.skill_count || 0));
+    const used = Object.entries(u.skills).sort((a, b) => b[1] - a[1]).map(([name, c]) => {
+      const i = findItem("skill", name).sort((a, b) => (owner(a, n) === "own" ? -1 : 0) - (owner(b, n) === "own" ? -1 : 0))[0];
+      return [`<div class="name">${esc(name)}</div>${i?.plugin ? `<div class="sub">plugin ${esc(i.plugin)}</div>` : ""}`, OWNER_PILL[owner(i, n)], String(c), fmtT(i?.tokens_on_use)];
+    });
+    const ownSkills = so.own.filter(i => i.kind === "skill");
+    const dups = isGlobal ? [] : ownSkills.filter(i => M.globalItems.some(g => g.kind === "skill" && g.name === i.name));
+    const unusedOwn = ownSkills.filter(i => !u.skills[i.name]);
+    const notes = [
+      dups.length ? `<span class="pill warn">${dups.length} own skill${dups.length > 1 ? "s" : ""} duplicate global: ${dups.slice(0, 4).map(i => esc(i.name)).join(", ")}</span>` : "",
+      !isGlobal && unusedOwn.length && sessions.length ? `<span class="pill warn">${unusedOwn.length} own skill${unusedOwn.length > 1 ? "s" : ""} never invoked here</span>` : "",
+    ].join(" ");
+    return section("Skills", `${listing || listed.length} listed in context${listing ? " (measured)" : ""} · ${used.length} invoked${isGlobal ? "" : " in this project"}.`,
+      (notes.trim() ? `<div class="tags">${notes}</div>` : "") + table(["Invoked skill", "Owner", "Times", "Size on use"], used, [2, 3], "No skills invoked in these sessions."));
+  }
+
+  function pluginsSection(n, u) {
+    const isGlobal = n.id === GLOBAL;
+    const so = scopeItems(n);
+    const plugins = isGlobal ? M.globalItems.filter(i => i.kind === "plugin") : [...so.own.filter(i => i.kind === "plugin"), ...M.globalItems.filter(i => i.kind === "plugin")];
+    const rows = plugins.map(pl => {
+      const base = pl.name.split("@")[0];
+      const parts = M.s.items.filter(i => i.plugin && (i.plugin === pl.name || i.plugin === base || i.plugin.split("@")[0] === base) && i.scope === pl.scope && (i.scope_path ?? null) === (pl.scope_path ?? null));
+      const kinds = {};
+      for (const i of parts) addTo(kinds, i.kind, 1);
+      const invoked = sum(Object.entries(u.skills).filter(([k]) => k.startsWith(base + ":")).map(([, c]) => c))
+        + sum(parts.filter(i => i.kind === "mcp").map(i => u.mcp[i.name] || 0))
+        + sum(Object.entries(u.agents).filter(([k]) => k.startsWith(base + ":")).map(([, c]) => c));
+      return { invoked, tok: pl.tokens_always, html: [`<div class="name">${esc(pl.name)}</div><div class="sub">${Object.entries(kinds).map(([k, v]) => `${v} ${k}`).join(" · ") || "no parts found"}${pl.enabled === false ? " · disabled" : ""}</div>`,
+        OWNER_PILL[owner(pl, n)], fmtT(pl.tokens_always), String(invoked), invoked ? '<span class="pill good">used</span>' : '<span class="pill warn">unused here</span>'] };
+    }).sort((a, b) => b.invoked - a.invoked || b.tok - a.tok);
+    return section("Plugins", `${rows.length} plugins in scope. Tokens = all skills, agents and MCP servers the plugin adds; uses = calls to any of them.`,
+      table(["Plugin", "Owner", "Tokens", "Uses", ""], rows.map(r => r.html), [2, 3]));
+  }
+
+  function agentsSection(n, u) {
+    const rows = Object.entries(u.agents).sort((a, b) => b[1] - a[1]).map(([name, c]) => {
+      const i = findItem("agent", name)[0];
+      return [esc(name), OWNER_PILL[i ? owner(i, n) : "builtin"], String(c), fmtT(u.agentTok[name])];
+    });
+    const so = scopeItems(n);
+    const ownAgents = so.own.filter(i => i.kind === "agent").length;
+    return section("Agents", `${rows.length} agent types run${ownAgents ? ` · ${ownAgents} defined here` : ""}. Subagent tokens are on top of the session's own.`,
+      table(["Agent", "Owner", "Runs", "Subagent tokens"], rows, [2, 3], "No agents run in these sessions."));
+  }
+
+  function filesSection(n) {
+    const isGlobal = n.id === GLOBAL;
+    const so = scopeItems(n);
+    const files = isGlobal ? M.globalItems.filter(i => ["claude_md", "rule", "memory", "command"].includes(i.kind))
+      : [...so.own.filter(i => ["claude_md", "rule", "memory", "command"].includes(i.kind)), ...so.parent];
+    const rows = files.sort((a, b) => b.tokens_always - a.tokens_always).map(i => [`<div class="name">${esc(i.name)}</div><div class="sub">${esc(i.path || "")}${i.imports?.length ? ` · imports ${i.imports.length}` : ""}</div>`,
+      esc(i.kind), OWNER_PILL[owner(i, n)], fmtT(i.tokens_always)]);
+    return section("CLAUDE.md, rules, memory &amp; commands", "Always-on instruction files loaded at this level.", table(["File", "Kind", "Owner", "Tokens"], rows, [3], "No instruction files at this level."));
+  }
+
+  function sessionsSection(sessions, isGlobal) {
+    const rows = [...sessions].sort((a, b) => (b.last_ts || "").localeCompare(a.last_ts || "")).slice(0, 80).map(x => {
+      const c = M.sessCalc.get(x.id);
+      const mcps = Object.entries(x.mcp || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${esc(k)} ${v}`).join(" · ");
+      const sk = Object.keys(x.skills || {}).slice(0, 3).map(esc).join(", ");
+      return [`<div class="name mono">${esc(ago(x.last_ts))}</div><div class="sub">${esc(x.branch || "")} · ${esc((x.models || [])[0] || "")} · ${esc(x.entrypoint || "")}</div>`
+        + (isGlobal ? `<div class="sub">${esc(x.project || "")}</div>` : "") + (mcps || sk ? `<div class="sub">${mcps}${mcps && sk ? " · " : ""}${sk ? "skills: " + sk : ""}</div>` : ""),
+        String(x.turns ?? 0), fmtT(x.baseline_tokens), fmtT(x.tokens?.total), fmt$(x.cost), fmt$(c.carryShared)];
+    });
+    return section("Sessions", `${sessions.length} sessions${sessions.length > 80 ? ", latest 80 shown" : ""}. Baseline = measured context on the first turn.`,
+      table(["Session", "Turns", "Baseline", "Tokens", "Cost", "Shared carry"], rows, [1, 2, 3, 4, 5], "No sessions recorded here."));
+  }
+
+  // ---------- data
+  async function load() {
+    try {
+      const r = await fetch("snapshot.json", { cache: "no-store" });
+      const s = r.ok ? await r.json() : null;
+      if (!s || !s.items) { $("#note").textContent = "No snapshot found. Start the collector: python3 collector/collect.py serve"; return; }
+      st.snap = s; M = build(s);
+      $("#updated").textContent = "updated " + ago(s.generated_at);
+      $("#note").innerHTML = `${s.totals.projects} projects${s.totals.worktrees ? ` + ${s.totals.worktrees} worktrees` : ""} · ${s.sessions.length} sessions · ${s.items.length} items. ${s.meta?.pricing ? "" : "Carry cost uses built-in cache-read prices (this snapshot has no pricing table)."}`;
+      const hash = decodeURIComponent(location.hash.slice(1));
+      select(hash && M.nodes.has(hash) ? hash : st.sel);
+    } catch (e) { $("#note").textContent = "Could not load snapshot: " + e.message; }
+  }
+  $("#refresh").addEventListener("click", async () => { try { await fetch("api/refresh"); } catch {} setTimeout(load, 4000); });
+  window.addEventListener("hashchange", () => { const h = decodeURIComponent(location.hash.slice(1)); if (M && h && h !== st.sel) select(h); });
+  load();
+  setInterval(load, 60000);
+})();
+</script>

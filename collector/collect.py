@@ -1087,7 +1087,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
         "series": series,
         "duplicates": duplicates,
         "meta": {**{k: v for k, v in meta.items() if k != "settings"}, "elapsed_ms": int((time.time() - t0) * 1000),
-                 "transcript_files": len(files)},
+                 "transcript_files": len(files), "pricing": pricing},
     }
     return snap
 
@@ -1158,6 +1158,9 @@ def collect(cfg=None, probe=False) -> dict:
 
 # ---------------------------------------------------------------- serve
 
+PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html"}
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(REPO_DIR / "dashboard"), **kw)
@@ -1174,9 +1177,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path.split("?")[0] in ("/", "/index.html"):
-            # the page is authored as an artifact body; give it the same skeleton the artifact host adds
-            page = (REPO_DIR / "dashboard" / "index.html").read_text(encoding="utf-8")
+        page_file = PAGES.get(self.path.split("?")[0])
+        if page_file:
+            # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
+            page = (REPO_DIR / "dashboard" / page_file).read_text(encoding="utf-8")
             body = ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" '
                     'content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}'
                     '[hidden]{display:none!important}</style></head><body>' + page + "</body></html>").encode()
