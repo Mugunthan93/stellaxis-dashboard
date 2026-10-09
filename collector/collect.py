@@ -131,6 +131,22 @@ def norm_mcp(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name or "")
 
 
+_status_at = 0.0
+
+
+def status(phase: str, force: bool = True, **detail):
+    """Write ~/.stellaxis/status.json so a stalled run shows where it is stuck (e.g. a macOS
+    folder-permission prompt blocking a read in ~/Documents)."""
+    global _status_at
+    if not force and time.time() - _status_at < 1:
+        return
+    _status_at = time.time()
+    try:
+        write_json(STX_HOME / "status.json", {"phase": phase, "at": iso(now_utc()), "pid": os.getpid(), **detail})
+    except OSError:
+        pass
+
+
 def load_config() -> dict:
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     user = read_json(STX_HOME / "config.json", {}) or {}
@@ -508,6 +524,23 @@ def installed_plugins() -> list:
     return out
 
 
+def worktree_of(P: Path):
+    """Main repo of a git worktree (its .git is a file pointing into <repo>/.git/worktrees/<name>)."""
+    g = P / ".git"
+    if g.is_file():
+        m = re.match(r"gitdir:\s*(.+)", read_text(g, 4096).strip())
+        if m:
+            gd = Path(m.group(1).strip())
+            gd = gd if gd.is_absolute() else (P / gd).resolve()
+            if gd.parent.name == "worktrees":
+                return short_path(gd.parent.parent.parent)
+    parts = P.parts
+    if ".claude" in parts and "worktrees" in parts:
+        i = parts.index(".claude")
+        return short_path(Path(*parts[:i]))
+    return None
+
+
 def discover_projects(cfg: dict, cache: dict, transcript_cwds: set, claude_json: dict) -> list:
     roots = set(p for p in transcript_cwds if p)
     roots |= set((claude_json.get("projects") or {}).keys())
@@ -520,6 +553,8 @@ def discover_projects(cfg: dict, cache: dict, transcript_cwds: set, claude_json:
             base_depth = len(base.parts)
             for dirpath, dirnames, filenames in os.walk(base):
                 depth = len(Path(dirpath).parts) - base_depth
+                if depth <= 2:
+                    status("scanning folders", force=False, path=short_path(dirpath))
                 dirnames[:] = [d for d in dirnames if d not in excl and not (d.startswith(".") and d != ".claude")]
                 if depth >= cfg["scan_depth"]:
                     dirnames[:] = [d for d in dirnames if d == ".claude"]
@@ -596,8 +631,15 @@ def inventory(cfg: dict, cache: dict, transcript_cwds: set) -> tuple[list, list,
     # projects
     projects = []
     for proj in discover_projects(cfg, cache, transcript_cwds, cj):
+        status("reading project", force=False, path=short_path(proj))
         P = Path(proj)
         sp = short_path(P)
+        wt = worktree_of(P)
+        if wt:
+            # a worktree's .claude/ is a checkout of the main repo's files; count its sessions, not its items
+            projects.append({"path": sp, "abs": str(P), "items": [], "ancestor_claude_md": [], "has_git": True,
+                             "worktree_of": wt})
+            continue
         pitems = []
         for rel in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]:
             f = P / rel
@@ -717,6 +759,7 @@ def run_probes(items: list, cfg: dict, cache: dict, force=False):
         h = it["conf_hash"]
         if not force and h in probes and time.time() - probes[h].get("at", 0) < max_age:
             continue
+        status("probing MCP server", server=it["name"], scope=it["scope"])
         res = probe_stdio(conf, int(cfg.get("probe_timeout", 20)))
         res["at"] = time.time()
         probes[h] = res
@@ -1024,7 +1067,9 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             "baseline_median": sorted(recent_bl)[len(recent_bl) // 2] if recent_bl else None,
             "baseline_latest": recent_bl[0] if recent_bl else None,
             "global_always_tokens_est": tok(user_always),
-            "by_kind": dict(by_kind), "sessions": len(sess_list), "projects": len(projects_out),
+            "by_kind": dict(by_kind), "sessions": len(sess_list),
+            "projects": sum(1 for p in projects_out if not p.get("worktree_of")),
+            "worktrees": sum(1 for p in projects_out if p.get("worktree_of")),
             "active_sessions": sum(1 for s in sess_list if (s["last_ts"] or "") >= active_cut),
         },
         "latest_context": {
@@ -1093,6 +1138,7 @@ def collect(cfg=None, probe=False) -> dict:
         STX_HOME.mkdir(parents=True, exist_ok=True)
         cache_path = STX_HOME / "cache.json"
         cache = read_json(cache_path, {}) or {}
+        status("reading transcripts")
         if probe:
             # probe needs inventory first; run a pass to get items then probe
             files = parse_transcripts(cache)
@@ -1106,6 +1152,7 @@ def collect(cfg=None, probe=False) -> dict:
         append_history(snap)
         snap["history"] = load_history()
         write_json(STX_HOME / "snapshot.json", snap)
+        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"])
         return snap
 
 
@@ -1135,6 +1182,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     '[hidden]{display:none!important}</style></head><body>' + page + "</body></html>").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.split("?")[0] == "/api/status":
+            body = (STX_HOME / "status.json").read_bytes() if (STX_HOME / "status.json").exists() else b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)

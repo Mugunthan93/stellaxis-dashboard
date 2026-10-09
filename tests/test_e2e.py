@@ -73,6 +73,9 @@ class E2E(unittest.TestCase):
         w(proj / ".claude" / "agents" / "fleet" / "scout.md", "---\nname: scout\ndescription: Scouts\n---\nScout.\n")
         w(proj / "api" / "CLAUDE.md", "API notes\n")
         (proj / ".git").mkdir()
+        wt = proj / ".claude" / "worktrees" / "agent-1"
+        w(wt / ".claude" / "agents" / "planner.md", "---\nname: planner\ndescription: copy\n---\nPlan.\n")
+        w(wt / ".git", f"gitdir: {proj}/.git/worktrees/agent-1\n")
         enc = "-" + str(proj).strip("/").replace("/", "-")
         sid = "11111111-2222-3333-4444-555555555555"
         base = {"sessionId": sid, "cwd": str(proj), "version": "2.1.300", "entrypoint": "cli", "gitBranch": "main"}
@@ -99,6 +102,10 @@ class E2E(unittest.TestCase):
         sub = [{**base, "type": "assistant", "timestamp": "2026-10-01T10:00:30Z", "isSidechain": True,
                 "message": {"id": "s1", "model": "claude-sonnet-5-5", "content": [], "usage": u2}}]
         w(C / "projects" / enc / sid / "subagents" / "agent-ag1.jsonl", jl(sub))
+        wenc = "-" + str(wt).strip("/").replace("/", "-").replace(".", "-")
+        w(C / "projects" / wenc / "w1.jsonl", jl([{**base, "cwd": str(wt), "sessionId": "w1", "type": "user",
+                                                   "timestamp": "2026-10-02T10:00:00Z",
+                                                   "message": {"role": "user", "content": "hi"}}]))
         cls.env = {**os.environ, "HOME": str(H), "STELLAXIS_HOME": str(H / ".stellaxis")}
         cls.env.pop("CLAUDE_CONFIG_DIR", None)
         (H / ".stellaxis").mkdir()
@@ -131,6 +138,16 @@ class E2E(unittest.TestCase):
         cm = self.items["claude_md:user:~/.claude/CLAUDE.md"]
         self.assertGreater(cm["bytes_always"], 400, "imports should be counted")
 
+    def test_worktree(self):
+        p = next(p for p in self.snap["projects"] if p["path"].endswith("worktrees/agent-1"))
+        self.assertEqual(p["worktree_of"], "~/code/mesell")
+        self.assertFalse(any("worktrees" in i["id"] for i in self.snap["items"]))
+
+    def test_status_file(self):
+        st = json.loads((self.home / ".stellaxis" / "status.json").read_text())
+        self.assertEqual(st["phase"], "idle")
+        self.assertIn("last_snapshot", st)
+
     def test_usage(self):
         self.assertEqual(self.items["skill:user:foo"]["usage"]["calls"], 1)
         self.assertEqual(self.items["skill:user:stale"]["usage"]["calls"], 0)
@@ -138,7 +155,7 @@ class E2E(unittest.TestCase):
         self.assertEqual(self.items["command:user:deploy"]["usage"]["calls"], 1)
         self.assertEqual(self.items["mcp:local:~/code/mesell:localsrv"]["usage"]["calls"], 1)
         self.assertEqual(self.items["skill:user:toolkit@mkt:toolkit:lint"]["usage"]["calls"], 1)
-        s = self.snap["sessions"][0]
+        s = next(x for x in self.snap["sessions"] if x["id"].startswith("1111"))
         self.assertEqual(s["baseline_tokens"], 20010)
         self.assertEqual(s["subagent_files"], 1)
         # m1 duplicated line must be counted once: 2 opus msgs + 1 sonnet subagent msg

@@ -296,6 +296,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
       feed.local = "ok"; renderFeed();
       const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
       if (st.mode !== "live") setData(s, local ? "local" : "static");
+      if (local) fetch("api/status", { cache: "no-store" }).then(r => r.json()).then(c => { feed.collector = c; renderFeed(); }).catch(() => {});
       if (local && !pollTimer) pollTimer = setInterval(loadFile, Math.max(15, intervalSec(s.interval)) * 1000);
       return true;
     } catch { feed.local = "none"; renderFeed(); return false; }
@@ -303,13 +304,22 @@ footer { font-size: 0.8rem; color: var(--muted); }
   function intervalSec(v) { const m = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(String(v || "60s").trim()); return m ? +m[1] * ({ "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]]) : 60; }
 
   let mcp = null;
-  const feed = { app: "checking", local: "checking" };
+  const feed = { app: "checking", local: "checking", collector: null };
   function renderFeed() {
     const el = $("#feed-diag");
     const app = { checking: "checking…", none: "not available here (open this page in the Claude desktop app on your Mac)",
       ok: "connected", waiting: "waiting for the Mac server…" }[feed.app] || feed.app;
     const local = { checking: "checking…", ok: "loaded", none: "not found" }[feed.local] || feed.local;
-    el.innerHTML = `<b>Desktop live feed:</b> ${esc(app)} &nbsp;·&nbsp; <b>Snapshot file:</b> ${esc(local)}`;
+    let col = "";
+    const c = feed.collector;
+    if (c && c.phase) {
+      const mins = (Date.now() - Date.parse(c.at)) / 60000;
+      col = c.phase === "idle"
+        ? ` &nbsp;·&nbsp; <b>Collector:</b> idle, last run ${esc(ago(c.last_snapshot))}`
+        : ` &nbsp;·&nbsp; <b>Collector:</b> ${esc(c.phase)} ${esc(c.path || c.server || "")} for ${Math.max(1, Math.round(mins))} min` +
+          (mins > 2 ? ` <span class="pill warn">stuck? macOS may be waiting for you to allow folder access</span>` : "");
+    }
+    el.innerHTML = `<b>Desktop live feed:</b> ${esc(app)} &nbsp;·&nbsp; <b>Snapshot file:</b> ${esc(local)}${col}`;
   }
   async function connectLive() {
     const c = window.claude;
@@ -377,7 +387,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     set(1, fmtT(t.global_always_tokens_est), "estimated from config files and listings");
     set(2, fmtT(t.today.tokens), `${fmt$(t.today.cost)} · ${t.today.sessions} sessions`);
     set(3, fmt$(t.month.cost), `${fmtT(t.month.tokens)} tokens · ${t.month.sessions} sessions`);
-    set(4, String(t.active_sessions), `of ${t.sessions} sessions in ${t.projects} projects`);
+    set(4, String(t.active_sessions), `of ${t.sessions} sessions in ${t.projects} projects${t.worktrees ? ` + ${t.worktrees} worktrees` : ""}`);
   }
 
   function renderBudget(s) {
@@ -578,7 +588,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   function renderProjects(s) {
     $("#projects-table tbody").innerHTML = s.projects.length ? s.projects.map(p => {
       const counts = Object.entries(p.counts || {}).map(([k, n]) => `<span class="pill">${n} ${esc((KIND_LABEL[k] || k).toLowerCase())}</span>`).join(" ");
-      return `<tr><td><div class="name">${esc(p.path)}</div>${p.missing ? `<div class="sub">folder not found on this machine</div>` : ""}${p.ancestor_claude_md?.length ? `<div class="sub">also loads ${p.ancestor_claude_md.map(esc).join(", ")}</div>` : ""}</td>
+      return `<tr><td><div class="name">${esc(p.path)}</div>${p.missing ? `<div class="sub">folder not found on this machine</div>` : ""}${p.worktree_of ? `<div class="sub">git worktree of ${esc(p.worktree_of)}</div>` : ""}${p.ancestor_claude_md?.length ? `<div class="sub">also loads ${p.ancestor_claude_md.map(esc).join(", ")}</div>` : ""}</td>
         <td class="n">${p.sessions}</td><td class="n">${fmtT(p.tokens)}</td><td class="n">${fmt$(p.cost)}</td>
         <td class="n">${fmtT(p.own_always_tokens)}</td><td class="n">${fmtT(p.est_always_tokens)}</td><td class="n">${fmtT(p.baseline_median)}</td>
         <td><div class="tags">${counts || '<span class="muted">none</span>'}</div></td><td class="n">${ago(p.last_active)}</td></tr>`;
