@@ -173,7 +173,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   // Fallback cache-read $/Mtok if the snapshot predates meta.pricing
   const FALLBACK_PRICING = { "claude-fable": 0.25, "claude-opus-5-5": 0.20, "claude-opus": 0.50, "claude-sonnet-5": 0.20, "claude-sonnet": 0.30, "claude-haiku-5": 0.01, "claude-haiku": 0.10 };
 
-  const st = { snap: null, sel: store.get("sel", GLOBAL), open: new Set(store.get("open", [GLOBAL])), q: "" };
+  const st = { snap: null, sel: store.get("sel", GLOBAL), open: new Set(store.get("open", [GLOBAL, "@dir:~"])), q: "" };
   let M = null; // derived model
 
   // ---------- model
@@ -188,16 +188,40 @@ footer { font-size: 0.8rem; color: var(--muted); }
   }
 
   function build(s) {
+    const pricing = s.meta?.pricing;
+    // connector MCP servers measured in any session but missing from the inventory (it lists only the latest session's)
+    const measured = {}, calls = {}, sessN = {}, last = {};
+    for (const x of s.sessions) {
+      for (const [k, v] of Object.entries(x.measured_context?.tools_mcp || {})) { measured[k] = Math.max(measured[k] || 0, v); addTo(sessN, k, 1); if (!last[k] || x.last_ts > last[k]) last[k] = x.last_ts; }
+      for (const [k, v] of Object.entries(x.mcp || {})) addTo(calls, k, v);
+    }
+    const known = new Set(s.items.filter(i => i.kind === "mcp").map(i => i.name));
+    const synth = Object.keys(measured).filter(k => !known.has(k)).map(k => ({ id: "mcp:measured:" + k, kind: "mcp", name: k, scope: "connector", path: null,
+      tokens_always: measured[k], tokens_on_use: 0, measured: true, source: "measured", usage: { calls: calls[k] || 0, sessions: sessN[k], last_used: last[k] } }));
+    s = { ...s, items: [...s.items, ...synth] };
+    const globalItems = s.items.filter(i => GLOBAL_SCOPES.has(i.scope));
     const items = new Map(s.items.map(i => [i.id, i]));
     const byPath = new Map(s.items.filter(i => i.path).map(i => [i.path, i]));
-    const pricing = s.meta?.pricing;
-    const globalItems = s.items.filter(i => GLOBAL_SCOPES.has(i.scope));
     const globalTokens = s.totals.global_always_tokens_est || sum(globalItems.filter(i => i.scope !== "builtin").map(i => i.tokens_always));
 
     // project nodes, nested by worktree_of or longest path prefix
     const nodes = new Map();
     nodes.set(GLOBAL, { id: GLOBAL, label: "Global", kind: "global", children: [], parent: null, sessions: [] });
     const paths = s.projects.map(p => p.path);
+    // folder nodes: Global → ~ → Documents → … so every project sits in one path tree
+    function folderFor(path) {
+      const m = /^(~|\/)(.*)$/.exec(path);
+      if (!m) return GLOBAL;                      // "(unknown)" and other non-paths stay under Global
+      const segs = m[2].split("/").filter(Boolean).slice(0, -1);
+      let parent = GLOBAL, cur = m[1] === "~" ? "~" : "";
+      const ensure = (id, label, par) => {
+        if (!nodes.has(id)) { nodes.set(id, { id, label, path: label, kind: "folder", children: [], sessions: [], parent: par }); nodes.get(par).children.push(nodes.get(id)); }
+        return id;
+      };
+      parent = ensure("@dir:" + (cur || "/"), cur || "/", GLOBAL);
+      for (const seg of segs) { cur = cur + "/" + seg; parent = ensure("@dir:" + cur, cur, parent); }
+      return parent;
+    }
     for (const p of s.projects) nodes.set(p.path, { id: p.path, label: p.path, kind: p.worktree_of || /\/\.claude\/worktrees\//.test(p.path) ? "worktree" : "project", proj: p, children: [], sessions: [] });
     for (const p of s.projects) {
       let parent = p.worktree_of && nodes.has(p.worktree_of) ? p.worktree_of : null;
@@ -206,6 +230,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
         parent = cands.sort((a, b) => b.length - a.length)[0] || GLOBAL;
       }
       const n = nodes.get(p.path);
+      if (parent === GLOBAL) parent = folderFor(p.path); // top-level projects hang off their folder path
       n.parent = parent;
       nodes.get(parent).children.push(n);
     }
@@ -244,15 +269,19 @@ footer { font-size: 0.8rem; color: var(--muted); }
     const g = nodes.get(GLOBAL);
     for (const c of g.children) roll(c);
     roll(g);
-    // folders with no sessions anywhere below fold into one dimmed group
-    const idle = g.children.filter(c => !c.all.length);
-    g.children = g.children.filter(c => c.all.length);
-    if (idle.length) {
-      const grp = { id: "@idle", label: `No sessions (${idle.length})`, kind: "group", children: idle, parent: GLOBAL, sessions: [], all: [], tokens: 0, cost: 0, carryShared: 0 };
-      idle.forEach(c => c.parent = "@idle");
-      nodes.set(grp.id, grp);
-      g.children.push(grp);
-    }
+    // collapse folder → single-folder chains (~/Library/Application Support/Claude/… becomes one node)
+    const squash = n => {
+      for (const c of n.children) squash(c);
+      if (n.kind !== "folder" || n.id === "@dir:~" || n.id === "@dir:/") return;
+      while (n.children.length === 1 && n.children[0].kind === "folder") {
+        const only = n.children[0];
+        nodes.delete(only.id);
+        n.children = only.children;
+        n.children.forEach(c => c.parent = n.id);
+        n.path = only.path; n.label = only.path;
+      }
+    };
+    squash(g);
     return { s, items, byPath, nodes, sessCalc, globalItems, pricing };
   }
 
@@ -278,8 +307,9 @@ footer { font-size: 0.8rem; color: var(--muted); }
     return { own, parent, global: M.globalItems };
   }
   const findItem = (kind, name) => M.s.items.filter(i => i.kind === kind && (i.name === name || i.name.endsWith(":" + name) || i.name.split("@")[0] === name));
-  const owner = (i, n) => !i ? "unknown" : GLOBAL_SCOPES.has(i.scope) ? (i.scope === "builtin" ? "builtin" : "global") : i.scope_path === n.id ? "own" : "parent";
-  const OWNER_PILL = { builtin: '<span class="pill">built-in</span>', global: '<span class="pill acc">global</span>', own: '<span class="pill good">own</span>', parent: '<span class="pill warn">parent</span>', unknown: '<span class="pill">unlisted</span>' };
+  const owner = (i, n) => !i ? "unknown" : GLOBAL_SCOPES.has(i.scope) ? (i.scope === "builtin" ? "builtin" : "global")
+    : !n.proj ? "project" : i.scope_path === n.id ? "own" : "parent"; // Global and folder views: a project's own item
+  const OWNER_PILL = { builtin: '<span class="pill">built-in</span>', global: '<span class="pill acc">global</span>', own: '<span class="pill good">own</span>', parent: '<span class="pill warn">parent</span>', project: '<span class="pill good">project</span>', unknown: '<span class="pill">unlisted</span>' };
 
   // ---------- render tree
   function renderTree() {
@@ -289,9 +319,9 @@ footer { font-size: 0.8rem; color: var(--muted); }
       if (!match(n)) return "";
       const kids = n.children.filter(match);
       const open = q ? true : st.open.has(n.id);
-      const meta = n.kind === "group" ? "" : n.all.length ? `${n.all.length} · ${fmt$(n.cost)}` : "idle";
-      const tag = n.kind === "worktree" ? '<span class="k">worktree</span>' : n.kind === "global" ? '<span class="k">~/.claude · account · connectors</span>' : "";
-      const name = n.kind === "project" || n.kind === "worktree" ? shortLabel(n) : n.label;
+      const meta = n.all.length ? `${n.all.length} · ${fmt$(n.cost)}` : "idle";
+      const tag = n.kind === "worktree" ? '<span class="k">worktree</span>' : n.kind === "folder" ? '<span class="k">folder</span>' : n.kind === "global" ? '<span class="k">~/.claude · account · connectors</span>' : "";
+      const name = n.kind === "global" ? n.label : shortLabel(n);
       return `<li role="treeitem" aria-expanded="${kids.length ? open : ""}">
         <div class="node${!n.all.length && n.kind !== "global" ? " dim" : ""}" data-id="${esc(n.id)}" aria-selected="${st.sel === n.id}" title="${esc(n.label)}">
           ${kids.length ? `<button class="tw" type="button" data-tw="${esc(n.id)}" aria-label="${open ? "Collapse" : "Expand"}">${open ? "▼" : "▶"}</button>` : "<span></span>"}
@@ -303,7 +333,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
   }
   function shortLabel(n) {
     const par = M.nodes.get(n.parent);
-    if (par?.proj && n.label.startsWith(par.label + "/")) return n.label.slice(par.label.length + 1).replace(/^\.claude\/worktrees\//, "");
+    const base = par?.proj ? par.label : par?.path;
+    if (base && n.label.startsWith(base + "/")) return n.label.slice(base.length + 1).replace(/^\.claude\/worktrees\//, "");
     return n.label;
   }
   $("#tree").addEventListener("click", e => {
@@ -357,16 +388,12 @@ footer { font-size: 0.8rem; color: var(--muted); }
     const carryOwn = sum(scopeSess.map(x => M.sessCalc.get(x.id).carryOwn));
     const p = n.proj;
 
-    let html = `<div class="crumbs">${crumbs.map((c, i) => i < crumbs.length - 1 ? `<button type="button" data-go="${esc(c.id)}">${esc(c.kind === "project" || c.kind === "worktree" ? shortLabel(c) : c.label)}</button><span>›</span>` : "").join("")}</div>
+    let html = `<div class="crumbs">${crumbs.map((c, i) => i < crumbs.length - 1 ? `<button type="button" data-go="${esc(c.id)}">${esc(c.kind === "global" ? c.label : shortLabel(c))}</button><span>›</span>` : "").join("")}</div>
       <div class="sec-head"><h2>${esc(isGlobal ? "Global" : n.label)}</h2>
         ${n.kind === "worktree" ? `<span class="pill">git worktree${p?.worktree_of ? " of " + esc(p.worktree_of) : ""}</span>` : ""}
         ${p?.missing ? '<span class="pill warn">folder not found</span>' : ""}
-        <p>${isGlobal ? "~/.claude, claude.ai account plugins and skills, connectors, and Claude Code built-ins. Every session below inherits this." : n.kind === "group" ? "Folders with Claude config but no recorded sessions." : `Last active ${esc(ago(n.last))}. ${n.children.length ? `Totals include ${n.children.length} nested folder${n.children.length > 1 ? "s" : ""}.` : ""}`}</p></div>`;
+        <p>${isGlobal ? "~/.claude, claude.ai account plugins and skills, connectors, and Claude Code built-ins. Every session below inherits this." : n.kind === "folder" ? `Folder. Totals add up the ${n.children.length} item${n.children.length > 1 ? "s" : ""} below. Last active ${esc(ago(n.last))}.` : `Last active ${esc(ago(n.last))}. ${n.children.length ? `Totals include ${n.children.length} nested folder${n.children.length > 1 ? "s" : ""}.` : ""}`}</p></div>`;
 
-    if (n.kind === "group") {
-      html += table(["Folder", "Own tokens", "Items"], n.children.map(c => [`<button class="btn" type="button" data-go="${esc(c.id)}">${esc(c.label)}</button>`, fmtT(c.proj?.own_always_tokens), Object.entries(c.proj?.counts || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "—"]), [1]);
-      $("#detail").innerHTML = html; return;
-    }
 
     html += `<div class="kpis">
       ${kpi("Sessions", String(scopeSess.length), isGlobal ? `${M.s.totals.projects} projects` : `${n.sessions.length} here${n.children.length ? ` · ${scopeSess.length - n.sessions.length} nested` : ""}`)}
@@ -379,6 +406,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     html += `<section class="panel"><div class="sec-head"><h3>Who owns this context</h3><p>${isGlobal ? "Average across all sessions with measured context." : "Average per session at this level. Change inherited parts at the level that owns them."}</p></div>${stackBar(layers)}</section>`;
 
     if (isGlobal) html += costShareSection();
+    else if (n.kind === "folder") html += childrenSection(n);
     else html += inheritSection(n);
 
     html += `<div class="sections">
@@ -403,7 +431,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
   // Global: which projects pay for each shared item
   function costShareSection() {
-    const projOf = x => { let id = x.project; while (id && M.nodes.get(id)?.parent && M.nodes.get(id).parent !== GLOBAL && M.nodes.get(id).parent !== "@idle") id = M.nodes.get(id).parent; return id || "(no project)"; };
+    const isProj = id => ["project", "worktree"].includes(M.nodes.get(id)?.kind);
+    const projOf = x => { let id = x.project; if (!isProj(id)) return id || "(no project)"; while (isProj(M.nodes.get(id).parent)) id = M.nodes.get(id).parent; return id; };
     const palette = ["--c1", "--c2", "--c3", "--c4", "--c5"];
     const rows = [];
     const shared = M.globalItems.filter(i => i.tokens_always > 0 && i.scope !== "builtin" && i.kind !== "plugin"); // plugin cost is the sum of its parts
@@ -428,6 +457,13 @@ footer { font-size: 0.8rem; color: var(--muted); }
     });
     return section("Shared cost: who pays for global items", `Each global item is re-read on every turn of every session that loads it. ${fmt$(grand)} total across ${rows.length} items; the bar shows which top-level projects pay for it.`,
       table(["Item", "Tokens", "Calls", "Carry cost", "Paid by"], top, [1, 2, 3]));
+  }
+
+  // Folder: what's inside
+  function childrenSection(n) {
+    const rows = n.children.map(c => [`<button class="btn" type="button" data-go="${esc(c.id)}">${esc(shortLabel(c))}</button>`, esc(c.kind),
+      String(c.all.length), fmtT(c.tokens), fmt$(c.cost), fmt$(c.carryShared), esc(c.all.length ? ago(c.last) : "idle")]);
+    return section("Inside this folder", "Projects and subfolders, highest cost first.", table(["Name", "Kind", "Sessions", "Tokens", "Cost", "Shared carry", "Last active"], rows, [2, 3, 4, 5]));
   }
 
   // Project: inherited vs own list
@@ -482,7 +518,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
       dups.length ? `<span class="pill warn">${dups.length} own skill${dups.length > 1 ? "s" : ""} duplicate global: ${dups.slice(0, 4).map(i => esc(i.name)).join(", ")}</span>` : "",
       !isGlobal && unusedOwn.length && sessions.length ? `<span class="pill warn">${unusedOwn.length} own skill${unusedOwn.length > 1 ? "s" : ""} never invoked here</span>` : "",
     ].join(" ");
-    return section("Skills", `${listing || listed.length} listed in context${listing ? " (measured)" : ""} · ${used.length} invoked${isGlobal ? "" : " in this project"}.`,
+    return section("Skills", `${listing || listed.length} listed in context${listing ? " (measured)" : ""} · ${used.length} invoked${isGlobal ? "" : n.kind === "folder" ? " in this folder's sessions" : " in this project"}.`,
       (notes.trim() ? `<div class="tags">${notes}</div>` : "") + table(["Invoked skill", "Owner", "Times", "Size on use"], used, [2, 3], "No skills invoked in these sessions."));
   }
 
@@ -548,6 +584,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
       st.snap = s; M = build(s);
       $("#updated").textContent = "updated " + ago(s.generated_at);
       $("#note").innerHTML = `${s.totals.projects} projects${s.totals.worktrees ? ` + ${s.totals.worktrees} worktrees` : ""} · ${s.sessions.length} sessions · ${s.items.length} items. ${s.meta?.pricing ? "" : "Carry cost uses built-in cache-read prices (this snapshot has no pricing table)."}`;
+      if (!store.get("homeOpened", false)) { st.open.add("@dir:~"); store.set("homeOpened", true); }
       const hash = decodeURIComponent(location.hash.slice(1));
       select(hash && M.nodes.has(hash) ? hash : st.sel);
     } catch (e) { $("#note").textContent = "Could not load snapshot: " + e.message; }
