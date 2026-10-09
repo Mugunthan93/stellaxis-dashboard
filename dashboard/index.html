@@ -314,7 +314,9 @@ footer { font-size: 0.8rem; color: var(--muted); }
     const c = feed.collector;
     if (c && c.phase) {
       const mins = (Date.now() - Date.parse(c.at)) / 60000;
-      col = c.phase === "idle"
+      col = c.phase === "not running"
+        ? ` &nbsp;·&nbsp; <b>Collector:</b> background service not running <span class="pill warn">run: launchctl kickstart -k gui/$(id -u)/com.stellaxis.collector</span>`
+        : c.phase === "idle"
         ? ` &nbsp;·&nbsp; <b>Collector:</b> idle, last run ${esc(ago(c.last_snapshot))}`
         : ` &nbsp;·&nbsp; <b>Collector:</b> ${esc(c.phase)} ${esc(c.path || c.server || "")} for ${Math.max(1, Math.round(mins))} min` +
           (mins > 2 ? ` <span class="pill warn">stuck? macOS may be waiting for you to allow folder access</span>` : "");
@@ -331,7 +333,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     mcp.watchTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard" }, ev => {
       if (ev.type === "data") {
         const p = ev.result.payload;
-        if (p && p.items) { feed.app = "ok"; renderFeed(); setData(p, "live"); note(null); }
+        if (p && p.items) { feed.app = "ok"; feed.collector = p.collector_status || null; renderFeed(); setData(p, "live"); note(null); }
         else { feed.app = "answered, but not with a Stellaxis snapshot"; renderFeed(); }
       } else {
         const code = ev.error?.code;
@@ -357,13 +359,24 @@ footer { font-size: 0.8rem; color: var(--muted); }
     try {
       if (mcp && st.mode !== "local") {
         const r = await mcp.callTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard", refresh: true }, { cache: false });
-        if (r.payload?.items) { setData(r.payload, "live"); note(null); }
+        if (r.payload?.items) { feed.app = "ok"; feed.collector = r.payload.collector_status || null; renderFeed(); setData(r.payload, "live"); note(null); }
       } else if (st.mode === "local") {
         await fetch("api/refresh", { cache: "no-store" }).catch(() => {});
         await new Promise(r => setTimeout(r, 2500));
         await loadFile();
       } else { await loadFile(); }
-    } catch (e) { if (e?.code) note("Refresh failed (" + esc(e.code) + "). " + esc(e.message || "")); }
+    } catch (e) {
+      const code = e?.code || "unknown";
+      const hint = {
+        server_not_connected: "The Claude app has no stellaxis server running. Quit the app (Cmd+Q) and reopen it after install.sh, or check that ~/Library/Application Support/Claude/claude_desktop_config.json lists \"stellaxis\".",
+        server_unavailable: "The stellaxis server did not answer in time. Check that the background collector is running: launchctl list | grep stellaxis.",
+        not_in_manifest: "Live data is turned off for this page. Allow stellaxis in the page's Permissions menu.",
+        cancelled: "The Claude app's confirmation was declined.",
+        tool_error: "The collector reported an error.",
+      }[code] || "";
+      note(`Refresh failed (<code>${esc(code)}</code>). ${esc(e?.message || "")} ${esc(hint)}`);
+      feed.app = "error " + code; renderFeed();
+    }
     b.disabled = false; b.textContent = "Refresh now";
   });
 

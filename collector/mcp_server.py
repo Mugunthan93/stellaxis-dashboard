@@ -10,6 +10,7 @@ live data via `host:stellaxis`:
 import json
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,13 +32,44 @@ TOOL = {
 }
 
 
+def _service(port: int, route: str, timeout: float = 1.5):
+    """Ask the background collector (collect.py serve) on localhost; None when it is not running."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{route}", timeout=timeout) as r:
+            body = r.read()
+            return json.loads(body) if body.strip() else {}
+    except (OSError, ValueError):
+        return None
+
+
 def snapshot(refresh=False) -> dict:
+    """Prefer the background collector: it keeps snapshot.json fresh, and a refresh is a nudge to it.
+    Collecting inline here would run inside the Claude app's process, where a macOS folder-permission
+    prompt or a long first scan can block the call until the app times out."""
     path = C.STX_HOME / "snapshot.json"
     cfg = C.load_config()
+    port = int(cfg.get("port", 7777))
+    status = _service(port, "/api/status")
+    if status is not None:
+        if refresh:
+            before = path.stat().st_mtime if path.exists() else 0
+            _service(port, "/api/refresh")
+            deadline = time.time() + 20
+            while time.time() < deadline and (not path.exists() or path.stat().st_mtime <= before):
+                time.sleep(0.5)
+            status = _service(port, "/api/status") or status
+        snap = C.read_json(path, {}) or {}
+        if snap:
+            snap["collector_status"] = status
+            return snap
     stale = not path.exists() or time.time() - path.stat().st_mtime > 2 * max(30, C.parse_duration(cfg["interval"]))
-    if refresh or stale:
-        return C.collect(cfg)
-    return C.read_json(path, {}) or {}
+    if path.exists() and not refresh:
+        snap = C.read_json(path, {}) or {}
+        snap["collector_status"] = {"phase": "not running", "stale": stale}
+        return snap
+    snap = C.collect(cfg)
+    snap["collector_status"] = {"phase": "not running", "collected_inline": True}
+    return snap
 
 
 def view(args: dict) -> dict:
@@ -46,7 +78,8 @@ def view(args: dict) -> dict:
     lim = int(args.get("limit") or 0)
     proj = args.get("project")
     sessions = [x for x in s.get("sessions", []) if not proj or x["project"] == proj]
-    head = {k: s.get(k) for k in ("generated_at", "host", "interval", "collector_version", "totals", "latest_context")}
+    head = {k: s.get(k) for k in ("generated_at", "host", "interval", "collector_version", "totals", "latest_context",
+                                     "collector_status")}
     if v == "dashboard":
         return {**s, "sessions": sessions[: lim or 200]}
     if v == "summary":
