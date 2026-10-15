@@ -65,8 +65,14 @@ python3 $S/prune.py list --unused-days 30
 python3 $S/prune.py archive skill:user:old-thing mcp:user:unused-server        # dry run
 python3 $S/prune.py archive skill:user:old-thing mcp:user:unused-server --apply
 python3 $S/prune.py move agent:user:planner --to ~/code/mesell --apply
+python3 $S/prune.py relocate ~/Documents/app ~/code/personal/app --apply      # move a project folder
 python3 $S/prune.py restore last --apply
 ```
+
+`relocate` moves a project folder and updates everything that knows it by path: Claude transcript
+folders and their `cwd` (so `--resume` and Stellaxis history follow), `~/.claude.json` project entries,
+prompt history, and git worktree links (`git worktree repair`). It refuses while a Claude session runs
+inside the folder and lists other files that still mention the old path without editing them.
 
 Archives live in `~/.claude/_archive/<stamp>/` with a manifest. Plugins are disabled, not uninstalled.
 JSON configs are backed up before edits.

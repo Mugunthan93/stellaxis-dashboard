@@ -16,6 +16,7 @@ python3 collector/collect.py run [--probe]   # one collection pass + text summar
 python3 collector/collect.py serve           # collect every `interval` + dashboard on 127.0.0.1:7777
 python3 collector/collect.py summary         # summary of the last snapshot
 python3 collector/prune.py list --unused-days 30
+python3 collector/prune.py relocate <src> <dest>   # move a project folder (dry run without --apply)
 ```
 
 To run against something other than the real `~/.stellaxis` and `~/.claude`, set `STELLAXIS_HOME`
@@ -71,7 +72,8 @@ relative.
 
 Every `prune.py` command is a dry run until `--apply`. Archives go to `~/.claude/_archive/<stamp>/`
 with a manifest so `restore` is exact; plugins are disabled, not uninstalled; JSON configs are backed
-up before edits. The user decides what counts as unused; never pick a threshold for them, and show
+up before edits. `relocate` records one `relocate` manifest entry; `restore` undoes it by relocating
+back. It rewrites only exact `"cwd":"<path>` / `"project":"<path>` fields, never message text. The user decides what counts as unused; never pick a threshold for them, and show
 the dry run before applying.
 
 ## Plugin

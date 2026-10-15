@@ -21,6 +21,7 @@ Use `~/.stellaxis/bin/` (symlink created by `install.sh`). If it is missing, the
 | Ranked items | `python3 $S/prune.py list [--kind skill\|agent\|command\|mcp\|plugin\|claude_md] [--scope user] [--unused-days N]` |
 | Archive (dry run) | `python3 $S/prune.py archive <id> ...` |
 | Move user item into a repo | `python3 $S/prune.py move <id> ... --to <repo path>` |
+| Move a project folder | `python3 $S/prune.py relocate <old path> <new path>` (moves it and updates Claude transcripts, `~/.claude.json`, prompt history and git worktree links) |
 | Undo | `python3 $S/prune.py restore last` (or a stamp from `prune.py archives`) |
 | Purge old archives | `python3 $S/prune.py purge --older-than 14d` |
 
