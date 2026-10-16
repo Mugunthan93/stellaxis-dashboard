@@ -110,6 +110,71 @@ td:first-child { min-width: 220px; }
 .split span { display: block; height: 100%; }
 .empty { padding: 18px; text-align: center; color: var(--muted); font-size: 0.86rem; }
 footer { font-size: 0.8rem; color: var(--muted); }
+
+/* explorer layout: summary strip → treemap card + details card → full breakdown */
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.strip .cell { padding: 16px 20px; border-right: 1px solid var(--line); display: grid; gap: 4px; align-content: start; }
+.strip .cell:last-child { border-right: 0; }
+.cell .lab { font-size: 0.86rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.cell .lab i { width: 7px; height: 7px; border-radius: 50%; }
+.cell .big { font-family: var(--mono); font-size: 1.8rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.cell .big small { font-size: 0.8rem; color: var(--muted); font-weight: 400; letter-spacing: 0; margin-left: 8px; }
+.cell .big small.up { color: var(--good); }
+.main2 { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 18px; align-items: start; }
+@media (max-width: 1050px) { .main2 { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-width: 0; }
+.card-head { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-start; margin-bottom: 12px; }
+.card-head p { margin: 3px 0 0; color: var(--muted); font-size: 0.88rem; }
+.seg2 { display: inline-flex; background: var(--sunk); border-radius: 10px; padding: 3px; gap: 2px; }
+.seg2 button { border: 0; background: transparent; padding: 5px 13px; border-radius: 8px; font-size: 0.86rem; color: var(--muted); }
+.seg2 button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.1); }
+.crumbbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 2px; border-top: 1px solid var(--line); font-size: 0.92rem; color: var(--muted); }
+.crumbbar nav { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.crumbbar button { border: 0; background: none; padding: 0; color: var(--muted); }
+.crumbbar button:hover { color: var(--ink); }
+.crumbbar .cur { color: var(--ink); }
+.crumbbar .tot { font-family: var(--mono); white-space: nowrap; }
+.map { position: relative; height: clamp(420px, 64vh, 760px); }
+.tile { position: absolute; border-radius: 9px; border: 1.5px solid var(--tb); background-color: var(--tf); overflow: hidden; cursor: pointer; padding: 8px 10px; }
+.tile:hover { filter: brightness(0.97); }
+@media (prefers-color-scheme: dark) { .tile:hover { filter: brightness(1.15); } }
+.tile .tn { font-size: 0.88rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 64px; }
+.tile .tv { position: absolute; left: 10px; bottom: 7px; font-family: var(--mono); font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .th { position: absolute; right: 10px; top: 8px; font-family: var(--mono); font-size: 0.76rem; color: var(--muted); }
+.tile.inner { border-width: 1px; border-radius: 7px; padding: 6px 8px; }
+.tile.inner .tn { font-size: 0.76rem; font-weight: 500; padding-right: 0; }
+.tile.inner .tv { font-size: 0.98rem; left: 8px; bottom: 5px; }
+.tile.idle { opacity: 0.6; }
+.tile.sel { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 2; }
+.tile.hatch { background-image: repeating-linear-gradient(-45deg, var(--tb) 0 1.5px, transparent 1.5px 9px); }
+.maplegend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 12px 0 0; padding: 0; font-size: 0.84rem; color: var(--muted); }
+.maplegend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.side { padding: 0; display: flex; flex-direction: column; max-height: calc(clamp(420px, 64vh, 760px) + 150px); }
+.side-head { padding: 18px 18px 12px; }
+.side-head p { margin: 3px 0 0; color: var(--muted); font-size: 0.86rem; word-break: break-all; }
+.side-body { overflow: auto; flex: 1; border-top: 1px solid var(--line); }
+.grp { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px 8px; }
+.gp { font-size: 0.76rem; font-weight: 600; padding: 2px 9px; border-radius: 7px; background: var(--sunk); color: var(--muted); }
+.gp.good { background: var(--good-soft); color: var(--good); }
+.gp.warn { background: var(--warn-soft); color: var(--warn); }
+.gp.acc { background: var(--accent-soft); color: var(--accent); }
+.grp .gt { font-family: var(--mono); font-size: 0.84rem; color: var(--muted); }
+details.row { border-top: 1px solid var(--line); }
+details.row summary { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; gap: 12px; padding: 10px 18px; cursor: pointer; align-items: center; }
+details.row summary::-webkit-details-marker { display: none; }
+details.row summary:hover { background: var(--sunk); }
+.row .rn { font-weight: 600; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .rs { font-family: var(--mono); font-size: 0.76rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .rv { font-family: var(--mono); font-weight: 600; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
+.row .chev { color: var(--muted); transition: transform 0.15s; font-size: 0.9rem; }
+details.row[open] .chev { transform: rotate(90deg); }
+.row .rx { padding: 0 18px 12px; font-size: 0.78rem; color: var(--muted); font-family: var(--mono); line-height: 1.6; word-break: break-word; }
+.side-foot { border-top: 1px solid var(--line); padding: 12px 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.88rem; }
+.side-foot b { font-family: var(--mono); }
+.btn.dark { background: var(--ink); color: var(--surface); border-color: var(--ink); font-weight: 600; }
+details.full > summary { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; cursor: pointer; list-style: none; }
+details.full > summary::-webkit-details-marker { display: none; }
+#detail { display: grid; gap: 14px; margin-top: 14px; }
 </style>
 
 <div class="wrap">
@@ -129,13 +194,31 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
   <div class="notice" id="note">Loading snapshot…</div>
 
-  <div class="layout">
-    <aside class="panel treepane" aria-label="Hierarchy">
-      <input class="tree-search" id="q" type="search" placeholder="Filter projects" aria-label="Filter projects">
-      <ul class="tree" id="tree" role="tree"></ul>
-    </aside>
-    <main class="panel" id="detail" aria-live="polite"></main>
+  <section class="strip" id="strip" aria-label="Summary"></section>
+
+  <div class="main2">
+    <section class="card" aria-labelledby="ex-h">
+      <div class="card-head">
+        <div><h2 id="ex-h">Explorer</h2><p>Your Claude setup, sized by <span id="size-word">cost</span>. Click a tile to open it.</p></div>
+        <span class="spacer"></span>
+        <div class="seg2" role="group" aria-label="Colour by">
+          <button type="button" data-color="category">Category</button><button type="button" data-color="owner">Ownership</button>
+        </div>
+        <div class="seg2" role="group" aria-label="Size by">
+          <button type="button" data-size="cost">Cost</button><button type="button" data-size="tokens">Tokens</button>
+        </div>
+      </div>
+      <div class="crumbbar" id="crumbbar"></div>
+      <div class="map" id="map" role="group" aria-label="Treemap"></div>
+      <ul class="maplegend" id="maplegend"></ul>
+    </section>
+    <aside class="card side" id="side" aria-live="polite"></aside>
   </div>
+
+  <details class="card full" id="fullwrap">
+    <summary><h2>Full breakdown</h2><span class="muted">sessions, MCP tools, skills, plugins, agents, files and shared cost for the selected tile</span></summary>
+    <div id="detail"></div>
+  </details>
 
   <footer>Inherited = loaded into every session at this level but owned by a level above it (Claude Code itself, your global setup, or a parent folder). Own = defined at this level.
     Carry cost = shared tokens × turns × the model's cache-read price, an estimate of what each project pays to re-read the shared context every turn. Token figures for config files are estimates (bytes ÷ 3.7); MCP, skill and agent listing sizes come from real session transcripts where available.</footer>
@@ -173,7 +256,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   // Fallback cache-read $/Mtok if the snapshot predates meta.pricing
   const FALLBACK_PRICING = { "claude-fable": 0.25, "claude-opus-5-5": 0.20, "claude-opus": 0.50, "claude-sonnet-5": 0.20, "claude-sonnet": 0.30, "claude-haiku-5": 0.01, "claude-haiku": 0.10 };
 
-  const st = { snap: null, sel: store.get("sel", GLOBAL), open: new Set(store.get("open", [GLOBAL, "@dir:~"])), q: "" };
+  const st = { snap: null, sel: store.get("sel", GLOBAL), color: store.get("color", "category"), size: store.get("size", "cost") };
   let M = null; // derived model
 
   // ---------- model
@@ -311,47 +394,165 @@ footer { font-size: 0.8rem; color: var(--muted); }
     : !n.proj ? "project" : i.scope_path === n.id ? "own" : "parent"; // Global and folder views: a project's own item
   const OWNER_PILL = { builtin: '<span class="pill">built-in</span>', global: '<span class="pill acc">global</span>', own: '<span class="pill good">own</span>', parent: '<span class="pill warn">parent</span>', project: '<span class="pill good">project</span>', unknown: '<span class="pill">unlisted</span>' };
 
-  // ---------- render tree
-  function renderTree() {
-    const q = st.q.toLowerCase();
-    const match = n => !q || n.label.toLowerCase().includes(q) || n.children.some(match);
-    const li = n => {
-      if (!match(n)) return "";
-      const kids = n.children.filter(match);
-      const open = q ? true : st.open.has(n.id);
-      const meta = n.all.length ? `${n.all.length} · ${fmt$(n.cost)}` : "idle";
-      const tag = n.kind === "worktree" ? '<span class="k">worktree</span>' : n.kind === "folder" ? '<span class="k">folder</span>' : n.kind === "global" ? '<span class="k">~/.claude · account · connectors</span>' : "";
-      const name = n.kind === "global" ? n.label : shortLabel(n);
-      return `<li role="treeitem" aria-expanded="${kids.length ? open : ""}">
-        <div class="node${!n.all.length && n.kind !== "global" ? " dim" : ""}" data-id="${esc(n.id)}" aria-selected="${st.sel === n.id}" title="${esc(n.label)}">
-          ${kids.length ? `<button class="tw" type="button" data-tw="${esc(n.id)}" aria-label="${open ? "Collapse" : "Expand"}">${open ? "▼" : "▶"}</button>` : "<span></span>"}
-          <span class="lbl"><b>${esc(name)}</b>${tag}</span><span class="meta">${meta}</span>
-        </div>
-        ${kids.length && open ? `<ul role="group">${kids.map(li).join("")}</ul>` : ""}</li>`;
-    };
-    $("#tree").innerHTML = li(M.nodes.get(GLOBAL));
-  }
+  // ---------- treemap explorer
+  const val = n => (st.size === "tokens" ? n.tokens : n.cost) || 0;
+  const fmtV = v => st.size === "tokens" ? fmtT(v) : fmt$(v);
   function shortLabel(n) {
     const par = M.nodes.get(n.parent);
     const base = par?.proj ? par.label : par?.path;
     if (base && n.label.startsWith(base + "/")) return n.label.slice(base.length + 1).replace(/^\.claude\/worktrees\//, "");
     return n.label;
   }
-  $("#tree").addEventListener("click", e => {
-    const tw = e.target.closest("[data-tw]");
-    if (tw) { const id = tw.dataset.tw; st.open.has(id) ? st.open.delete(id) : st.open.add(id); store.set("open", [...st.open]); renderTree(); return; }
-    const nd = e.target.closest(".node");
-    if (nd) select(nd.dataset.id);
-  });
-  $("#q").addEventListener("input", e => { st.q = e.target.value; renderTree(); });
+  const nameOf = n => n.id === GLOBAL ? "Global" : n.id === "@dir:~" ? "~ Home" : shortLabel(n);
+  // Global's only real child is ~, so show ~'s folders directly
+  const kidsOf = n => (n.id === GLOBAL ? n.children.flatMap(c => c.id === "@dir:~" ? c.children : [c]) : n.children);
+  const viewOf = n => kidsOf(n).some(c => val(c) > 0) ? n : M.nodes.get(n.parent) || M.nodes.get(GLOBAL);
+
+  function squarify(list, x, y, w, h) {
+    const total = sum(list.map(l => l.v));
+    if (!total || w <= 0 || h <= 0) return [];
+    const items = list.map(l => ({ ...l, a: l.v / total * w * h }));
+    const out = [];
+    let row = [];
+    const worst = (r, side) => { const t = sum(r.map(i => i.a)); return Math.max(...r.map(i => Math.max(side * side * i.a / (t * t), t * t / (side * side * i.a)))); };
+    const place = r => {
+      const t = sum(r.map(i => i.a));
+      if (w >= h) { const cw = t / h; let yy = y; for (const i of r) { const ih = i.a / cw; out.push({ ...i, x, y: yy, w: cw, h: ih }); yy += ih; } x += cw; w -= cw; }
+      else { const rh = t / w; let xx = x; for (const i of r) { const iw = i.a / rh; out.push({ ...i, x: xx, y, w: iw, h: rh }); xx += iw; } y += rh; h -= rh; }
+    };
+    while (items.length) {
+      const side = Math.min(w, h);
+      if (!row.length || worst([...row, items[0]], side) <= worst(row, side)) row.push(items.shift());
+      else { place(row); row = []; }
+    }
+    if (row.length) place(row);
+    return out;
+  }
+
+  // colour: the top-level folder a node sits under (Category) or who owns its context (Ownership)
+  const OWN_COL = { builtin: "--c6", global: "--c1", parent: "--c3", own: "--c2" };
+  function groupOf(n) { let c = n; while (c.parent && c.parent !== "@dir:~" && c.parent !== GLOBAL) c = M.nodes.get(c.parent); return c; }
+  let groupCol = new Map();
+  function tileStyle(n, inner) {
+    const mix = (c, p) => `color-mix(in srgb, var(${c}) ${p}%, var(--surface))`;
+    if (st.color === "owner") {
+      const L = avgLayers(n.all, n);
+      const tot = sum(Object.values(L)) || 1;
+      let acc = 0, stops = [];
+      for (const k of ["own", "parent", "global", "builtin"]) { const a = acc; acc += L[k] / tot * 100; stops.push(`${mix(OWN_COL[k], 22)} ${a.toFixed(1)}% ${acc.toFixed(1)}%`); }
+      const inh = ((L.builtin + L.global) / tot * 100).toFixed(1);
+      return `--tf:var(--surface);--tb:${mix("--c6", 45)};background-image:repeating-linear-gradient(-45deg, ${mix("--c6", 40)} 0 1.5px, transparent 1.5px 9px), linear-gradient(to top, ${stops.join(", ")});background-size:100% ${inh}%, 100% 100%;background-repeat:no-repeat;background-position:top, top`;
+    }
+    const c = groupCol.get(groupOf(n).id) || "--c6";
+    return `--tf:${mix(c, inner ? 20 : 12)};--tb:${mix(c, 45)}`;
+  }
+
+  function renderMap() {
+    const sel = M.nodes.get(st.sel);
+    const view = viewOf(sel);
+    const map = $("#map");
+    const W = map.clientWidth, H = map.clientHeight;
+    const kids = kidsOf(view).filter(c => val(c) > 0).sort((a, b) => val(b) - val(a));
+    const idle = kidsOf(view).length - kids.length;
+    const G = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c7", "--c6"];
+    groupCol = new Map(kidsOf(M.nodes.get(GLOBAL)).sort((a, b) => b.cost - a.cost).map((g, i) => [g.id, G[i % G.length]]));
+    let html = "";
+    const tile = (n, r, inner) => {
+      const big = !inner && r.w > 170 && r.h > 120 && kidsOf(n).some(c => val(c) > 0);
+      const showName = r.w > 54 && r.h > 26, showVal = r.h > (inner ? 46 : 58) && r.w > 58;
+      html += `<div class="tile${inner ? " inner" : ""}${n.kind === "worktree" && st.color !== "owner" ? " hatch" : ""}${!n.all.length ? " idle" : ""}${n.id === st.sel ? " sel" : ""}"
+        role="button" tabindex="0" data-id="${esc(n.id)}" title="${esc(n.label)} · ${fmtV(val(n))}"
+        style="left:${r.x.toFixed(1)}px;top:${r.y.toFixed(1)}px;width:${r.w.toFixed(1)}px;height:${r.h.toFixed(1)}px;${tileStyle(n, inner)}">
+        ${showName ? `<div class="tn">${esc(nameOf(n))}</div>` : ""}${big ? `<span class="th">${fmtV(val(n))}</span>` : showVal ? `<span class="tv">${fmtV(val(n))}</span>` : ""}</div>`;
+      if (big) {
+        const ik = kidsOf(n).filter(c => val(c) > 0);
+        for (const q of squarify(ik.map(c => ({ n: c, v: val(c) })), r.x + 8, r.y + 32, r.w - 16, r.h - 40))
+          tile(q.n, { x: q.x + 2, y: q.y + 2, w: Math.max(0, q.w - 4), h: Math.max(0, q.h - 4) }, true);
+      }
+    };
+    for (const r of squarify(kids.map(c => ({ n: c, v: val(c) })), 0, 0, W, H))
+      tile(r.n, { x: r.x + 3, y: r.y + 3, w: Math.max(0, r.w - 6), h: Math.max(0, r.h - 6) }, false);
+    map.innerHTML = html || `<div class="empty">Nothing to show here${st.size === "cost" ? " yet. No sessions recorded." : "."}</div>`;
+
+    const crumbs = [];
+    for (let p = view; p; p = M.nodes.get(p.parent)) if (p.id !== "@dir:~") crumbs.unshift(p);
+    $("#crumbbar").innerHTML = `<nav>${crumbs.map((c, i) => i < crumbs.length - 1 ? `<button type="button" data-go="${esc(c.id)}">${esc(nameOf(c))}</button><span>›</span>` : `<span class="cur">${esc(nameOf(c))}</span>`).join("")}</nav>
+      <span class="tot">${fmtV(val(view))}${idle ? ` · ${idle} idle hidden` : ""}</span>`;
+    $("#maplegend").innerHTML = st.color === "owner"
+      ? LAYERS.map(([k, label, c]) => `<li><i style="background:var(${c})"></i>${label}</li>`).join("") + `<li><i style="background:repeating-linear-gradient(-45deg,var(--muted) 0 1px,transparent 1px 3px)"></i>Inherited share (hatched)</li>`
+      : [...groupCol].slice(0, 8).map(([id, c]) => `<li><i style="background:var(${c})"></i>${esc(nameOf(M.nodes.get(id)))}</li>`).join("") + `<li><i style="background:repeating-linear-gradient(-45deg,var(--muted) 0 1px,transparent 1px 3px)"></i>Worktree</li>`;
+    $("#size-word").textContent = st.size === "tokens" ? "tokens used" : "cost";
+    $$("[data-color]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.color === st.color)));
+    $$("[data-size]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.size === st.size)));
+  }
+  $("#map").addEventListener("click", e => { const t = e.target.closest(".tile"); if (t) select(t.dataset.id); });
+  $("#map").addEventListener("keydown", e => { const t = e.target.closest(".tile"); if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(t.dataset.id); } });
+  $("#crumbbar").addEventListener("click", e => { const b = e.target.closest("[data-go]"); if (b) select(b.dataset.go); });
+  $$("[data-color]").forEach(b => b.addEventListener("click", () => { st.color = b.dataset.color; store.set("color", st.color); renderMap(); }));
+  $$("[data-size]").forEach(b => b.addEventListener("click", () => { st.size = b.dataset.size; store.set("size", st.size); renderMap(); renderSide(); }));
+  let rz;
+  window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => M && renderMap(), 120); });
+
+  // ---------- summary strip + details card
+  function renderStrip(n) {
+    const ss = n.id === GLOBAL ? M.s.sessions : n.all;
+    const cost = sum(ss.map(x => x.cost)), tokens = sum(ss.map(x => x.tokens?.total));
+    const allCost = sum(M.s.sessions.map(x => x.cost)) || 1;
+    const carry = sum(ss.map(x => M.sessCalc.get(x.id).carryShared));
+    const projects = [...M.nodes.values()].filter(c => c.kind === "project" && (n.id === GLOBAL || isUnder(c, n))).length;
+    const L = avgLayers(ss, n);
+    const cell = (dot, lab, big, small, up) => `<div class="cell"><span class="lab">${dot ? `<i style="background:var(${dot})"></i>` : ""}${esc(lab)}</span><span class="big">${big}${small ? `<small${up ? ' class="up"' : ""}>${esc(small)}</small>` : ""}</span></div>`;
+    $("#strip").innerHTML =
+      cell(null, n.id === GLOBAL ? "Total cost" : "Cost here", fmt$(cost), n.id === GLOBAL ? "API-equivalent" : `${Math.round(cost / allCost * 100)}% of all`, n.id !== GLOBAL) +
+      cell("--good", "Tokens", fmtT(tokens), `${ss.length} sessions`) +
+      cell("--warn", "Baseline context", fmtT(sum(Object.values(L))), `${fmtT(L.own + L.parent)} own`) +
+      cell("--c6", "Shared carry", fmt$(carry), `${projects} project${projects === 1 ? "" : "s"}`);
+  }
+  const isUnder = (c, n) => { for (let p = c; p; p = M.nodes.get(p.parent)) if (p.id === n.id) return true; return false; };
+
+  function renderSide() {
+    const n = M.nodes.get(st.sel);
+    const ss = n.id === GLOBAL ? M.s.sessions : n.all;
+    const u = usage(ss);
+    const L = avgLayers(ss, n);
+    const row = (name, sub, v, extra) => `<details class="row"><summary><div style="min-width:0"><div class="rn">${esc(name)}</div><div class="rs">${sub}</div></div><span class="rv">${v}</span><span class="chev">›</span></summary>${extra ? `<div class="rx">${extra}</div>` : ""}</details>`;
+    const grp = (label, cls, total, rows, empty) => `<div class="grp"><span class="gp ${cls}">${label}</span><span class="gt">${total}</span></div>${rows.length ? rows.join("") : `<div class="rx" style="padding-top:2px">${empty}</div>`}`;
+    const top = (o, k) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, k);
+    const ownerName = i => ({ builtin: "built-in", global: "global", own: "own", parent: "parent", project: "project", unknown: "unlisted" })[owner(i, n)];
+
+    const LSUB = { builtin: "system prompt · tool schemas", global: "~/.claude · account · connectors", parent: "CLAUDE.md in folders above", own: "CLAUDE.md · memory · project config" };
+    const ctxRows = LAYERS.map(([k, label, , hint]) => row(label, LSUB[k], fmtT(L[k]), esc(hint)));
+    const mcpRows = top(u.mcp, 8).map(([name, c]) => { const i = findItem("mcp", name)[0]; const tools = top(u.mcpTools[name] || {}, 12);
+      return row(name, `${ownerName(i)} · ${fmtT(u.mcpLoaded[name] ?? i?.tokens_always)} schema`, String(c), tools.map(([t, k]) => `${esc(t)} ${k}`).join(" · ")); });
+    const skRows = top(u.skills, 8).map(([name, c]) => { const i = findItem("skill", name)[0];
+      return row(name, `${ownerName(i)}${i?.plugin ? " · " + esc(i.plugin) : ""}`, String(c), i ? `${fmtT(i.tokens_on_use)} tokens when loaded · ${esc(i.path || "")}` : ""); });
+    const agRows = top(u.agents, 5).map(([name, c]) => row(name, `${fmtT(u.agentTok[name])} subagent tokens`, String(c), ""));
+    const seRows = [...ss].sort((a, b) => (b.last_ts || "").localeCompare(a.last_ts || "")).slice(0, 6).map(x => row(ago(x.last_ts), `${esc(x.branch || "-")} · ${esc((x.models || [])[0] || "")}`, fmt$(x.cost),
+      `${esc(x.project || "")}<br>${x.turns} turns · baseline ${fmtT(x.baseline_tokens)} · ${fmtT(x.tokens?.total)} tokens · shared carry ${fmt$(M.sessCalc.get(x.id).carryShared)}`));
+    const so = scopeItems(n);
+    const files = n.id === GLOBAL ? [] : [...so.own, ...so.parent].filter(i => ["claude_md", "memory", "rule"].includes(i.kind));
+    const fiRows = files.map(i => row(i.name, `${ownerName(i)} · ${esc(i.kind)}`, fmtT(i.tokens_always), esc(i.path || "")));
+
+    $("#side").innerHTML = `<div class="side-head"><h2>${esc(nameOf(n))}</h2><p>${n.id === GLOBAL ? "~/.claude · claude.ai account · connectors · built-in" : `${esc(n.kind)} · ${esc(n.label)} · active ${esc(ago(n.last))}`}</p></div>
+      <div class="side-body">
+        ${grp("Context per session", "acc", fmtT(sum(Object.values(L))), ctxRows, "")}
+        ${grp("MCP servers", "good", `${sum(Object.values(u.mcp))} calls`, mcpRows, "No MCP calls in these sessions.")}
+        ${grp("Skills", "good", `${sum(Object.values(u.skills))} uses`, skRows, "No skills invoked.")}
+        ${grp("Agents", "warn", `${sum(Object.values(u.agents))} runs`, agRows, "No agents run.")}
+        ${files.length ? grp("CLAUDE.md &amp; memory", "", fmtT(sum(files.map(i => i.tokens_always))), fiRows, "") : ""}
+        ${grp("Recent sessions", "", `${ss.length} total`, seRows, "No sessions recorded here.")}
+      </div>
+      <div class="side-foot"><span><b>${fmt$(sum(ss.map(x => x.cost)))}</b> · ${ss.length} sessions</span><span class="spacer"></span>
+        <button class="btn dark" type="button" id="open-full">Full breakdown</button></div>`;
+    $("#open-full").addEventListener("click", () => { $("#fullwrap").open = true; $("#fullwrap").scrollIntoView({ behavior: "smooth" }); });
+  }
 
   function select(id) {
     if (!M.nodes.has(id)) id = GLOBAL;
     st.sel = id; store.set("sel", id);
-    for (let p = M.nodes.get(id).parent; p; p = M.nodes.get(p)?.parent) st.open.add(p);
-    store.set("open", [...st.open]);
     history.replaceState(null, "", "#" + encodeURIComponent(id));
-    renderTree(); renderDetail();
+    const n = M.nodes.get(id);
+    renderMap(); renderStrip(n); renderSide(); renderDetail();
   }
 
   // ---------- render detail
@@ -584,7 +785,6 @@ footer { font-size: 0.8rem; color: var(--muted); }
       st.snap = s; M = build(s);
       $("#updated").textContent = "updated " + ago(s.generated_at);
       $("#note").innerHTML = `${s.totals.projects} projects${s.totals.worktrees ? ` + ${s.totals.worktrees} worktrees` : ""} · ${s.sessions.length} sessions · ${s.items.length} items. ${s.meta?.pricing ? "" : "Carry cost uses built-in cache-read prices (this snapshot has no pricing table)."}`;
-      if (!store.get("homeOpened", false)) { st.open.add("@dir:~"); store.set("homeOpened", true); }
       const hash = decodeURIComponent(location.hash.slice(1));
       select(hash && M.nodes.has(hash) ? hash : st.sel);
     } catch (e) { $("#note").textContent = "Could not load snapshot: " + e.message; }
