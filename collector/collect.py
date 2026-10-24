@@ -768,6 +768,12 @@ def run_probes(items: list, cfg: dict, cache: dict, force=False):
 
 # ---------------------------------------------------------------- snapshot assembly
 
+def interactive(s: dict) -> bool:
+    """Full sessions load Claude's built-in tool schemas. Scripted runs (claude -p, Agent SDK) and one-turn
+    desktop helpers don't, and would drag baseline medians down to ~1K."""
+    return not (s.get("entrypoint") or "").startswith("sdk") and bool((s.get("measured_context") or {}).get("tools_builtin"))
+
+
 def build_snapshot(cfg: dict, cache: dict) -> dict:
     t0 = time.time()
     files = parse_transcripts(cache)
@@ -1011,7 +1017,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
     for p in proj_by_path.values():
         ps = [s for s in sess_list if s["project"] == p["path"]]
         own = sum(items_by_id[i]["bytes_always"] for i in p["items"] if i in items_by_id and items_by_id[i]["kind"] != "plugin")
-        bl = [s["baseline_tokens"] for s in ps[:20] if s["baseline_tokens"]]
+        bl = [s["baseline_tokens"] for s in ps if s["baseline_tokens"] and interactive(s)][:20]
         p.update({
             "sessions": len(ps), "last_active": ps[0]["last_ts"] if ps else None,
             "tokens": sum(s["tokens"]["total"] for s in ps), "cost": round(sum(s["cost"] for s in ps), 2),
@@ -1043,7 +1049,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
                 "cost": round(sum(r["cost"] for r in rows), 2),
                 "sessions": sum(1 for s in sess_list if (s["last_ts"] or "")[:13] >= start)}
 
-    recent_bl = [s["baseline_tokens"] for s in sess_list[:30] if s["baseline_tokens"]]
+    recent_bl = [s["baseline_tokens"] for s in sess_list if s["baseline_tokens"] and interactive(s)][:30]
     by_kind = collections.defaultdict(lambda: {"count": 0, "tokens_always": 0, "unused": 0})
     for it in items:
         if it["kind"] == "plugin":

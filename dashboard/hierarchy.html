@@ -563,7 +563,7 @@ details.full > summary::-webkit-details-marker { display: none; }
   }
 
   function avgLayers(sessions, n) {
-    const withMc = sessions.filter(x => x.measured_context);
+    const withMc = sessions.filter(x => x.measured_context?.tools_builtin && !(x.entrypoint || "").startsWith("sdk")); // scripted runs and helpers load almost nothing
     const base = withMc.length ? withMc : sessions;
     if (!base.length) {
       const so = scopeItems(n);
