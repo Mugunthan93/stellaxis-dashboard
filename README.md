@@ -78,7 +78,9 @@ collector/collect.py     inventory + incremental usage parser + snapshot + local
 collector/prune.py       archive / move / restore / purge (dry run by default)
 collector/mcp_server.py  stdio MCP server, one read-only tool: stellaxis_snapshot
 collector/install.sh     macOS service + desktop MCP registration
+collector/settings_api.py  /api/settings: read, diff, back up and save Claude settings.json files
 dashboard/index.html     dashboard (same file is the artifact and the localhost page)
+dashboard/settings.html  Settings page: edit user / project / local settings.json (localhost only)
 skills/stellaxis/        plugin skill
 agents/                  plugin agent: stellaxis-auditor
 tests/test_e2e.py        fake-HOME end-to-end test (python3 -m unittest discover -s tests)

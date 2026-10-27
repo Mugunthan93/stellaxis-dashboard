@@ -1,0 +1,589 @@
+<title>Stellaxis Settings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Claude Settings: edit settings.json for user / project / local scope. Every edit goes into a clone of the
+   file as loaded, so keys this page has no control for are kept as they are. Saves go through
+   /api/settings/save (collector/settings_api.py), after a diff preview. */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
+  --accent: #2c55c9; --accent-soft: #dfe6f8;
+  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 110px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.55rem; }
+h2 { font-size: 1.15rem; }
+h3 { font-size: 0.95rem; }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.routes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.routes a { padding: 5px 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
+.routes a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.small { padding: 3px 9px; font-size: 0.82rem; }
+.btn.icon { padding: 3px 8px; color: var(--muted); }
+.btn.icon:hover { color: var(--crit); border-color: var(--crit); }
+.notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); background: var(--surface); }
+.notice.crit { border-color: var(--crit); background: var(--crit-soft); color: var(--crit); }
+.notice.good { border-color: var(--good); background: var(--good-soft); color: var(--good); }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-width: 0; display: grid; gap: 14px; align-content: start; }
+.card-head p { margin: 3px 0 0; color: var(--muted); font-size: 0.86rem; }
+.seg { display: inline-flex; background: var(--sunk); border-radius: 10px; padding: 3px; gap: 2px; flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; padding: 5px 13px; border-radius: 8px; font-size: 0.88rem; color: var(--muted); }
+.seg button[aria-pressed="true"], .seg button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.1); }
+
+.scopebar { display: grid; gap: 10px; }
+.scoperow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.pathline { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); word-break: break-all; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; font-family: var(--body); }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 18px; align-items: start; }
+.fields { display: grid; gap: 12px; }
+.field { display: grid; gap: 4px; }
+.field > label, .field > .lab { font-weight: 600; font-size: 0.88rem; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.field > label code, .field > .lab code { font-family: var(--mono); font-weight: 400; font-size: 0.74rem; color: var(--muted); }
+.hint { font-size: 0.78rem; color: var(--muted); margin: 0; }
+.inp, select.inp, textarea.inp { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; width: 100%; min-width: 0; }
+textarea.inp { font-family: var(--mono); font-size: 0.8rem; line-height: 1.45; resize: vertical; }
+.inp.bad { border-color: var(--crit); background: var(--crit-soft); }
+.row2 { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 8px; }
+
+/* list editors */
+.listed { display: grid; gap: 6px; }
+.listed .tools { display: flex; gap: 8px; }
+.listed ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: var(--sunk); }
+.listed li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.listed li .inp { font-family: var(--mono); font-size: 0.8rem; padding: 4px 8px; }
+.listed .empty { padding: 6px; color: var(--muted); font-size: 0.82rem; }
+.ptabs { display: flex; gap: 6px; flex-wrap: wrap; }
+
+table.kv { border-collapse: collapse; width: 100%; font-size: 0.84rem; }
+table.kv th, table.kv td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.kv th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+table.kv td .inp { font-family: var(--mono); font-size: 0.8rem; padding: 4px 8px; }
+table.kv td.ctl { width: 1%; white-space: nowrap; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; }
+
+.hook { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+.hook-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hook-head h3 { font-family: var(--mono); font-weight: 600; font-size: 0.86rem; }
+.hook-sum { font-size: 0.78rem; color: var(--muted); display: grid; gap: 2px; }
+.hook-sum span { font-family: var(--mono); word-break: break-all; }
+.err { font-size: 0.78rem; color: var(--crit); margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips code { font-family: var(--mono); font-size: 0.76rem; background: var(--sunk); padding: 2px 7px; border-radius: 6px; }
+
+#raw { min-height: 60vh; }
+
+.savebar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -4px 14px rgb(0 0 0 / 0.06); z-index: 5; }
+.savebar .in { max-width: 1280px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.savebar .msg { font-size: 0.88rem; color: var(--muted); }
+.savebar .msg b { color: var(--ink); }
+
+dialog { border: 1px solid var(--line); border-radius: 14px; padding: 0; background: var(--surface); color: var(--ink); width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+.dlg { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: calc(100vh - 50px); }
+.dlg > header, .dlg > footer { padding: 14px 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.dlg > header { border-bottom: 1px solid var(--line); }
+.dlg > footer { border-top: 1px solid var(--line); }
+.diff { margin: 0; overflow: auto; font-family: var(--mono); font-size: 0.78rem; line-height: 1.5; padding: 10px 0; background: var(--sunk); }
+.diff div { padding: 0 18px; white-space: pre-wrap; word-break: break-all; }
+.diff .add { background: var(--good-soft); color: var(--good); }
+.diff .del { background: var(--crit-soft); color: var(--crit); }
+.diff .hunk { color: var(--accent); }
+.diff .meta { color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Stellaxis</h1>
+      <span class="muted">Claude settings</span>
+    </div>
+    <nav class="routes" aria-label="Pages">
+      <a href="./">Overview</a>
+      <a href="hierarchy">Hierarchy</a>
+      <a href="settings" aria-current="page">Settings</a>
+    </nav>
+    <span class="spacer"></span>
+    <button class="btn" id="reload" type="button">Reload from disk</button>
+  </header>
+
+  <section class="card scopebar" aria-labelledby="scope-h">
+    <div class="card-head">
+      <h2 id="scope-h">Which settings file</h2>
+      <p>User settings apply to every Claude Code session on this Mac. Project settings are shared with the repo; local settings are yours only and usually gitignored. Narrower scopes override wider ones.</p>
+    </div>
+    <div class="scoperow">
+      <div class="seg" role="group" aria-label="Scope" id="scopes">
+        <button type="button" data-scope="user" aria-pressed="true">User</button>
+        <button type="button" data-scope="project" aria-pressed="false">Project</button>
+        <button type="button" data-scope="local" aria-pressed="false">Project local</button>
+      </div>
+      <select class="inp" id="project" aria-label="Project folder" style="width:auto;max-width:100%" hidden></select>
+    </div>
+    <div class="pathline" id="pathline">Loading…</div>
+  </section>
+
+  <div class="notice" id="note" hidden></div>
+
+  <div class="scoperow">
+    <div class="seg" role="tablist" aria-label="Editor">
+      <button type="button" role="tab" id="tab-form" aria-selected="true" aria-controls="pane-form">Form</button>
+      <button type="button" role="tab" id="tab-raw" aria-selected="false" aria-controls="pane-raw">Raw JSON</button>
+    </div>
+    <span class="muted" style="font-size:0.84rem">Keys without a control here are kept exactly as they are. Edit them in Raw JSON.</span>
+  </div>
+
+  <div id="pane-form" role="tabpanel" aria-labelledby="tab-form" class="grid2"></div>
+
+  <section id="pane-raw" role="tabpanel" aria-labelledby="tab-raw" class="card" hidden>
+    <div class="card-head">
+      <h2>Raw JSON</h2>
+      <p>The whole file. Valid JSON is applied to the form as you type; save is blocked while it doesn't parse.</p>
+    </div>
+    <textarea class="inp" id="raw" spellcheck="false" aria-label="Settings JSON"></textarea>
+    <p class="err" id="raw-err" hidden></p>
+  </section>
+</div>
+
+<div class="savebar">
+  <div class="in">
+    <span class="msg" id="savemsg">No changes</span>
+    <span class="spacer"></span>
+    <button class="btn" id="discard" type="button" disabled>Discard changes</button>
+    <button class="btn primary" id="review" type="button" disabled>Review &amp; save…</button>
+  </div>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlg-h">
+  <div class="dlg">
+    <header>
+      <h2 id="dlg-h">Review changes</h2>
+      <span class="pathline" id="dlg-path"></span>
+    </header>
+    <pre class="diff" id="dlg-diff"></pre>
+    <footer>
+      <span class="muted" id="dlg-msg" style="font-size:0.86rem"></span>
+      <span class="spacer"></span>
+      <button class="btn" type="button" id="dlg-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="dlg-save">Save with backup</button>
+    </footer>
+  </div>
+</dialog>
+
+<datalist id="dl-model">
+  <option value="opus"><option value="sonnet"><option value="haiku"><option value="fable"><option value="opusplan">
+  <option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"><option value="claude-fable-5-1">
+</datalist>
+<datalist id="dl-style"><option value="default"><option value="Explanatory"><option value="Learning"></datalist>
+
+<script>
+(() => {
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+  const isObj = v => v && typeof v === "object" && !Array.isArray(v);
+  const API_HEADERS = { "Content-Type": "application/json" };
+
+  // keys with a control on the form; anything else is listed under "Other keys"
+  const FORM_KEYS = ["model", "outputStyle", "includeCoAuthoredBy", "cleanupPeriodDays", "statusLine", "permissions", "env", "enabledPlugins", "hooks"];
+  const MODES = [["", "Not set (Claude Code default)"], ["default", "default: ask before edits and commands"], ["acceptEdits", "acceptEdits: auto-accept file edits"],
+    ["plan", "plan: read-only planning"], ["auto", "auto: classifier decides"], ["dontAsk", "dontAsk: deny anything not allowed"], ["bypassPermissions", "bypassPermissions: no prompts (unsafe)"]];
+
+  const st = {
+    scope: "user", project: null, file: null,   // file = GET /api/settings response
+    orig: {}, draft: {}, permTab: "allow", permFilter: "", rawError: null, hookErr: {}, tab: "form",
+  };
+  try { const p = JSON.parse(localStorage.getItem("stx-settings-ui") || "{}"); if (p.scope) st.scope = p.scope; if (p.project) st.project = p.project; } catch {}
+  const remember = () => { try { localStorage.setItem("stx-settings-ui", JSON.stringify({ scope: st.scope, project: st.project })); } catch {} };
+
+  // ---------- draft helpers
+  const has = (o, path) => { for (const k of path) { if (!isObj(o) || !(k in o)) return false; o = o[k]; } return true; };
+  const get = (o, path) => { for (const k of path) { if (!isObj(o)) return undefined; o = o[k]; } return o; };
+  // undefined deletes; parents this page created are pruned again when they empty out
+  function set(path, val) {
+    let o = st.draft;
+    for (const k of path.slice(0, -1)) { if (!isObj(o[k])) o[k] = {}; o = o[k]; }
+    const last = path[path.length - 1];
+    if (val === undefined) delete o[last]; else o[last] = val;
+    for (let i = path.length - 1; i > 0; i--) {
+      const parent = get(st.draft, path.slice(0, i));
+      if (isObj(parent) && !Object.keys(parent).length && !has(st.orig, path.slice(0, i))) set(path.slice(0, i), undefined);
+      else break;
+    }
+    changed();
+  }
+  // lists and maps: an empty one is dropped unless the file already had the key
+  const setColl = (path, v) => set(path, (Array.isArray(v) ? v.length : Object.keys(v).length) || has(st.orig, path) ? v : undefined);
+  const dirty = () => JSON.stringify(st.draft) !== JSON.stringify(st.orig);
+
+  function changed() {
+    const d = dirty(), blocked = st.rawError || Object.keys(st.hookErr).length;
+    $("#discard").disabled = !d;
+    $("#review").disabled = !st.file || !!blocked; // a no-op save is allowed: it rewrites the same bytes and makes a backup
+    $("#savemsg").innerHTML = blocked ? `<b>Fix the invalid JSON</b> before saving.`
+      : d ? `<b>Unsaved changes</b> to ${esc(st.file?.path || "")}` : "No changes. Saving now rewrites the same content and makes a backup.";
+    if (st.tab === "form") syncRaw();
+  }
+  function syncRaw() { if (!st.rawError) $("#raw").value = JSON.stringify(st.draft, null, 2); }
+
+  // ---------- load
+  async function load() {
+    const q = new URLSearchParams({ scope: st.scope });
+    if (st.scope !== "user" && st.project) q.set("project", st.project);
+    $("#pathline").textContent = "Loading…";
+    try {
+      const r = await fetch("api/settings?" + q, { cache: "no-store" });
+      const f = await r.json();
+      if (!r.ok) throw new Error(f.error || r.statusText);
+      st.file = f;
+      if (!st.project || !f.projects.includes(st.project)) st.project = f.default_project;
+      st.orig = isObj(f.data) ? f.data : {};
+      st.draft = clone(st.orig);
+      st.rawError = null; st.hookErr = {};
+      note(f.error ? `This file is not valid JSON (${f.error}). Fix it in Raw JSON; the form shows an empty file until then.` : "", f.error ? "crit" : "");
+      if (f.error) { $("#raw").value = f.text; st.rawError = f.error; }
+      renderScope(); renderForm(); changed();
+      if (f.error) showTab("raw");
+    } catch (e) {
+      st.file = null;
+      $("#pathline").textContent = "";
+      note(`Could not load settings: ${e.message}. The page needs the Stellaxis collector (python3 collector/collect.py serve) — it can't save from a static copy.`, "crit");
+      $("#pane-form").innerHTML = "";
+      changed();
+    }
+  }
+  function note(html, kind) { const n = $("#note"); n.hidden = !html; n.className = "notice" + (kind ? " " + kind : ""); n.innerHTML = html; }
+
+  function renderScope() {
+    for (const b of document.querySelectorAll("#scopes button")) b.setAttribute("aria-pressed", String(b.dataset.scope === st.scope));
+    const sel = $("#project");
+    sel.hidden = st.scope === "user";
+    if (st.file) sel.innerHTML = st.file.projects.map(p => `<option value="${esc(p)}" ${p === st.project ? "selected" : ""}>${esc(p.replace(/^\/Users\/[^/]+/, "~"))}</option>`).join("");
+    const f = st.file;
+    if (!f) return;
+    const fmt = f.format || {};
+    $("#pathline").innerHTML = `<span>${esc(f.path)}</span>`
+      + (f.exists ? `<span class="pill good">exists</span>` : `<span class="pill warn">not created yet, saving creates it</span>`)
+      + (f.exists && !f.error ? `<span class="pill ${fmt.exact ? "acc" : "warn"}" title="Edits are written back in this layout">${fmt.exact ? "layout kept" : "layout normalised on change"}: indent ${fmt.indent === "\t" ? "tab" : fmt.indent ?? "none"}${fmt.ascii ? ", \\u escapes" : ""}</span>` : "");
+  }
+
+  // ---------- form
+  function renderForm() {
+    const d = st.draft;
+    const other = Object.keys(d).filter(k => !FORM_KEYS.includes(k));
+    $("#pane-form").innerHTML = `
+      <div class="fields" style="gap:18px">
+        <section class="card" aria-labelledby="g-h">
+          <div class="card-head"><h2 id="g-h">General</h2><p>Leave a field empty to remove the key and use Claude Code's default.</p></div>
+          <div class="fields">
+            <div class="field"><label for="f-model">Model <code>model</code></label>
+              <input class="inp mono" id="f-model" list="dl-model" placeholder="Not set" value="${esc(d.model ?? "")}" autocomplete="off">
+              <p class="hint">Alias (opus, sonnet, haiku, fable, opusplan) or a full model id.</p></div>
+            <div class="field"><label for="f-style">Output style <code>outputStyle</code></label>
+              <input class="inp" id="f-style" list="dl-style" placeholder="Not set" value="${esc(d.outputStyle ?? "")}" autocomplete="off"></div>
+            <div class="field"><label for="f-coauth">Co-authored-by line in commits <code>includeCoAuthoredBy</code></label>
+              <select class="inp" id="f-coauth">${[["", "Not set"], ["true", "true: add the line"], ["false", "false: leave it out"]].map(([v, l]) => `<option value="${v}" ${String(d.includeCoAuthoredBy ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+            <div class="field"><label for="f-cleanup">Keep transcripts for <code>cleanupPeriodDays</code></label>
+              <input class="inp mono" id="f-cleanup" type="number" min="0" step="1" placeholder="Not set (30)" value="${esc(d.cleanupPeriodDays ?? "")}">
+              <p class="hint">Days before local session transcripts are deleted. Stellaxis reads these, so a short period shortens its history.</p></div>
+            <div class="field"><span class="lab">Status line <code>statusLine</code></span>
+              <div class="row2">
+                <input class="inp mono" id="f-sl-cmd" placeholder="Command, e.g. ~/.claude/statusline.sh (empty removes it)" value="${esc(isObj(d.statusLine) ? d.statusLine.command ?? "" : "")}" aria-label="Status line command">
+                <input class="inp mono" id="f-sl-pad" type="number" min="0" placeholder="padding" value="${esc(isObj(d.statusLine) ? d.statusLine.padding ?? "" : "")}" aria-label="Status line padding">
+              </div>
+              <p class="hint">Runs as <code>{"type": "command"}</code>. Other statusLine fields are kept.</p></div>
+          </div>
+        </section>
+        <section class="card" aria-labelledby="e-h">
+          <div class="card-head"><h2 id="e-h">Environment <code class="mono muted" style="font-size:0.8rem">env</code></h2><p>Variables set for every session in this scope and the commands it runs.</p></div>
+          ${kvTable("env", d.env, "VAR_NAME", "value")}
+        </section>
+        <section class="card" aria-labelledby="pl-h">
+          <div class="card-head"><h2 id="pl-h">Plugins <code class="mono muted" style="font-size:0.8rem">enabledPlugins</code></h2><p><code class="mono">name@marketplace</code> → on or off. Removing a row drops the override.</p></div>
+          ${pluginTable(d.enabledPlugins)}
+        </section>
+        ${other.length ? `<section class="card"><div class="card-head"><h2>Other keys</h2><p>Kept as they are on save. Edit them in Raw JSON.</p></div><div class="chips">${other.map(k => `<code>${esc(k)}</code>`).join("")}</div></section>` : ""}
+      </div>
+      <div class="fields" style="gap:18px">
+        <section class="card" aria-labelledby="p-h">
+          <div class="card-head"><h2 id="p-h">Permissions</h2><p>Rules like <code class="mono">Bash(npm run test:*)</code>, <code class="mono">Read(~/.ssh/**)</code>, <code class="mono">mcp__server__tool</code>. Deny beats ask beats allow.</p></div>
+          <div class="field"><label for="f-mode">Default mode <code>permissions.defaultMode</code></label>
+            <select class="inp" id="f-mode">${MODES.concat(MODES.some(m => m[0] === (d.permissions?.defaultMode ?? "")) ? [] : [[d.permissions.defaultMode, d.permissions.defaultMode + " (custom)"]]).map(([v, l]) => `<option value="${esc(v)}" ${(d.permissions?.defaultMode ?? "") === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+          <div class="ptabs seg" role="group" aria-label="Rule list">
+            ${["allow", "ask", "deny"].map(k => `<button type="button" data-ptab="${k}" aria-pressed="${st.permTab === k}">${k} <span class="pill">${(d.permissions?.[k] || []).length}</span></button>`).join("")}
+          </div>
+          <div id="perm-list">${permList()}</div>
+        </section>
+        <section class="card" aria-labelledby="h-h">
+          <div class="card-head"><h2 id="h-h">Hooks <code class="mono muted" style="font-size:0.8rem">hooks</code></h2><p>One JSON list of matcher groups per event: <code class="mono">[{"matcher": "Bash", "hooks": [{"type": "command", "command": "…"}]}]</code>. Checked as you type.</p></div>
+          <div class="fields" id="hooks">${Object.entries(isObj(d.hooks) ? d.hooks : {}).map(([ev, v]) => hookCard(ev, v)).join("") || `<p class="hint">No hooks in this file.</p>`}</div>
+          <div class="scoperow">
+            <select class="inp" id="hook-ev" style="width:auto" aria-label="Hook event">${(st.file?.hook_events || []).filter(e => !(isObj(d.hooks) && e in d.hooks)).map(e => `<option>${esc(e)}</option>`).join("")}</select>
+            <button class="btn small" type="button" id="hook-add">Add event</button>
+          </div>
+        </section>
+      </div>`;
+    bindForm();
+  }
+
+  function permList() {
+    const all = st.draft.permissions?.[st.permTab] || [];
+    const f = st.permFilter.toLowerCase();
+    const rows = all.map((r, i) => [r, i]).filter(([r]) => !f || r.toLowerCase().includes(f));
+    return `<div class="listed">
+      <div class="tools"><input class="inp" id="perm-filter" placeholder="Filter ${all.length} rules" value="${esc(st.permFilter)}" aria-label="Filter rules"></div>
+      <ul>${rows.map(([r, i]) => `<li><input class="inp" data-perm="${i}" value="${esc(r)}" aria-label="Rule ${i + 1}"><button class="btn icon" type="button" data-perm-del="${i}" aria-label="Remove rule">✕</button></li>`).join("") || `<li class="empty">${all.length ? "No rules match the filter." : "No rules."}</li>`}</ul>
+      <div class="tools"><input class="inp mono" id="perm-new" placeholder="Add ${st.permTab === "deny" ? "a" : "an"} ${st.permTab} rule, then Enter" aria-label="New rule"><button class="btn small" type="button" id="perm-add">Add</button></div>
+    </div>`;
+  }
+
+  function kvTable(key, obj, kph, vph) {
+    const rows = Object.entries(isObj(obj) ? obj : {});
+    return `<table class="kv"><thead><tr><th>Name</th><th>Value</th><th></th></tr></thead><tbody>
+      ${rows.map(([k, v], i) => `<tr><td><input class="inp" data-kv-k="${i}" value="${esc(k)}" aria-label="Name"></td><td><input class="inp" data-kv-v="${i}" value="${esc(typeof v === "string" ? v : JSON.stringify(v))}" aria-label="Value for ${esc(k)}"></td><td class="ctl"><button class="btn icon" type="button" data-kv-del="${i}" aria-label="Remove ${esc(k)}">✕</button></td></tr>`).join("")}
+      <tr><td><input class="inp" id="kv-nk" placeholder="${kph}" aria-label="New name"></td><td><input class="inp" id="kv-nv" placeholder="${vph}" aria-label="New value"></td><td class="ctl"><button class="btn small" type="button" id="kv-add">Add</button></td></tr>
+    </tbody></table>`;
+  }
+
+  function pluginTable(obj) {
+    const rows = Object.entries(isObj(obj) ? obj : {});
+    return `<table class="kv"><thead><tr><th>Plugin</th><th>Enabled</th><th></th></tr></thead><tbody>
+      ${rows.map(([k, v]) => `<tr><td class="mono" style="word-break:break-all">${esc(k)}</td><td class="ctl">${typeof v === "boolean" ? `<label class="switch"><input type="checkbox" data-pl="${esc(k)}" ${v ? "checked" : ""}> ${v ? "on" : "off"}</label>` : `<span class="pill">${esc(JSON.stringify(v))}</span>`}</td><td class="ctl"><button class="btn icon" type="button" data-pl-del="${esc(k)}" aria-label="Remove ${esc(k)}">✕</button></td></tr>`).join("")}
+      <tr><td><input class="inp" id="pl-new" placeholder="name@marketplace" aria-label="New plugin"></td><td class="ctl"></td><td class="ctl"><button class="btn small" type="button" id="pl-add">Add</button></td></tr>
+    </tbody></table>`;
+  }
+
+  function hookErrors(v) {
+    if (!Array.isArray(v)) return "must be a list of matcher groups";
+    for (const [i, g] of v.entries()) {
+      if (!isObj(g)) return `item ${i + 1} must be an object`;
+      if ("matcher" in g && typeof g.matcher !== "string") return `item ${i + 1}: matcher must be a string`;
+      if (!Array.isArray(g.hooks)) return `item ${i + 1}: "hooks" must be a list`;
+      for (const [j, h] of g.hooks.entries()) {
+        if (!isObj(h) || typeof h.type !== "string") return `item ${i + 1}, hook ${j + 1}: needs a "type"`;
+        if (h.type === "command" && typeof h.command !== "string") return `item ${i + 1}, hook ${j + 1}: "command" must be a string`;
+      }
+    }
+    return null;
+  }
+  function hookSummary(v) {
+    if (!Array.isArray(v)) return "";
+    return v.flatMap(g => (g?.hooks || []).map(h => `<span>${esc(g.matcher || "*")} → ${esc(h?.type === "command" ? h.command : h?.type === "prompt" ? "prompt: " + (h.prompt || "") : h?.type || "?")}${h?.timeout ? ` (${esc(h.timeout)}s)` : ""}</span>`)).join("");
+  }
+  function hookCard(ev, v) {
+    const err = hookErrors(v);
+    return `<div class="hook" data-hook="${esc(ev)}">
+      <div class="hook-head"><h3>${esc(ev)}</h3><span class="pill">${Array.isArray(v) ? v.length : 0} group${Array.isArray(v) && v.length === 1 ? "" : "s"}</span><span class="spacer"></span><button class="btn icon" type="button" data-hook-del="${esc(ev)}" aria-label="Remove ${esc(ev)} hooks">✕</button></div>
+      <textarea class="inp${err ? " bad" : ""}" data-hook-ta="${esc(ev)}" rows="${Math.min(14, Math.max(4, JSON.stringify(v, null, 2).split("\n").length))}" spellcheck="false" aria-label="${esc(ev)} hooks JSON">${esc(JSON.stringify(v, null, 2))}</textarea>
+      <p class="err" ${err ? "" : "hidden"}>${esc(err || "")}</p>
+      <div class="hook-sum">${hookSummary(v)}</div>
+    </div>`;
+  }
+
+  function bindForm() {
+    const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
+    const str = v => v.trim() === "" ? undefined : v.trim();
+    on("#f-model", "input", e => set(["model"], str(e.target.value)));
+    on("#f-style", "input", e => set(["outputStyle"], str(e.target.value)));
+    on("#f-coauth", "change", e => set(["includeCoAuthoredBy"], e.target.value === "" ? undefined : e.target.value === "true"));
+    on("#f-cleanup", "input", e => { const v = e.target.value.trim(); const n = Number(v); e.target.classList.toggle("bad", v !== "" && !(Number.isInteger(n) && n >= 0)); if (v === "" || Number.isInteger(n) && n >= 0) set(["cleanupPeriodDays"], v === "" ? undefined : n); });
+    const sl = () => {
+      const cmd = $("#f-sl-cmd").value, pad = $("#f-sl-pad").value.trim();
+      if (!cmd.trim()) { set(["statusLine"], undefined); return; }
+      const base = isObj(st.draft.statusLine) ? st.draft.statusLine : {};
+      const next = { ...base, type: base.type || "command", command: cmd };
+      if (pad === "") delete next.padding; else if (Number.isInteger(+pad)) next.padding = +pad;
+      set(["statusLine"], next);
+    };
+    on("#f-sl-cmd", "input", sl); on("#f-sl-pad", "input", sl);
+    on("#f-mode", "change", e => set(["permissions", "defaultMode"], e.target.value || undefined));
+
+    // permissions lists
+    for (const b of document.querySelectorAll("[data-ptab]")) b.addEventListener("click", () => { st.permTab = b.dataset.ptab; st.permFilter = ""; renderForm(); });
+    bindPerm();
+
+    // env
+    const envRows = () => Object.entries(isObj(st.draft.env) ? st.draft.env : {});
+    for (const el of document.querySelectorAll("[data-kv-k]")) el.addEventListener("change", e => {
+      const rows = envRows(), i = +e.target.dataset.kvK, k = e.target.value.trim();
+      if (!k || rows.some(([kk], j) => kk === k && j !== i)) { e.target.value = rows[i][0]; return; }
+      rows[i][0] = k; setColl(["env"], Object.fromEntries(rows)); renderForm();
+    });
+    for (const el of document.querySelectorAll("[data-kv-v]")) el.addEventListener("input", e => {
+      const rows = envRows(); rows[+e.target.dataset.kvV][1] = e.target.value; setColl(["env"], Object.fromEntries(rows));
+    });
+    for (const el of document.querySelectorAll("[data-kv-del]")) el.addEventListener("click", e => {
+      const rows = envRows(); rows.splice(+e.currentTarget.dataset.kvDel, 1); setColl(["env"], Object.fromEntries(rows)); renderForm();
+    });
+    const addEnv = () => {
+      const k = $("#kv-nk").value.trim(); if (!k) return $("#kv-nk").focus();
+      setColl(["env"], { ...(isObj(st.draft.env) ? st.draft.env : {}), [k]: $("#kv-nv").value }); renderForm(); $("#kv-nk").focus();
+    };
+    on("#kv-add", "click", addEnv);
+    for (const s of ["#kv-nk", "#kv-nv"]) on(s, "keydown", e => { if (e.key === "Enter") addEnv(); });
+
+    // plugins
+    for (const el of document.querySelectorAll("[data-pl]")) el.addEventListener("change", e => { set(["enabledPlugins", e.target.dataset.pl], e.target.checked); renderForm(); });
+    for (const el of document.querySelectorAll("[data-pl-del]")) el.addEventListener("click", e => {
+      const o = { ...st.draft.enabledPlugins }; delete o[e.currentTarget.dataset.plDel]; setColl(["enabledPlugins"], o); renderForm();
+    });
+    const addPl = () => { const k = $("#pl-new").value.trim(); if (!k) return; set(["enabledPlugins", k], true); renderForm(); $("#pl-new").focus(); };
+    on("#pl-add", "click", addPl); on("#pl-new", "keydown", e => { if (e.key === "Enter") addPl(); });
+
+    // hooks
+    for (const ta of document.querySelectorAll("[data-hook-ta]")) ta.addEventListener("input", e => {
+      const ev = e.target.dataset.hookTa, card = e.target.closest(".hook");
+      let v, err;
+      try { v = JSON.parse(e.target.value); err = hookErrors(v); } catch (x) { err = x.message; }
+      e.target.classList.toggle("bad", !!err);
+      card.querySelector(".err").hidden = !err; card.querySelector(".err").textContent = err || "";
+      if (err) { st.hookErr[ev] = err; changed(); return; }
+      delete st.hookErr[ev];
+      card.querySelector(".hook-sum").innerHTML = hookSummary(v);
+      set(["hooks", ev], v);
+    });
+    for (const b of document.querySelectorAll("[data-hook-del]")) b.addEventListener("click", e => {
+      const ev = e.currentTarget.dataset.hookDel, o = { ...st.draft.hooks }; delete o[ev]; delete st.hookErr[ev];
+      setColl(["hooks"], o); renderForm();
+    });
+    on("#hook-add", "click", () => {
+      const ev = $("#hook-ev").value; if (!ev) return;
+      set(["hooks", ev], [{ matcher: "", hooks: [{ type: "command", command: "" }] }]); renderForm();
+      document.querySelector(`[data-hook-ta="${CSS.escape(ev)}"]`)?.focus();
+    });
+  }
+
+  function bindPerm() {
+    const path = ["permissions", st.permTab];
+    const list = () => [...(st.draft.permissions?.[st.permTab] || [])];
+    const redraw = (focusNew) => {
+      $("#perm-list").innerHTML = permList(); bindPerm();
+      for (const b of document.querySelectorAll("[data-ptab] .pill")) b.textContent = (st.draft.permissions?.[b.parentElement.dataset.ptab] || []).length;
+      if (focusNew) $("#perm-new").focus();
+    };
+    $("#perm-filter").addEventListener("input", e => { st.permFilter = e.target.value; const pos = e.target.selectionStart; redraw(); const f = $("#perm-filter"); f.focus(); f.setSelectionRange(pos, pos); });
+    for (const el of document.querySelectorAll("[data-perm]")) el.addEventListener("change", e => {
+      const l = list(), v = e.target.value.trim();
+      if (!v) { e.target.value = l[+e.target.dataset.perm]; return; }
+      l[+e.target.dataset.perm] = v; setColl(path, l);
+    });
+    for (const el of document.querySelectorAll("[data-perm-del]")) el.addEventListener("click", e => {
+      const l = list(); l.splice(+e.currentTarget.dataset.permDel, 1); setColl(path, l); redraw();
+    });
+    const add = () => {
+      const v = $("#perm-new").value.trim(); if (!v) return;
+      const l = list(); if (!l.includes(v)) l.push(v); setColl(path, l); st.permFilter = ""; redraw(true);
+    };
+    $("#perm-add").addEventListener("click", add);
+    $("#perm-new").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  }
+
+  // ---------- raw tab
+  $("#raw").addEventListener("input", e => {
+    let v, err = null;
+    try { v = JSON.parse(e.target.value); if (!isObj(v)) err = "settings must be a JSON object { … }"; } catch (x) { err = x.message; }
+    st.rawError = err;
+    $("#raw").classList.toggle("bad", !!err);
+    $("#raw-err").hidden = !err; $("#raw-err").textContent = err || "";
+    if (!err) { st.draft = v; st.hookErr = {}; }
+    changed();
+  });
+  function showTab(t) {
+    if (t === "form" && st.rawError) { $("#raw").focus(); return; } // keep the user in raw until it parses
+    st.tab = t;
+    $("#tab-form").setAttribute("aria-selected", String(t === "form"));
+    $("#tab-raw").setAttribute("aria-selected", String(t === "raw"));
+    $("#pane-form").hidden = t !== "form"; $("#pane-raw").hidden = t !== "raw";
+    if (t === "raw") syncRaw(); else renderForm();
+  }
+  $("#tab-form").addEventListener("click", () => showTab("form"));
+  $("#tab-raw").addEventListener("click", () => showTab("raw"));
+
+  // ---------- scope
+  async function switchTo(fn) {
+    if (dirty() && !confirm("Discard unsaved changes to this file?")) return false;
+    fn(); remember(); await load(); return true;
+  }
+  for (const b of document.querySelectorAll("#scopes button")) b.addEventListener("click", () => switchTo(() => { st.scope = b.dataset.scope; }));
+  $("#project").addEventListener("change", async e => { const v = e.target.value; if (!await switchTo(() => { st.project = v; })) e.target.value = st.project; });
+  $("#reload").addEventListener("click", () => switchTo(() => {}));
+  $("#discard").addEventListener("click", () => { st.draft = clone(st.orig); st.rawError = null; st.hookErr = {}; $("#raw").classList.remove("bad"); $("#raw-err").hidden = true; renderForm(); changed(); syncRaw(); });
+  window.addEventListener("beforeunload", e => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+  // ---------- save
+  const body = extra => JSON.stringify({ scope: st.scope, project: st.scope === "user" ? null : st.project, data: st.draft, ...extra });
+  async function post(url, b) {
+    const r = await fetch(url, { method: "POST", headers: API_HEADERS, body: b });
+    const j = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok) { const e = new Error(j.error || r.statusText); e.data = j; e.status = r.status; throw e; }
+    return j;
+  }
+  function renderDiff(text) {
+    return text.split("\n").map(l => `<div class="${l.startsWith("+++") || l.startsWith("---") ? "meta" : l.startsWith("@@") ? "hunk" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : ""}">${esc(l) || " "}</div>`).join("");
+  }
+  $("#review").addEventListener("click", async () => {
+    try {
+      const p = await post("api/settings/preview", body());
+      $("#dlg-path").textContent = p.path;
+      $("#dlg-diff").innerHTML = p.diff ? renderDiff(p.diff) : `<div class="meta">No content changes. Saving writes the file back byte-for-byte and keeps a backup of it.</div>`;
+      $("#dlg-msg").textContent = p.exists ? "The current file is copied to a .bak-<timestamp> file next to it first." : "The file doesn't exist yet and will be created.";
+      $("#dlg").showModal();
+    } catch (e) {
+      note(`Can't save: ${esc(e.message)}${e.data?.errors ? "<br>" + e.data.errors.map(esc).join("<br>") : ""}`, "crit");
+    }
+  });
+  $("#dlg-cancel").addEventListener("click", () => $("#dlg").close());
+  $("#dlg-save").addEventListener("click", async () => {
+    $("#dlg-save").disabled = true;
+    try {
+      const r = await post("api/settings/save", body({ base_sha: st.file.sha }));
+      $("#dlg").close();
+      await load();
+      note(`Saved ${esc(r.path)}${r.bytes_identical ? " (content unchanged, bytes identical)" : ""}. ${r.backup ? `Backup: <span class="mono">${esc(r.backup)}</span>` : "No backup needed, the file is new."} New sessions pick this up; running sessions may need a restart.`, "good");
+    } catch (e) {
+      $("#dlg").close();
+      note(e.status === 409 ? `Not saved: ${esc(e.message)}. Your edits are still here; use “Reload from disk” to see the new file (it will ask before discarding them).`
+        : `Not saved: ${esc(e.message)}${e.data?.errors ? "<br>" + e.data.errors.map(esc).join("<br>") : ""}`, "crit");
+    } finally { $("#dlg-save").disabled = false; }
+  });
+
+  load();
+})();
+</script>

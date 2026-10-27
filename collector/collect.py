@@ -25,6 +25,8 @@ import threading
 import time
 from pathlib import Path
 
+import settings_api
+
 VERSION = "0.1.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
@@ -1164,7 +1166,8 @@ def collect(cfg=None, probe=False) -> dict:
 
 # ---------------------------------------------------------------- serve
 
-PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html"}
+PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
+         "/settings": "settings.html", "/settings.html": "settings.html"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -1175,6 +1178,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if settings_api.handle(self, "GET"):
+            return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot"):
             body = (STX_HOME / "snapshot.json").read_bytes() if (STX_HOME / "snapshot.json").exists() else b"{}"
             self.send_response(200)
@@ -1210,6 +1215,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         super().do_GET()
+
+    def do_POST(self):
+        if not settings_api.handle(self, "POST"):
+            self.send_error(404)
 
 
 def serve():
