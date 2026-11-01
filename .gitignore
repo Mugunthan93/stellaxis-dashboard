@@ -4,3 +4,10 @@ __pycache__/
 # local data never belongs in the repo
 .stellaxis/
 snapshot.json
+# Reel Brain data stays in ~/Knowledge/reels
+reels/out/
+reels/work/
+reels/images/
+reels/venv/
+reels/hf/
+reels/queue.json
