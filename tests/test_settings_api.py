@@ -34,7 +34,10 @@ class SettingsApi(unittest.TestCase):
         os.environ["CLAUDE_CONFIG_DIR"] = str(cls.cfg)
         os.environ["STELLAXIS_HOME"] = str(T / "stx")
         sys.path.insert(0, str(REPO / "collector"))
+        # Another test may have imported settings_api (via prune -> collect) with the real paths bound.
+        sys.modules.pop("settings_api", None)
         import settings_api
+        assert settings_api.CLAUDE_DIR == cls.cfg, f"settings_api would write to {settings_api.CLAUDE_DIR}"
         cls.api = settings_api
 
         class H(http.server.BaseHTTPRequestHandler):
