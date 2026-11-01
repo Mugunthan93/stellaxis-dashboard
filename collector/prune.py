@@ -471,8 +471,8 @@ def relocate(plan: Plan, src: Path, dest: Path, force=False, backups=True) -> bo
 
     if desktop:
         sessions = sum(f.name.startswith("local_") for f in desktop)
-        plan.say(f"update Claude desktop app records: {sessions} Code tab session(s), "
-                 + ", ".join(f.name for f in desktop if not f.name.startswith("local_")))
+        others = [f.name for f in desktop if not f.name.startswith("local_")]
+        plan.say(f"update Claude desktop app records: {sessions} Code tab session(s)" + "".join(f", {n}" for n in others))
         if plan.apply:
             for f in desktop:
                 if backups:
