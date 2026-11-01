@@ -71,8 +71,10 @@ python3 $S/prune.py restore last --apply
 
 `relocate` moves a project folder and updates everything that knows it by path: Claude transcript
 folders and their `cwd` (so `--resume` and Stellaxis history follow), `~/.claude.json` project entries,
-prompt history, and git worktree links (`git worktree repair`). It refuses while a Claude session runs
-inside the folder and lists other files that still mention the old path without editing them.
+prompt history, git worktree links (`git worktree repair`), and the Claude desktop app's Code tab
+records (session folders, worktree registry, presets, scheduled tasks). It refuses while a Claude session
+runs inside the folder or while the desktop app is open (quit it and run from Terminal), and lists other
+files that still mention the old path without editing them.
 
 Archives live in `~/.claude/_archive/<stamp>/` with a manifest. Plugins are disabled, not uninstalled.
 JSON configs are backed up before edits.

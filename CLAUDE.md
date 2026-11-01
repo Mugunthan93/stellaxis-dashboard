@@ -73,7 +73,9 @@ relative.
 Every `prune.py` command is a dry run until `--apply`. Archives go to `~/.claude/_archive/<stamp>/`
 with a manifest so `restore` is exact; plugins are disabled, not uninstalled; JSON configs are backed
 up before edits. `relocate` records one `relocate` manifest entry; `restore` undoes it by relocating
-back. It rewrites only exact `"cwd":"<path>` / `"project":"<path>` fields, never message text. The user decides what counts as unused; never pick a threshold for them, and show
+back. It rewrites only exact `"cwd":"<path>` / `"project":"<path>` fields, never message text. Desktop
+app JSON (`~/Library/Application Support/Claude`) gets every string/key equal to or under the path
+rewritten (`remap_tree`), layout kept; tests fake the app state with `STELLAXIS_DESKTOP_RUNNING`. The user decides what counts as unused; never pick a threshold for them, and show
 the dry run before applying.
 
 ## Plugin

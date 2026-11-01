@@ -59,6 +59,27 @@ class Relocate(unittest.TestCase):
         (H / ".stellaxis").mkdir()
         (H / ".stellaxis" / "config.json").write_text(json.dumps({"scan_roots": [str(H / "Documents")]}))
 
+        # Claude desktop app (Code tab) state: session records, worktree registry, presets, scheduled tasks
+        D = self.D = H / "Library" / "Application Support" / "Claude"
+        sess = D / "claude-code-sessions" / "acct" / "org"
+        sess.mkdir(parents=True)
+        (sess / "local_a.json").write_text(json.dumps(
+            {"sessionId": "local_a", "cwd": str(self.wt), "originCwd": str(self.app), "worktreePath": str(self.wt),
+             "title": f"notes about {self.app}"}, separators=(",", ":")))
+        (sess / "local_b.json").write_text(json.dumps({"sessionId": "local_b", "cwd": str(self.other)},
+                                                      separators=(",", ":")))
+        (sess / "scheduled-tasks.json").write_text(json.dumps(
+            {"scheduledTasks": [{"id": "t", "cwd": str(self.app)}]}, indent=2))
+        (D / "git-worktrees.json").write_text(json.dumps({
+            "worktrees": {"wt1": {"path": str(self.wt), "baseRepo": str(self.app),
+                                  "anchors": [{"gitRoot": str(self.app), "commonDir": f"{self.app}/.git"}]}},
+            "originUrls": {str(self.app).lower(): {"commonDir": f"{str(self.app).lower()}/.git"}},
+            "originPins": {f"{self.app}/.git": {"folder": str(self.app)}},
+            "untrackedDirGc": {"sightings": {f"{self.app}/.claude/worktrees/old": 1}}}, indent="\t"))
+        (D / "ccd-session-presets.json").write_text(json.dumps(
+            {"presets": [{"target": {"cwd": str(self.other)}}]}, indent="\t"))
+        self.env["STELLAXIS_DESKTOP_RUNNING"] = "0"
+
     def tearDown(self):
         self.tmp.cleanup()
 
@@ -87,6 +108,52 @@ class Relocate(unittest.TestCase):
         out = self.prune("relocate", str(self.app), str(self.H / "code" / "app"), "--apply", ok=False)
         self.assertIn("close those sessions", out)
         self.assertTrue(self.app.is_dir())
+
+    def test_refuses_while_desktop_app_runs(self):
+        self.env["STELLAXIS_DESKTOP_RUNNING"] = "1"
+        out = self.prune("relocate", str(self.app), str(self.H / "code" / "app"), "--apply", ok=False)
+        self.assertIn("quit the Claude desktop app", out)
+        self.assertTrue(self.app.is_dir())
+        out = self.prune("relocate", str(self.other), str(self.H / "code" / "other"), "--apply", ok=False)
+        self.assertIn("quit the Claude desktop app", out, "any desktop record under src blocks the move")
+
+    def test_desktop_records_follow_the_move(self):
+        new = self.H / "code" / "app"
+        new_wt = new / ".claude" / "worktrees" / "wt1"
+        before = {p: p.read_bytes() for p in self.D.rglob("*.json")}
+        self.prune("relocate", str(self.app), str(new), "--apply")
+
+        sess = self.D / "claude-code-sessions" / "acct" / "org"
+        a = json.loads((sess / "local_a.json").read_text())
+        self.assertEqual((a["cwd"], a["originCwd"], a["worktreePath"]), (str(new_wt), str(new), str(new_wt)))
+        self.assertEqual(a["title"], f"notes about {self.app}", "free text is left as written")
+        self.assertNotIn(b": ", (sess / "local_a.json").read_bytes(), "compact files stay compact")
+        self.assertEqual((sess / "local_b.json").read_bytes(), before[sess / "local_b.json"], "other project untouched")
+        self.assertEqual(json.loads((sess / "scheduled-tasks.json").read_text())["scheduledTasks"][0]["cwd"], str(new))
+
+        g = json.loads((self.D / "git-worktrees.json").read_text())
+        w = g["worktrees"]["wt1"]
+        self.assertEqual((w["path"], w["baseRepo"]), (str(new_wt), str(new)))
+        self.assertEqual(w["anchors"][0], {"gitRoot": str(new), "commonDir": f"{new}/.git"})
+        self.assertEqual(g["originUrls"], {str(new).lower(): {"commonDir": f"{str(new).lower()}/.git"}},
+                         "lowercased keys are matched case-insensitively")
+        self.assertEqual(g["originPins"], {f"{new}/.git": {"folder": str(new)}})
+        self.assertEqual(list(g["untrackedDirGc"]["sightings"]), [f"{new}/.claude/worktrees/old"])
+        self.assertIn("\n\t", (self.D / "git-worktrees.json").read_text(), "tab indentation kept")
+        presets = self.D / "ccd-session-presets.json"
+        self.assertEqual(presets.read_bytes(), before[presets])
+
+        self.prune("restore", "last", "--apply")
+        for p, data in before.items():
+            self.assertEqual(json.loads(p.read_bytes()), json.loads(data), f"{p.name} restored")
+
+    def test_linked_worktree_outside_the_repo_can_move(self):
+        new = self.H / "code" / "wt2"
+        self.prune("relocate", str(self.ext), str(new), "--apply")
+        self.assertEqual(self.git(new, "rev-parse", "--abbrev-ref", "HEAD").strip(), "wt2")
+        listed = self.git(self.app, "worktree", "list", "--porcelain")
+        self.assertIn(f"worktree {new}\n", listed)
+        self.assertNotIn("prunable", listed)
 
     def test_apply_and_restore(self):
         new = self.H / "code" / "personal" / "app"

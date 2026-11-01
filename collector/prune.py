@@ -284,6 +284,72 @@ def repos_touching(src: Path) -> dict:
     return found
 
 
+DESKTOP_DIR = C.HOME / "Library" / "Application Support" / "Claude"
+
+
+def desktop_files() -> list:
+    """Claude desktop app (Code tab) state that remembers folders by path."""
+    if not DESKTOP_DIR.is_dir():
+        return []
+    files = [DESKTOP_DIR / "git-worktrees.json", DESKTOP_DIR / "ccd-session-presets.json"]
+    for sub in ("claude-code-sessions", "local-agent-mode-sessions"):
+        files += sorted((DESKTOP_DIR / sub).glob("*/*/local_*.json"))
+        files += sorted((DESKTOP_DIR / sub).glob("*/*/scheduled-tasks.json"))
+    return [f for f in files if f.is_file()]
+
+
+def desktop_running() -> bool:
+    forced = os.environ.get("STELLAXIS_DESKTOP_RUNNING")  # tests
+    if forced is not None:
+        return forced == "1"
+    # ps, not pgrep: pgrep skips its own ancestors, and this often runs from a terminal inside the app
+    out = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True).stdout
+    return any(l.strip().endswith("/Claude.app/Contents/MacOS/Claude") for l in out.splitlines())
+
+
+def remap_tree(v, s: str, d: str):
+    """Copy of a JSON value with every string (and dict key) that is `s` or under it moved to `d`. Keys the app
+    stores lowercased (git-worktrees.json originUrls) are matched case-insensitively."""
+    def one(x):
+        new = remap(x, s, d)
+        if new is None and x == x.lower():
+            new = remap(x, s.lower(), d.lower())
+        return x if new is None else new
+    if isinstance(v, str):
+        return one(v)
+    if isinstance(v, list):
+        return [remap_tree(x, s, d) for x in v]
+    if isinstance(v, dict):
+        return {one(k): remap_tree(x, s, d) for k, x in v.items()}
+    return v
+
+
+def rewrite_json_paths(path: Path, s: str, d: str, apply: bool) -> bool:
+    """Rewrite paths in a JSON file, keeping its layout: compact, 2-space or tab indent."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return False
+    new = remap_tree(data, s, d)
+    if new == data:
+        return False
+    if apply:
+        second = raw.split("\n", 1)[1] if "\n" in raw else ""
+        spaces = len(second) - len(second.lstrip(" "))
+        if second.startswith("\t"):
+            out = json.dumps(new, indent="\t", ensure_ascii=False)
+        elif spaces:
+            out = json.dumps(new, indent=spaces, ensure_ascii=False)
+        else:
+            out = json.dumps(new, separators=(",", ":"), ensure_ascii=False)
+        tmp = path.with_name(path.name + ".stellaxis-tmp")
+        tmp.write_text(out + ("\n" if raw.endswith("\n") else ""), encoding="utf-8")
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    return True
+
+
 def reference_files() -> list:
     """Config files that may hold absolute project paths; reported, never edited."""
     lib = C.HOME / "Library"
@@ -320,8 +386,16 @@ def relocate(plan: Plan, src: Path, dest: Path, force=False, backups=True) -> bo
             live.append(f"pid {info.get('pid')} in {C.short_path(info['cwd'])}")
     if live:
         print("  Claude Code is running inside this folder: " + "; ".join(live))
-        if not force:
+        if not force and plan.apply:
             print("  stop: close those sessions first (or pass --force)")
+            return False
+
+    desktop = [f for f in desktop_files() if rewrite_json_paths(f, s, d, False)]
+    if desktop and desktop_running():
+        print(f"  the Claude desktop app has {len(desktop)} record(s) of this folder and is running")
+        if not force and plan.apply:
+            print("  stop: quit the Claude desktop app first (it keeps these in memory and would write the old "
+                  "paths back), then run this from Terminal")
             return False
 
     repos = repos_touching(src)
@@ -394,6 +468,16 @@ def relocate(plan: Plan, src: Path, dest: Path, force=False, backups=True) -> bo
                 if backups:
                     plan.backup_json(hist)
                 rewrite_file(hist, fn, True)
+
+    if desktop:
+        sessions = sum(f.name.startswith("local_") for f in desktop)
+        plan.say(f"update Claude desktop app records: {sessions} Code tab session(s), "
+                 + ", ".join(f.name for f in desktop if not f.name.startswith("local_")))
+        if plan.apply:
+            for f in desktop:
+                if backups:
+                    plan.backup_json(f)
+                rewrite_json_paths(f, s, d, True)
 
     mentions = [C.short_path(f) for f in reference_files() if s.encode() in f.read_bytes()]
     if mentions:
