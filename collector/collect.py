@@ -1191,10 +1191,18 @@ def collect(cfg=None, probe=False) -> dict:
 
 PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
          "/settings": "settings.html", "/settings.html": "settings.html"}
-# Reel Brain's dashboard (built by reels/build_dashboard.py) is served at /reels/ with its cover images
+# Reel Brain's dashboard (built by reels/build_dashboard.py): /reels/ shows it inside the shell, /reels/raw is the page
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
-REELS_BACK = ('<a href="/" style="position:fixed;right:14px;bottom:14px;z-index:99;padding:6px 12px;border-radius:999px;'
-              'background:#111;color:#fff;font:13px system-ui;text-decoration:none;opacity:.85">← Stellaxis</a>')
+REELS_FRAME = '<title>Reels · Stellaxis</title><iframe class="sx-frame" src="/reels/raw" title="Reel Brain dashboard"></iframe>'
+
+
+def shell_page(page: str) -> bytes:
+    """A page body inside the localhost app shell (sidebar), with the skeleton the artifact host would add."""
+    shell = (REPO_DIR / "dashboard" / "shell.html").read_text(encoding="utf-8")
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
+            'content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}'
+            '[hidden]{display:none!important}</style></head><body>' + shell.replace("<!--PAGE-->", page, 1)
+            + "</body></html>").encode()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -1221,21 +1229,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Location", "/reels/")
             self.end_headers()
             return
-        if path == "/reels/" or path.startswith("/reels/images/"):
+        if path == "/reels/":
+            return self.send_body(shell_page(REELS_FRAME), "text/html; charset=utf-8")
+        if path == "/reels/raw" or path.startswith("/reels/images/"):
             return self.send_reels(path)
         page_file = PAGES.get(path)
         if page_file:
             # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
             page = (REPO_DIR / "dashboard" / page_file).read_text(encoding="utf-8")
-            body = ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" '
-                    'content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}'
-                    '[hidden]{display:none!important}</style></head><body>' + page + "</body></html>").encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-            return
+            return self.send_body(shell_page(page), "text/html; charset=utf-8")
         if self.path.split("?")[0] == "/api/status":
             body = (STX_HOME / "status.json").read_bytes() if (STX_HOME / "status.json").exists() else b"{}"
             self.send_response(200)
@@ -1251,8 +1253,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def send_body(self, body: bytes, ctype: str, cache="no-store"):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_reels(self, path):
-        if path == "/reels/":
+        if path == "/reels/raw":
             f, ctype = REELS_HOME / "dashboard.html", "text/html; charset=utf-8"
         else:
             name = urllib.parse.unquote(path[len("/reels/images/"):])
@@ -1262,14 +1271,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if not f.is_file():
             return self.send_error(404, "Reel Brain dashboard not built yet (run reels/build_dashboard.py)")
-        body = f.read_bytes()
-        if f.name == "dashboard.html":
-            body = body.replace(b"</body>", REELS_BACK.encode() + b"</body>", 1)
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store" if ctype.startswith("text/html") else "max-age=3600")
-        self.end_headers()
-        self.wfile.write(body)
+        self.send_body(f.read_bytes(), ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
     def do_POST(self):
         if not settings_api.handle(self, "POST"):

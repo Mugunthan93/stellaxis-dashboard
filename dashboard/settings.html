@@ -43,9 +43,6 @@ a { color: var(--accent); }
 
 header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
 header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.routes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
-.routes a { padding: 5px 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
-.routes a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .spacer { flex: 1; }
 .btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
 .btn:hover:not(:disabled) { border-color: var(--accent); }
@@ -109,7 +106,7 @@ table.kv td.ctl { width: 1%; white-space: nowrap; }
 
 #raw { min-height: 60vh; }
 
-.savebar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -4px 14px rgb(0 0 0 / 0.06); z-index: 5; }
+.savebar { position: fixed; left: var(--sx-side-w, 0px); right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -4px 14px rgb(0 0 0 / 0.06); z-index: 5; }
 .savebar .in { max-width: 1280px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .savebar .msg { font-size: 0.88rem; color: var(--muted); }
 .savebar .msg b { color: var(--ink); }
@@ -131,16 +128,9 @@ dialog::backdrop { background: rgb(0 0 0 / 0.35); }
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <h1>Stellaxis</h1>
-      <span class="muted">Claude settings</span>
+      <h1>Settings</h1>
+      <span class="muted">Edit Claude settings.json, global or per project</span>
     </div>
-    <nav class="routes" aria-label="Pages">
-      <a href="./">Overview</a>
-      <a href="hierarchy">Hierarchy</a>
-      <a href="settings" aria-current="page">Settings</a>
-      <a href="reels/" id="nav-reels" hidden>Reels</a>
-      <script>if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) document.getElementById("nav-reels").hidden = false;</script>
-    </nav>
     <span class="spacer"></span>
     <button class="btn" id="reload" type="button">Reload from disk</button>
   </header>

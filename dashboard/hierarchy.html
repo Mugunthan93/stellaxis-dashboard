@@ -45,9 +45,6 @@ a { color: var(--accent); }
 
 header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
 header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.routes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
-.routes a { padding: 5px 14px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.88rem; }
-.routes a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .spacer { flex: 1; }
 .btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
 .btn:hover { border-color: var(--accent); }
@@ -180,16 +177,9 @@ details.full > summary::-webkit-details-marker { display: none; }
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <h1>Stellaxis</h1>
-      <span class="muted">Claude context ledger</span>
+      <h1>Hierarchy</h1>
+      <span class="muted">Global setup, folders, projects and worktrees</span>
     </div>
-    <nav class="routes" aria-label="Pages">
-      <a href="./">Overview</a>
-      <a href="hierarchy" aria-current="page">Hierarchy</a>
-      <a href="settings">Settings</a>
-      <a href="reels/" id="nav-reels" hidden>Reels</a>
-      <script>if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) document.getElementById("nav-reels").hidden = false;</script>
-    </nav>
     <span class="spacer"></span>
     <span class="muted mono" id="updated"></span>
     <button class="btn" id="refresh" type="button">Refresh now</button>
