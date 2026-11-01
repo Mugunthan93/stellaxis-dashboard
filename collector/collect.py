@@ -50,6 +50,7 @@ DEFAULT_CONFIG = {
     "probe_timeout": 20,
     "max_sessions": 400,          # sessions kept in snapshot (newest first)
     "series_days": 30,
+    "projects": [],               # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
     # USD per million tokens. cache_write_5m = 1.25x input, cache_write_1h = 2x input.
     # Longest matching prefix of the model id wins. Notional on a Max plan.
     "pricing": {
@@ -776,6 +777,25 @@ def interactive(s: dict) -> bool:
     return not (s.get("entrypoint") or "").startswith("sdk") and bool((s.get("measured_context") or {}).get("tools_builtin"))
 
 
+def project_notes(cfg: dict) -> list:
+    """The user's hand-written project cards from config.json, trimmed to plain strings."""
+    def txt(v, n=500):
+        return str(v)[:n] if v is not None else ""
+    out = []
+    for p in cfg.get("projects") or []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        facts = p.get("facts") if isinstance(p.get("facts"), dict) else {}
+        links = [x for x in (p.get("links") or []) if isinstance(x, dict) and x.get("url")]
+        out.append({
+            "name": txt(p["name"], 120), "summary": txt(p.get("summary")), "path": txt(p.get("path"), 300),
+            "facts": {txt(k, 60): txt(v) for k, v in facts.items()},
+            "links": [{"label": txt(x.get("label") or x["url"], 80), "url": txt(x["url"], 500)} for x in links],
+            "open": [txt(x) for x in (p.get("open") or [])],
+        })
+    return out
+
+
 def build_snapshot(cfg: dict, cache: dict) -> dict:
     t0 = time.time()
     files = parse_transcripts(cache)
@@ -1091,6 +1111,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
         } if latest_ctx else None,
         "items": sorted(items, key=lambda x: -x["bytes_always"]),
         "projects": projects_out,
+        "project_notes": project_notes(cfg),
         "sessions": sess_list[: int(cfg["max_sessions"])],
         "series": series,
         "duplicates": duplicates,

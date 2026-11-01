@@ -71,6 +71,18 @@ header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: 
 .grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; }
 @media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 
+[hidden] { display: none !important; }
+
+/* project notes */
+.notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
+.note-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.note-card h3 { font-size: 1.02rem; }
+.note-card p { margin: 0; font-size: 0.88rem; }
+.note-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 0.84rem; }
+.note-card dt { color: var(--muted); }
+.note-card dd { margin: 0; overflow-wrap: anywhere; }
+.note-card ul { margin: 0; padding-left: 18px; font-size: 0.84rem; }
+
 /* budget bar */
 .budget { display: flex; height: 34px; border-radius: 6px; overflow: hidden; background: var(--sunk); }
 .budget span { display: block; height: 100%; min-width: 2px; }
@@ -183,6 +195,14 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <p class="muted" id="chart-note" style="margin:0;font-size:0.82rem"></p>
     </section>
   </div>
+
+  <section class="panel" aria-labelledby="notes-h" id="notes-panel" hidden>
+    <div class="panel-head">
+      <h2 id="notes-h">Projects</h2>
+      <p>Your notes, from the <code class="mono">projects</code> list in <code class="mono">~/.stellaxis/config.json</code>.</p>
+    </div>
+    <div class="notes" id="notes"></div>
+  </section>
 
   <section class="panel" aria-label="Ledgers">
     <nav class="tabs" role="tablist" id="tabs">
@@ -400,7 +420,25 @@ footer { font-size: 0.8rem; color: var(--muted); }
     $("#status-text").textContent = !s ? "Waiting for data" : st.mode === "live" ? `Live · ${s.host}` : st.mode === "local" ? `Local · ${s.host}` : `Snapshot · ${s.host}`;
     $("#updated").textContent = s ? "updated " + ago(s.generated_at) : "";
     if (!s) return;
-    renderKpis(s); renderBudget(s); renderChart(s); renderTabs(s);
+    renderKpis(s); renderBudget(s); renderChart(s); renderNotes(s); renderTabs(s);
+  }
+
+  function renderNotes(s) {
+    const notes = s.project_notes || [];
+    $("#notes-panel").hidden = !notes.length;
+    const safeUrl = u => /^https?:\/\//i.test(u) ? u : null;
+    $("#notes").innerHTML = notes.map(p => {
+      const facts = Object.entries(p.facts || {}).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+      const links = (p.links || []).filter(l => safeUrl(l.url)).map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join(" · ");
+      return `<article class="note-card">
+        <h3>${esc(p.name)}</h3>
+        ${p.path ? `<div class="sub mono">${esc(p.path)}</div>` : ""}
+        ${p.summary ? `<p>${esc(p.summary)}</p>` : ""}
+        ${facts ? `<dl>${facts}</dl>` : ""}
+        ${p.open?.length ? `<div><span class="eyebrow">Open</span><ul>${p.open.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+        ${links ? `<div class="sub">${links}</div>` : ""}
+      </article>`;
+    }).join("");
   }
 
   function renderKpis(s) {
