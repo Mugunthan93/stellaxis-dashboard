@@ -138,6 +138,8 @@ dialog::backdrop { background: rgb(0 0 0 / 0.35); }
       <a href="./">Overview</a>
       <a href="hierarchy">Hierarchy</a>
       <a href="settings" aria-current="page">Settings</a>
+      <a href="reels/" id="nav-reels" hidden>Reels</a>
+      <script>if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) document.getElementById("nav-reels").hidden = false;</script>
     </nav>
     <span class="spacer"></span>
     <button class="btn" id="reload" type="button">Reload from disk</button>

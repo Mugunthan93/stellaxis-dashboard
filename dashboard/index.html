@@ -148,6 +148,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <a href="./" aria-current="page">Overview</a>
       <a href="hierarchy">Hierarchy</a>
       <a href="settings">Settings</a>
+      <a href="reels/" id="nav-reels" hidden>Reels</a>
+      <script>if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) document.getElementById("nav-reels").hidden = false;</script>
     </nav>
     <span class="status" id="status" data-mode="none"><span class="dot"></span><span id="status-text">Waiting for data</span></span>
     <span class="spacer"></span>

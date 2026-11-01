@@ -16,6 +16,7 @@ import datetime as dt
 import hashlib
 import http.server
 import json
+import mimetypes
 import os
 import re
 import socket
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import settings_api
@@ -1189,6 +1191,10 @@ def collect(cfg=None, probe=False) -> dict:
 
 PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
          "/settings": "settings.html", "/settings.html": "settings.html"}
+# Reel Brain's dashboard (built by reels/build_dashboard.py) is served at /reels/ with its cover images
+REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
+REELS_BACK = ('<a href="/" style="position:fixed;right:14px;bottom:14px;z-index:99;padding:6px 12px;border-radius:999px;'
+              'background:#111;color:#fff;font:13px system-ui;text-decoration:none;opacity:.85">← Stellaxis</a>')
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -1209,7 +1215,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        page_file = PAGES.get(self.path.split("?")[0])
+        path = self.path.split("?")[0]
+        if path == "/reels":
+            self.send_response(301)
+            self.send_header("Location", "/reels/")
+            self.end_headers()
+            return
+        if path == "/reels/" or path.startswith("/reels/images/"):
+            return self.send_reels(path)
+        page_file = PAGES.get(path)
         if page_file:
             # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
             page = (REPO_DIR / "dashboard" / page_file).read_text(encoding="utf-8")
@@ -1236,6 +1250,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         super().do_GET()
+
+    def send_reels(self, path):
+        if path == "/reels/":
+            f, ctype = REELS_HOME / "dashboard.html", "text/html; charset=utf-8"
+        else:
+            name = urllib.parse.unquote(path[len("/reels/images/"):])
+            f = REELS_HOME / "images" / name
+            if "/" in name or name.startswith(".") or f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+                return self.send_error(404)
+            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if not f.is_file():
+            return self.send_error(404, "Reel Brain dashboard not built yet (run reels/build_dashboard.py)")
+        body = f.read_bytes()
+        if f.name == "dashboard.html":
+            body = body.replace(b"</body>", REELS_BACK.encode() + b"</body>", 1)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store" if ctype.startswith("text/html") else "max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         if not settings_api.handle(self, "POST"):
