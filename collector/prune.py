@@ -7,6 +7,7 @@ with a manifest.json so `restore` can put them back exactly.
   python3 prune.py list [--kind skill] [--unused-days 30] [--scope user]
   python3 prune.py archive <item-id>... [--apply]
   python3 prune.py move <item-id>... --to ~/code/mesell [--apply]
+  python3 prune.py relocate ~/Documents/app ~/code/personal/app [--apply]
   python3 prune.py restore <stamp|last> [--apply]
   python3 prune.py archives
   python3 prune.py purge --older-than 14d [--apply]
@@ -20,7 +21,9 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -188,6 +191,219 @@ def move_item(plan: Plan, it: dict, to: Path):
         print(f"  skip {it['id']}: moving {kind} is manual (edit the files)")
 
 
+# ---------------------------------------------------------------- relocate a project folder
+
+WALK_SKIP = {"node_modules", ".git", "venv", ".venv", "__pycache__", "dist", "build", "Pods", "DerivedData", ".gradle"}
+CWD_RE = re.compile(rb'"cwd":"((?:[^"\\]|\\.)*)"')
+
+
+def claude_dir_name(path: str) -> str:
+    """How Claude Code names a folder's transcript directory under ~/.claude/projects."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def remap(p: str, src: str, dest: str):
+    if p == src:
+        return dest
+    if p.startswith(src + "/"):
+        return dest + p[len(src):]
+    return None
+
+
+def json_str(s: str) -> bytes:
+    return json.dumps(s, ensure_ascii=False)[1:-1].encode()
+
+
+def replace_path_field(data: bytes, field: str, src: str, dest: str) -> bytes:
+    """Rewrite `"field":"<src>"` and `"field":"<src>/..."` in compact JSON lines; other paths stay untouched."""
+    a, b = f'"{field}":"'.encode() + json_str(src), f'"{field}":"'.encode() + json_str(dest)
+    return data.replace(a + b'"', b + b'"').replace(a + b"/", b + b"/")
+
+
+def rewrite_file(path: Path, fn, apply: bool) -> bool:
+    data = path.read_bytes()
+    new = fn(data)
+    if new == data:
+        return False
+    if apply:
+        tmp = path.with_name(path.name + ".stellaxis-tmp")
+        tmp.write_bytes(new)
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    return True
+
+
+def transcript_cwd(d: Path):
+    """The folder a ~/.claude/projects/<dir> belongs to: first `cwd` recorded in its transcripts."""
+    for f in sorted(d.glob("*.jsonl")):
+        try:
+            with open(f, "rb") as fh:
+                for i, line in enumerate(fh):
+                    m = CWD_RE.search(line)
+                    if m:
+                        return json.loads(b'"' + m.group(1) + b'"')
+                    if i > 2000:
+                        break
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def git_worktrees(repo: Path) -> list:
+    """[main, linked...] for the repo at `repo`, existing paths only."""
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], capture_output=True,
+                             text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    paths = [l[len("worktree "):] for l in out.splitlines() if l.startswith("worktree ")]
+    return [p for i, p in enumerate(paths) if i == 0 or Path(p).exists()]
+
+
+def repos_touching(src: Path) -> dict:
+    """{main repo path: [linked worktree paths]} for every repo with its main or a worktree inside src."""
+    found = {}
+    for root, dirs, files in os.walk(src):
+        if ".git" in dirs or ".git" in files:
+            wts = git_worktrees(Path(root))
+            if wts:
+                found[wts[0]] = wts[1:]
+        dirs[:] = [d for d in dirs if d not in WALK_SKIP]
+    return found
+
+
+def reference_files() -> list:
+    """Config files that may hold absolute project paths; reported, never edited."""
+    lib = C.HOME / "Library"
+    files = [C.CLAUDE_DIR / "settings.json", C.CLAUDE_DIR / "settings.local.json", C.STX_HOME / "config.json",
+             lib / "Application Support" / "Claude" / "claude_desktop_config.json",
+             *[C.HOME / n for n in (".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".gitconfig")]]
+    agents = lib / "LaunchAgents"
+    files += sorted(agents.glob("*.plist")) if agents.is_dir() else []
+    return [f for f in files if f.is_file()]
+
+
+def relocate(plan: Plan, src: Path, dest: Path, force=False, backups=True) -> bool:
+    """Move a project folder and everything that remembers it by path: Claude transcripts (resume + Stellaxis
+    history), ~/.claude.json per-project settings, prompt history, and git worktree links."""
+    s, d = str(src), str(dest)
+    if not src.is_dir():
+        print(f"  stop: {C.short_path(src)} is not a folder")
+        return False
+    if dest.exists():
+        print(f"  stop: {C.short_path(dest)} already exists")
+        return False
+    if d == s or d.startswith(s + "/"):
+        print("  stop: destination is inside the source")
+        return False
+    for protected in (C.HOME, C.CLAUDE_DIR, C.STX_HOME):
+        if remap(str(protected), s, d) is not None:
+            print(f"  stop: {C.short_path(src)} contains {C.short_path(protected)}")
+            return False
+
+    live = []
+    for f in sorted((C.CLAUDE_DIR / "sessions").glob("*.json")) if (C.CLAUDE_DIR / "sessions").is_dir() else []:
+        info = C.read_json(f, {}) or {}
+        if info.get("cwd") and remap(info["cwd"], s, d) is not None and pid_alive(info.get("pid")):
+            live.append(f"pid {info.get('pid')} in {C.short_path(info['cwd'])}")
+    if live:
+        print("  Claude Code is running inside this folder: " + "; ".join(live))
+        if not force:
+            print("  stop: close those sessions first (or pass --force)")
+            return False
+
+    repos = repos_touching(src)
+    proj_root = C.CLAUDE_DIR / "projects"
+    tdirs = []
+    for td in sorted(proj_root.iterdir()) if proj_root.is_dir() else []:
+        cwd = transcript_cwd(td) if td.is_dir() else None
+        new = remap(cwd, s, d) if cwd else None
+        if new:
+            tdirs.append((td, cwd, new))
+
+    plan.say(f"move folder {C.short_path(src)} -> {C.short_path(dest)}")
+    plan.manifest["entries"].append({"op": "relocate", "from": s, "to": d})
+    if plan.apply:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(s, d)
+
+    for main, linked in repos.items():
+        new_main = remap(main, s, d) or main
+        new_linked = [remap(p, s, d) or p for p in linked]
+        if not linked:
+            continue
+        plan.say(f"repair git worktree links of {C.short_path(new_main)} ({len(linked)} worktree(s))")
+        if plan.apply:
+            r = subprocess.run(["git", "-C", new_main, "worktree", "repair", *new_linked], capture_output=True, text=True)
+            if r.returncode:
+                print(f"  warning: git worktree repair failed: {r.stderr.strip()}")
+
+    for td, cwd, new in tdirs:
+        files = list(td.rglob("*.jsonl"))
+        changed = sum(rewrite_file(f, lambda b: replace_path_field(b, "cwd", s, d), plan.apply) for f in files)
+        target = proj_root / claude_dir_name(new)
+        if len(target.name) > 200:
+            print(f"  warning: {C.short_path(new)} is a very long path; Claude may not find these sessions to resume")
+        plan.say(f"transcripts {td.name} -> {target.name} ({len(files)} file(s), cwd rewritten in {changed})")
+        if not plan.apply or target == td:
+            continue
+        if not target.exists():
+            td.rename(target)
+            continue
+        for child in list(td.iterdir()):  # sessions already started at the new path: merge
+            if (target / child.name).exists():
+                print(f"  warning: {child.name} exists in both transcript folders; left in {td.name}")
+            else:
+                child.rename(target / child.name)
+        if not any(td.iterdir()):
+            td.rmdir()
+
+    cj = C.read_json(C.CLAUDE_JSON, {}) or {}
+    keys = [k for k in (cj.get("projects") or {}) if remap(k, s, d)]
+    if keys:
+        def rekey(data):
+            projects = data.get("projects") or {}
+            for k in [k for k in projects if remap(k, s, d)]:
+                projects[remap(k, s, d)] = projects.pop(k)
+        plan.say(f"rename {len(keys)} project entr{'y' if len(keys) == 1 else 'ies'} in {C.short_path(C.CLAUDE_JSON)}")
+        if plan.apply:
+            if backups:
+                plan.backup_json(C.CLAUDE_JSON)
+            data = C.read_json(C.CLAUDE_JSON, {}) or {}
+            rekey(data)
+            C.write_json(C.CLAUDE_JSON, data, indent=2)
+
+    hist = C.CLAUDE_DIR / "history.jsonl"
+    if hist.is_file():
+        fn = lambda b: replace_path_field(b, "project", s, d)
+        if rewrite_file(hist, fn, False):
+            plan.say(f"update prompt history in {C.short_path(hist)}")
+            if plan.apply:
+                if backups:
+                    plan.backup_json(hist)
+                rewrite_file(hist, fn, True)
+
+    mentions = [C.short_path(f) for f in reference_files() if s.encode() in f.read_bytes()]
+    if mentions:
+        print(f"  still mentions {C.short_path(src)} (not edited, check by hand): " + ", ".join(mentions))
+    new_repo = remap(str(C.REPO_DIR), s, d)
+    if new_repo:
+        print(f"  this moves Stellaxis itself: afterwards run  bash {C.short_path(new_repo)}/collector/install.sh")
+    return True
+
+
 def restore(name: str, apply: bool):
     dirs = sorted(d for d in ARCHIVE.iterdir() if (d / "manifest.json").exists()) if ARCHIVE.exists() else []
     d = dirs[-1] if name == "last" and dirs else ARCHIVE / name
@@ -197,7 +413,10 @@ def restore(name: str, apply: bool):
     print(f"Restoring {d.name}:")
     for e in reversed(man["entries"]):
         pre = "  " if apply else "  [dry-run] "
-        if e["op"] == "move":
+        if e["op"] == "relocate":
+            if not relocate(Plan(apply, "undo"), Path(e["to"]), Path(e["from"]), backups=False):
+                sys.exit("restore stopped; nothing after this step was changed")
+        elif e["op"] == "move":
             print(f"{pre}move {C.short_path(e['to'])} -> {C.short_path(e['from'])}")
             if apply and Path(e["to"]).exists():
                 Path(e["from"]).parent.mkdir(parents=True, exist_ok=True)
@@ -265,6 +484,11 @@ def main():
         p.add_argument("--apply", action="store_true")
         if name == "move":
             p.add_argument("--to", required=True)
+    rl = sub.add_parser("relocate", help="move a project folder and update Claude + git references to it")
+    rl.add_argument("src")
+    rl.add_argument("dest")
+    rl.add_argument("--apply", action="store_true")
+    rl.add_argument("--force", action="store_true", help="even if a Claude session is running inside src")
     r = sub.add_parser("restore")
     r.add_argument("name")
     r.add_argument("--apply", action="store_true")
@@ -285,6 +509,15 @@ def main():
         return
     if a.cmd == "restore":
         return restore(a.name, a.apply)
+    if a.cmd == "relocate":
+        src, dest = (Path(os.path.abspath(os.path.expanduser(x))) for x in (a.src, a.dest))
+        plan = Plan(a.apply, "relocate")
+        print(f"{'Applying' if a.apply else 'Plan'}: relocate {C.short_path(src)} -> {C.short_path(dest)}")
+        if relocate(plan, src, dest, a.force):
+            plan.finish()
+        else:
+            sys.exit(1)
+        return
     if a.cmd == "purge":
         cutoff = dt.datetime.now().timestamp() - C.parse_duration(a.older_than, 14 * 86400)
         for d in sorted(ARCHIVE.iterdir()) if ARCHIVE.exists() else []:
