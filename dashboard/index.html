@@ -56,13 +56,13 @@ header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: 
 .notice code { font-family: var(--mono); font-size: 0.82rem; background: var(--sunk); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
 
 /* KPI row */
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.kpi { background: var(--surface); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.kpis { display: flex; flex-wrap: wrap; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.kpi { flex: 1 1 170px; background: var(--surface); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
 .kpi .v { font-family: var(--mono); font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .kpi .s { font-size: 0.8rem; color: var(--muted); }
 
 /* panels */
-.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
 .panel-head p { margin: 0; color: var(--muted); font-size: 0.86rem; max-width: 70ch; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; }
@@ -109,7 +109,8 @@ svg text { fill: var(--muted); font-family: var(--mono); font-size: 10px; }
 .tabs .count { font-family: var(--mono); font-weight: 400; font-size: 0.78rem; color: var(--muted); margin-left: 4px; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
-.filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+.filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); max-width: 100%; }
+.filters select { min-width: 0; }
 .filters input[type="search"], .filters select, .filters input[type="number"] { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 5px 9px; }
 .filters input[type="number"] { width: 5.5em; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -140,6 +141,11 @@ tr.detail td { background: var(--sunk); }
 .empty { padding: 28px; text-align: center; color: var(--muted); }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; }
 footer { font-size: 0.8rem; color: var(--muted); }
+@media (pointer: coarse) {
+  .btn, .seg button, .tabs button, .chip, .filters select, .filters input[type="search"], .filters input[type="number"] { min-height: 44px; }
+  .chips { gap: 8px; }
+  .reels summary { min-height: 44px; align-items: center; }
+}
 @media (prefers-reduced-motion: no-preference) { .budget span { transition: flex-basis 0.4s ease; } }
 </style>
 
@@ -195,6 +201,17 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <p class="muted" id="chart-note" style="margin:0;font-size:0.82rem"></p>
     </section>
   </div>
+
+  <section class="panel" aria-labelledby="cold-h" id="cold-panel" hidden>
+    <div class="panel-head">
+      <h2 id="cold-h">Sessions that lost their cache</h2>
+      <p id="cold-sub"></p>
+    </div>
+    <div class="tablewrap"><table id="cold-table"><thead><tr>
+      <th>When</th><th>Project</th><th class="n">Idle</th><th class="n">Rebuilt</th><th class="n">Extra cost</th>
+    </tr></thead><tbody></tbody></table></div>
+    <p class="muted" id="cold-note" style="margin:8px 0 0;font-size:0.82rem"></p>
+  </section>
 
   <section class="panel" aria-labelledby="reels-h" id="reels-panel" hidden>
     <div class="panel-head">
@@ -271,6 +288,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <div class="tablewrap" style="margin-top:10px"><table id="sessions-table"><thead><tr>
         <th>When</th><th>Project</th><th class="n">Turns</th><th class="n">Baseline</th><th class="n">Tokens</th><th class="n">Cost</th><th>Skills · agents · MCP used</th>
       </tr></thead><tbody></tbody></table></div>
+      <button class="btn" type="button" id="sess-more" hidden style="margin-top:8px"></button>
     </div>
 
     <div id="tab-dupes" role="tabpanel" hidden>
@@ -325,7 +343,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   const st = {
     snap: null, mode: "none", tab: store.get("tab", "items"), kind: store.get("kind", "all"), scope: "all", q: "",
     unusedOn: store.get("unusedOn", false), unusedDays: store.get("unusedDays", 30), hideManaged: false,
-    sort: { key: "tokens_always", dir: -1 }, limit: 60, open: new Set(), sel: new Set(), metric: "tokens", unit: store.get("unit", "day"), sessProj: "all",
+    sort: { key: "tokens_always", dir: -1 }, limit: 60, open: new Set(), sel: new Set(), sessLimit: 40, metric: "tokens", unit: store.get("unit", "day"), sessProj: "all",
   };
 
   // ---------- data feeds
@@ -364,6 +382,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
         : ` &nbsp;·&nbsp; <b>Collector:</b> ${esc(c.phase)} ${esc(c.path || c.server || "")} for ${Math.max(1, Math.round(mins))} min` +
           (mins > 2 ? ` <span class="pill warn">stuck? macOS may be waiting for you to allow folder access</span>` : "");
     }
+    const c2 = feed.collector, slow = c2 && c2.phase !== "idle" && (Date.now() - Date.parse(c2.at)) / 60000 > 2;
+    el.hidden = (feed.app === "ok" || feed.local === "ok") && !(c2 && c2.phase === "not running") && !slow;
     el.innerHTML = `<b>Desktop live feed:</b> ${esc(app)} &nbsp;·&nbsp; <b>Snapshot file:</b> ${esc(local)}${col}`;
   }
   async function connectLive() {
@@ -433,7 +453,19 @@ footer { font-size: 0.8rem; color: var(--muted); }
     $("#status-text").textContent = !s ? "Waiting for data" : st.mode === "live" ? `Live · ${s.host}` : st.mode === "local" ? `Local · ${s.host}` : `Snapshot · ${s.host}`;
     $("#updated").textContent = s ? "updated " + ago(s.generated_at) : "";
     if (!s) return;
-    renderKpis(s); renderBudget(s); renderChart(s); renderReels(s); renderNotes(s); renderTabs(s);
+    renderKpis(s); renderBudget(s); renderChart(s); renderCold(s); renderReels(s); renderNotes(s); renderTabs(s);
+  }
+
+  function renderCold(s) {
+    const c = s.cache_loss;
+    $("#cold-panel").hidden = !c || !c.count;
+    if (!c || !c.count) return;
+    const idle = m => m >= 1440 ? (m / 1440).toFixed(1) + " d" : m >= 60 ? (m / 60).toFixed(1) + " h" : m + " min";
+    $("#cold-sub").textContent = `Last ${c.days} days: ${c.count} restarts in ${c.sessions} sessions rebuilt ${fmtT(c.tokens)} tokens, about ${fmt$(c.extra_cost)} more than reading the cache.`;
+    $("#cold-table tbody").innerHTML = c.worst.map(x => `<tr>
+        <td class="mono" style="white-space:nowrap">${esc(x.ts.slice(0, 16).replace("T", " "))}</td><td>${esc(x.project)}</td>
+        <td class="n">${idle(x.idle_min)}</td><td class="n">${fmtT(x.tokens)}</td><td class="n">${fmt$(x.extra_cost)}</td></tr>`).join("");
+    $("#cold-note").textContent = `The cache lasts about ${c.ttl_minutes} minutes after the last turn. Coming back later to a long session rewrites its whole history; /compact or /clear first makes that rewrite smaller. Costs are at API prices.`;
   }
 
   function renderReels(s) {
@@ -693,14 +725,18 @@ footer { font-size: 0.8rem; color: var(--muted); }
     sel.value = st.sessProj;
     const rows = s.sessions.filter(x => st.sessProj === "all" || x.project === st.sessProj);
     const tag = (o, cls) => Object.entries(o || {}).map(([k, n]) => `<span class="pill ${cls}">${esc(k)}${n > 1 ? " ×" + n : ""}</span>`).join(" ");
-    $("#sessions-table tbody").innerHTML = rows.length ? rows.map(x => `<tr>
+    const more = $("#sess-more");
+    more.hidden = rows.length <= st.sessLimit;
+    more.textContent = `Show all ${rows.length} sessions`;
+    $("#sessions-table tbody").innerHTML = rows.length ? rows.slice(0, st.sessLimit).map(x => `<tr>
         <td class="mono" style="white-space:nowrap">${esc((x.last_ts || "").slice(0, 16).replace("T", " "))}<div class="sub">${esc(x.entrypoint || "")} ${esc(x.version || "")}</div></td>
         <td>${esc(x.project)}${x.branch ? `<div class="sub">${esc(x.branch)}</div>` : ""}</td>
-        <td class="n">${x.turns}</td><td class="n">${fmtT(x.baseline_tokens)}</td><td class="n">${fmtT(x.tokens.total)}</td><td class="n">${fmt$(x.cost)}</td>
+        <td class="n">${x.turns}</td><td class="n">${fmtT(x.baseline_tokens)}</td><td class="n">${fmtT(x.tokens.total)}</td><td class="n">${fmt$(x.cost)}${x.cache_lost ? `<div class="sub" title="Rebuilt ${fmtT(x.cache_lost.tokens)} tokens after idling past the cache lifetime">${x.cache_lost.count} cold, +${fmt$(x.cache_lost.extra_cost)}</div>` : ""}</td>
         <td><div class="tags">${tag(x.skills, "good")} ${tag(x.slash, "good")} ${tag(x.agents, "acc")} ${tag(x.mcp, "warn")}</div>${x.subagent_files ? `<div class="sub">${x.subagent_files} subagent transcript(s)</div>` : ""}</td></tr>`).join("")
       : `<tr><td colspan="7" class="empty">No sessions recorded.</td></tr>`;
   }
   $("#sess-proj").addEventListener("change", e => { st.sessProj = e.target.value; renderSessions(st.snap); });
+  $("#sess-more").addEventListener("click", () => { st.sessLimit = Infinity; renderSessions(st.snap); });
 
   function renderDupes(s) {
     $("#dupes-table tbody").innerHTML = s.duplicates.length ? s.duplicates.map(d => `<tr><td>${esc(KIND_LABEL[d.kind] || d.kind)}</td><td class="name">${esc(d.name)}</td><td class="mono" style="font-size:0.8rem">${d.items.map(esc).join("<br>")}</td></tr>`).join("")

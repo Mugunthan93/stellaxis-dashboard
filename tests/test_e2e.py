@@ -2,6 +2,7 @@
 
   python3 -m unittest discover -s tests -v
 """
+import datetime as dt
 import json
 import os
 import subprocess
@@ -102,6 +103,18 @@ class E2E(unittest.TestCase):
         sub = [{**base, "type": "assistant", "timestamp": "2026-10-01T10:00:30Z", "isSidechain": True,
                 "message": {"id": "s1", "model": "claude-sonnet-5-5", "content": [], "usage": u2}}]
         w(C / "projects" / enc / sid / "subagents" / "agent-ag1.jsonl", jl(sub))
+        # idle past the cache TTL: 90 minutes later the whole 30K context comes back as a write
+        cold = {"input_tokens": 5, "cache_creation_input_tokens": 30000, "cache_read_input_tokens": 0, "output_tokens": 10,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 30000}}
+        warm = {"input_tokens": 5, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 30000, "output_tokens": 10}
+        def ago(days, minutes):  # inside the 30-day window whatever day the tests run
+            noon = dt.datetime.now(dt.timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+            return (noon - dt.timedelta(days=days, minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        base_cold = {**base, "sessionId": "cold", "cwd": str(H / "code" / "elsewhere")}
+        w(C / "projects" / enc / "cold.jsonl", jl([
+            {**base_cold, "type": "assistant", "timestamp": t, "isSidechain": False,
+             "message": {"id": mid, "model": "claude-opus-5-5", "content": [], "usage": u}}
+            for mid, t, u in [("c1", ago(1, 120), cold), ("c2", ago(1, 90), warm), ("c3", ago(1, 0), cold)]]))
         wenc = "-" + str(wt).strip("/").replace("/", "-").replace(".", "-")
         w(C / "projects" / wenc / "w1.jsonl", jl([{**base, "cwd": str(wt), "sessionId": "w1", "type": "user",
                                                    "timestamp": "2026-10-02T10:00:00Z",
@@ -169,6 +182,17 @@ class E2E(unittest.TestCase):
         # m1 duplicated line must be counted once: 2 opus msgs + 1 sonnet subagent msg
         self.assertEqual(s["tokens"]["output"], 100 + 50 + 50)
         self.assertGreater(s["cost"], 0)
+
+    def test_cache_loss(self):
+        s = next(x for x in self.snap["sessions"] if x["id"] == "cold")
+        self.assertEqual(s["cache_lost"]["count"], 1, "the first write and the warm turn are not losses")
+        self.assertEqual(s["cache_lost"]["tokens"], 30000)
+        # opus-5-5: 1h write 2 x $4 = $8/M vs read $0.20/M
+        self.assertAlmostEqual(s["cache_lost"]["extra_cost"], 30000 * 7.8 / 1e6, places=4)
+        warm = next(x for x in self.snap["sessions"] if x["id"].startswith("1111"))
+        self.assertIsNone(warm["cache_lost"])
+        top = self.snap["cache_loss"]["worst"][0]
+        self.assertEqual((top["session"], top["idle_min"]), ("cold", 90))
 
     def test_probe_and_duplicates(self):
         fake = self.items["mcp:user:fake"]

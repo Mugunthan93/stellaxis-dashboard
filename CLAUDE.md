@@ -37,7 +37,9 @@ Everything flows through one file, `$STELLAXIS_HOME/snapshot.json`, written by `
   give *measured* always-on sizes. `inventory` walks `~/.claude`, `~/.claude.json`, installed plugins
   and every discovered project folder (`scan_roots`, plus every cwd seen in transcripts) to list items.
   `build_snapshot` joins the two, prices tokens, and groups projects/worktrees. `collect()` also appends
-  to `history.jsonl` and writes `status.json` (current phase, shown by the dashboard).
+  to `history.jsonl` and writes `status.json` (current phase, shown by the dashboard). `_cache_loss`
+  flags turns that rebuilt the cache after idling past the 1-hour TTL (`cache_lost` per session,
+  `cache_loss` in the snapshot, the Overview panel); the threshold was measured from real transcripts.
 - `collector/prune.py` and `collector/mcp_server.py` both `import collect as C` and reuse its paths,
   config and snapshot. Changing a snapshot field means checking all three plus both HTML pages.
 - `collector/mcp_server.py` is a stdio MCP server with a single read-only tool (`stellaxis_snapshot`),
@@ -60,6 +62,8 @@ user/project/local items are `removable`; the rest are changed in claude.ai sett
 session's first turn and is the number pruning should move.
 
 ### Dashboard
+
+`DESIGN.md` holds the palette, fonts and component rules; read it before changing any page.
 
 `dashboard/index.html` (Overview) and `dashboard/hierarchy.html` are authored as artifact bodies (no
 `<html>`/`<head>` skeleton). The same file serves both as:

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import settings_api
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
 CLAUDE_JSON = (CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json"
@@ -171,6 +171,12 @@ def price_for(model: str, pricing: dict):
     return pricing.get(best) if best else None
 
 
+def rebuild_extra(model: str, w5: int, w1: int, pricing: dict) -> float:
+    """What rewriting these tokens cost above reading them from the cache."""
+    written = cost_of(model, [0, w5, w1, 0, 0], pricing)
+    return max(0.0, written - cost_of(model, [0, 0, 0, w5 + w1, 0], pricing))
+
+
 def cost_of(model: str, t: list, pricing: dict) -> float:
     """t = [input, cache_write_5m, cache_write_1h, cache_read, output]"""
     p = price_for(model, pricing)
@@ -213,6 +219,9 @@ def frontmatter(text: str) -> tuple[dict, str]:
 
 CMD_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
 LISTING_LINE = re.compile(r"^- (\S+?)(?::\s|:$| \(|$)")
+# Measured on real transcripts: turns under an hour apart keep the cache, past an hour 84% rebuild it.
+CACHE_TTL_SECONDS = 3600
+CACHE_LOSS_MIN_CONTEXT = 20000
 
 
 def new_file_state(path: str) -> dict:
@@ -220,7 +229,7 @@ def new_file_state(path: str) -> dict:
             "last_ts": None, "entrypoint": None, "version": None, "branch": None,
             "sidechain": "/subagents/" in path, "models": {}, "hourly": {}, "baseline": None,
             "calls": {}, "mcp_tools": {}, "agent_tokens": {}, "context": {}, "recent_ids": [],
-            "pending": {}, "turns": 0, "prompts": 0}
+            "pending": {}, "turns": 0, "prompts": 0, "last_turn": None, "cache_losses": []}
 
 
 def _bump(d: dict, k: str, n: int = 1):
@@ -283,6 +292,16 @@ def _attachment(st: dict, a: dict):
             ctx["system"] = sys_bytes
 
 
+def _cache_loss(st: dict, ts, model: str, row: list):
+    """Record a turn that rebuilt the cache after idling past its TTL: the previous context came back as writes."""
+    last, st["last_turn"] = st["last_turn"], [ts, row[1] + row[2] + row[3]]
+    if not last or last[1] < CACHE_LOSS_MIN_CONTEXT or row[1] + row[2] <= last[1] / 2 or row[3] >= last[1] / 2:
+        return
+    a, b = parse_ts(last[0]), parse_ts(ts)
+    if a and b and (b - a).total_seconds() >= CACHE_TTL_SECONDS:
+        st["cache_losses"].append([ts, round((b - a).total_seconds() / 60), model, row[1], row[2]])
+
+
 def _line(st: dict, d: dict):
     t = d.get("type")
     ts = d.get("timestamp")
@@ -320,6 +339,8 @@ def _line(st: dict, d: dict):
                 for i in range(5):
                     hm[i] += row[i]
             st["turns"] += 1
+            if ts and not d.get("isSidechain"):
+                _cache_loss(st, ts, model, row)
             if st["baseline"] is None and not d.get("isSidechain"):
                 st["baseline"] = {"tokens": row[0] + row[1] + row[2] + row[3], "model": model, "ts": ts}
         for b in m.get("content") or []:
@@ -823,7 +844,8 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
         s = sessions.setdefault(sid, {"id": sid, "project": None, "first_ts": None, "last_ts": None, "models": {},
                                       "calls": collections.Counter(), "mcp_tools": {}, "agent_tokens": collections.Counter(),
                                       "baseline": None, "context": {}, "subagent_files": 0, "entrypoint": None,
-                                      "version": None, "branch": None, "turns": 0, "prompts": 0, "hourly": {}})
+                                      "version": None, "branch": None, "turns": 0, "prompts": 0, "hourly": {},
+                                      "cache_losses": []})
         if st["sidechain"]:
             s["subagent_files"] += 1
         else:
@@ -857,6 +879,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             c = s["mcp_tools"].setdefault(srv, collections.Counter())
             c.update(tools)
         s["turns"] += st["turns"]
+        s["cache_losses"] += st["cache_losses"]
 
     # --- per-session totals
     sess_list = []
@@ -881,6 +904,10 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
                 "skill_count": len(ctx.get("skills") or {}),
                 "pending_mcp": ctx.get("pendingMcpServers") or [], "needs_auth_mcp": ctx.get("needsAuthMcpServers") or [],
             }
+        losses = [{"session": s["id"], "project": short_path(s["project"]) if s["project"] else "(unknown)", "ts": ts,
+                   "idle_min": idle, "model": model, "tokens": w5 + w1,
+                   "extra_cost": round(rebuild_extra(model, w5, w1, pricing), 4)}
+                  for ts, idle, model, w5, w1 in s["cache_losses"]]
         sess_list.append({
             "id": s["id"], "project": short_path(s["project"]) if s["project"] else "(unknown)",
             "first_ts": s["first_ts"], "last_ts": s["last_ts"], "entrypoint": s["entrypoint"], "version": s["version"],
@@ -890,6 +917,9 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
                        "output": tokens[4], "total": sum(tokens)},
             "cost": round(cost, 4),
             "baseline_tokens": (s["baseline"] or {}).get("tokens"),
+            "cache_lost": {"count": len(losses), "tokens": sum(x["tokens"] for x in losses),
+                           "extra_cost": round(sum(x["extra_cost"] for x in losses), 4)} if losses else None,
+            "_losses": losses,
             "measured_context": measured,
             "skills": {k[6:]: v for k, v in s["calls"].items() if k.startswith("skill:")},
             "slash": {k[6:]: v for k, v in s["calls"].items() if k.startswith("slash:")},
@@ -1095,6 +1125,13 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             k["unused"] += 1
     active_cut = iso(now - dt.timedelta(seconds=max(300, 3 * parse_duration(cfg["interval"]))))
 
+    month = iso(now - dt.timedelta(days=30))
+    lost = [x for s in sess_list for x in s["_losses"] if x["ts"] >= month]
+    cache_loss = {"ttl_minutes": CACHE_TTL_SECONDS // 60, "days": 30, "count": len(lost),
+                  "sessions": len({x["session"] for x in lost}), "tokens": sum(x["tokens"] for x in lost),
+                  "extra_cost": round(sum(x["extra_cost"] for x in lost), 2),
+                  "worst": sorted(lost, key=lambda x: -x["extra_cost"])[:8]}
+
     reels = reels_summary()
     for rp in (reels or {}).get("projects", []):
         same = [p for p in projects_out if rp.get("folder") and not p.get("worktree_of")
@@ -1105,9 +1142,10 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
     for s in sess_list:
         s.pop("_hourly", None)
         s.pop("_ctx", None)
+        s.pop("_losses", None)
     snap = {
         "schema": 1, "collector_version": VERSION, "generated_at": iso(now), "host": socket.gethostname(),
-        "reels": reels,
+        "reels": reels, "cache_loss": cache_loss,
         "interval": cfg["interval"], "claude_dir": short_path(CLAUDE_DIR),
         "totals": {
             "today": window(1), "week": window(7), "month": window(30),
