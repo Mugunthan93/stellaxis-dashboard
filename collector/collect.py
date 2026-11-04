@@ -798,6 +798,15 @@ def project_notes(cfg: dict) -> list:
     return out
 
 
+def reels_summary() -> dict | None:
+    """Reel Brain's summary.json (written by reels/build_dashboard.py); None when it isn't set up on this Mac."""
+    try:
+        data = json.loads((REELS_HOME / "summary.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def build_snapshot(cfg: dict, cache: dict) -> dict:
     t0 = time.time()
     files = parse_transcripts(cache)
@@ -1086,11 +1095,19 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             k["unused"] += 1
     active_cut = iso(now - dt.timedelta(seconds=max(300, 3 * parse_duration(cfg["interval"]))))
 
+    reels = reels_summary()
+    for rp in (reels or {}).get("projects", []):
+        same = [p for p in projects_out if rp.get("folder") and not p.get("worktree_of")
+                and p["path"].rsplit("/", 1)[-1] == rp["folder"]]
+        if same:  # backups and archives can share the folder name; ~/code is the home of real projects
+            best = max(same, key=lambda p: (p["path"] == f"~/code/{rp['folder']}", p["sessions"]))
+            best["reels"] = {"strong": rp["strong"], "total": rp["total"]}
     for s in sess_list:
         s.pop("_hourly", None)
         s.pop("_ctx", None)
     snap = {
         "schema": 1, "collector_version": VERSION, "generated_at": iso(now), "host": socket.gethostname(),
+        "reels": reels,
         "interval": cfg["interval"], "claude_dir": short_path(CLAUDE_DIR),
         "totals": {
             "today": window(1), "week": window(7), "month": window(30),

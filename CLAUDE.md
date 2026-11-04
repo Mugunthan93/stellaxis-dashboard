@@ -6,7 +6,7 @@ Stellaxis is the base project of this Mac: it manages every existing and new pro
 (the default home for all projects and Claude sessions, see `~/.claude/CLAUDE.md`). It measures what
 Claude Code loads into every session (skills, agents, plugins, MCP servers, CLAUDE.md), what actually
 gets used, and what it costs, then helps trim it; it also moves projects safely (`prune.py relocate`).
-`reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777). Python 3 stdlib only, no
+`reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777; its `summary.json` feeds the snapshot's `reels` field and the Overview panel). Python 3 stdlib only, no
 packages, no build step. Target platform is macOS (launchd service, Claude desktop app config path).
 
 ## Commands

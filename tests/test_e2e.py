@@ -106,6 +106,9 @@ class E2E(unittest.TestCase):
         w(C / "projects" / wenc / "w1.jsonl", jl([{**base, "cwd": str(wt), "sessionId": "w1", "type": "user",
                                                    "timestamp": "2026-10-02T10:00:00Z",
                                                    "message": {"role": "user", "content": "hi"}}]))
+        w(H / "Knowledge" / "reels" / "summary.json", json.dumps({
+            "notes": 3, "open_actions": 2, "updated": "2026-11-04", "next": [], "trends": ["Skills everywhere"],
+            "projects": [{"name": "Mesell", "folder": "mesell", "strong": 1, "total": 2, "top": []}]}))
         cls.env = {**os.environ, "HOME": str(H), "STELLAXIS_HOME": str(H / ".stellaxis")}
         cls.env.pop("CLAUDE_CONFIG_DIR", None)
         (H / ".stellaxis").mkdir()
@@ -137,6 +140,11 @@ class E2E(unittest.TestCase):
         self.assertTrue(self.items["claude_md:project:~/code/mesell:api/CLAUDE.md"]["conditional"])
         cm = self.items["claude_md:user:~/.claude/CLAUDE.md"]
         self.assertGreater(cm["bytes_always"], 400, "imports should be counted")
+
+    def test_reels_summary(self):
+        self.assertEqual(self.snap["reels"]["notes"], 3)
+        mesell = next(p for p in self.snap["projects"] if p["path"].endswith("/mesell"))
+        self.assertEqual(mesell["reels"], {"strong": 1, "total": 2})
 
     def test_worktree(self):
         p = next(p for p in self.snap["projects"] if p["path"].endswith("worktrees/agent-1"))

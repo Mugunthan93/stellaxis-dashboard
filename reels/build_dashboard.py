@@ -3,7 +3,7 @@
 Usage: python3 build_dashboard.py   (stdlib only; read-only on the notes)
 Open with: open ~/Knowledge/reels/dashboard.html
 """
-import base64, glob, html, os, re
+import base64, glob, html, json, os, re
 
 R = os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels"))  # the notes; code lives in the repo
 TOPICS = ["Claude Code & skills", "AI coding tools", "AI agents & LLM apps", "Models & research",
@@ -509,6 +509,25 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
 <button type="button" class="side prev" aria-label="Previous trend">Previous</button><button type="button" class="side nextb" aria-label="Next trend">Next</button><div id="storybody"></div></dialog>
 {script}
 """
+    # Stellaxis reads this into its snapshot (collect.py reels_summary), so its Overview stays in step with this page.
+    fit_rank = lambda fs: sorted(fs, key=lambda f: order[f["fit"]])
+    proj_rows = []
+    for pr in projects:
+        rows = fit_rank([{"code": c, "title": titles[c], **f} for c, fl in fits.items() for f in fl
+                         if f["project"] == pr["name"] and c in titles and f["fit"] != "no"])
+        if rows:
+            where = re.search(r"`([^`]+)`", pr["where"]) if pr["where"].lstrip().startswith(("`~", "`/")) else None
+            proj_rows.append({"name": pr["name"], "folder": where.group(1).rstrip("/").split("/")[-1] if where else "",
+                              "strong": sum(r["fit"] == "strong" for r in rows), "total": len(rows),
+                              "top": [{"code": r["code"], "title": r["title"], "fit": r["fit"], "why": r["why"]} for r in rows[:4]]})
+    plain_text = lambda t: re.sub(r"[`*]", "", t).strip()
+    summary = {"updated": last_date, "notes": len(notes), "open_actions": len(open_actions), "done_actions": done_actions,
+               "next": [{"title": plain_text(st.split(":", 1)[0]), "why": plain_text(st.split(":", 1)[1]) if ":" in st else ""} for st in steps],
+               "trends": [plain_text(m) for m in re.findall(r"^- \*\*(.+?)\*\*", trends, re.M)],
+               "projects": proj_rows,
+               "artifact_url": read(".tools/artifact_url.txt").strip()}
+    open(os.path.join(R, "summary.json"), "w", encoding="utf-8").write(json.dumps(summary, indent=1, ensure_ascii=False))
+
     # Local copy is a full document; the artifact copy is a fragment (the publisher adds the skeleton).
     local = f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n{head}\n{style}</head><body>\n{content}</body></html>\n'
     open(os.path.join(R, "dashboard.html"), "w", encoding="utf-8").write(local)

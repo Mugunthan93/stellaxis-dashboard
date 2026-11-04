@@ -79,7 +79,7 @@ def view(args: dict) -> dict:
     proj = args.get("project")
     sessions = [x for x in s.get("sessions", []) if not proj or x["project"] == proj]
     head = {k: s.get(k) for k in ("generated_at", "host", "interval", "collector_version", "totals", "latest_context",
-                                     "collector_status")}
+                                     "collector_status", "reels")}
     if v == "dashboard":
         return {**s, "sessions": sessions[: lim or 200]}
     if v == "summary":

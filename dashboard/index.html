@@ -80,6 +80,14 @@ header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: 
 .note-card dd { margin: 0; overflow-wrap: anywhere; }
 .note-card ul { margin: 0; padding-left: 18px; font-size: 0.84rem; }
 
+/* saved reels */
+.reels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 22px; }
+.reels h3 { font-size: 0.95rem; margin-bottom: 8px; }
+.reels ol, .reels ul { margin: 0; padding-left: 18px; font-size: 0.88rem; display: grid; gap: 6px; }
+.reels .plain { list-style: none; padding: 0; }
+.reels summary { cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+.reels details ul { margin-top: 6px; }
+
 /* budget bar */
 .budget { display: flex; height: 34px; border-radius: 6px; overflow: hidden; background: var(--sunk); }
 .budget span { display: block; height: 100%; min-width: 2px; }
@@ -188,6 +196,20 @@ footer { font-size: 0.8rem; color: var(--muted); }
     </section>
   </div>
 
+  <section class="panel" aria-labelledby="reels-h" id="reels-panel" hidden>
+    <div class="panel-head">
+      <h2 id="reels-h">From your saved reels</h2>
+      <p id="reels-sub"></p>
+      <span class="spacer"></span>
+      <a class="btn" id="reels-open" target="_top">Open reels</a>
+    </div>
+    <div class="reels">
+      <div><h3>Do next</h3><ol id="reels-next"></ol></div>
+      <div><h3>What's changing in AI</h3><ul id="reels-trends"></ul></div>
+      <div><h3>For your projects</h3><ul class="plain" id="reels-projects"></ul></div>
+    </div>
+  </section>
+
   <section class="panel" aria-labelledby="notes-h" id="notes-panel" hidden>
     <div class="panel-head">
       <h2 id="notes-h">Projects</h2>
@@ -240,7 +262,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     <div id="tab-projects" role="tabpanel" hidden>
       <div class="tablewrap"><table id="projects-table"><thead><tr>
         <th>Project</th><th class="n">Sessions</th><th class="n">Tokens</th><th class="n">Cost</th>
-        <th class="n">Own always-on</th><th class="n">Total est.</th><th class="n">Baseline median</th><th>Project items</th><th class="n">Last active</th>
+        <th class="n">Own always-on</th><th class="n">Total est.</th><th class="n">Baseline median</th><th>Project items</th><th>Reels</th><th class="n">Last active</th>
       </tr></thead><tbody></tbody></table></div>
     </div>
 
@@ -411,7 +433,23 @@ footer { font-size: 0.8rem; color: var(--muted); }
     $("#status-text").textContent = !s ? "Waiting for data" : st.mode === "live" ? `Live · ${s.host}` : st.mode === "local" ? `Local · ${s.host}` : `Snapshot · ${s.host}`;
     $("#updated").textContent = s ? "updated " + ago(s.generated_at) : "";
     if (!s) return;
-    renderKpis(s); renderBudget(s); renderChart(s); renderNotes(s); renderTabs(s);
+    renderKpis(s); renderBudget(s); renderChart(s); renderReels(s); renderNotes(s); renderTabs(s);
+  }
+
+  function renderReels(s) {
+    const r = s.reels;
+    $("#reels-panel").hidden = !r;
+    if (!r) return;
+    $("#reels-sub").textContent = `${r.notes} reels · ${r.open_actions} actions to try · updated ${r.updated}`;
+    const link = $("#reels-open"), url = st.mode === "local" ? "/reels/" : r.artifact_url;
+    link.hidden = !url; if (url) link.href = url;
+    $("#reels-next").innerHTML = (r.next || []).map(n => `<li><b>${esc(n.title)}</b>${n.why ? ` <span class="muted">${esc(n.why)}</span>` : ""}</li>`).join("");
+    $("#reels-trends").innerHTML = (r.trends || []).map(t => `<li>${esc(t)}</li>`).join("");
+    const pill = { strong: "good", good: "acc", possible: "" };
+    $("#reels-projects").innerHTML = (r.projects || []).map(p => `<li><details><summary><span>${esc(p.name)}</span>
+        <span class="muted">${p.strong ? `${p.strong} strong · ` : ""}${p.total} reels</span></summary>
+        <ul class="plain">${(p.top || []).map(x => `<li><span class="pill ${pill[x.fit] || ""}">${esc(x.fit)}</span> ${esc(x.title)}${x.why ? `<div class="sub" style="word-break:normal">${esc(x.why)}</div>` : ""}</li>`).join("")}</ul>
+      </details></li>`).join("");
   }
 
   function renderNotes(s) {
@@ -643,8 +681,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
       return `<tr><td><div class="name">${esc(p.path)}</div>${p.missing ? `<div class="sub">folder not found on this machine</div>` : ""}${p.worktree_of ? `<div class="sub">git worktree of ${esc(p.worktree_of)}</div>` : ""}${p.ancestor_claude_md?.length ? `<div class="sub">also loads ${p.ancestor_claude_md.map(esc).join(", ")}</div>` : ""}</td>
         <td class="n">${p.sessions}</td><td class="n">${fmtT(p.tokens)}</td><td class="n">${fmt$(p.cost)}</td>
         <td class="n">${fmtT(p.own_always_tokens)}</td><td class="n">${fmtT(p.est_always_tokens)}</td><td class="n">${fmtT(p.baseline_median)}</td>
-        <td><div class="tags">${counts || '<span class="muted">none</span>'}</div></td><td class="n">${ago(p.last_active)}</td></tr>`;
-    }).join("") : `<tr><td colspan="9" class="empty">No projects found yet.</td></tr>`;
+        <td><div class="tags">${counts || '<span class="muted">none</span>'}</div></td><td>${p.reels ? `<span class="pill ${p.reels.strong ? "good" : ""}">${p.reels.strong ? `${p.reels.strong} strong · ` : ""}${p.reels.total}</span>` : ""}</td><td class="n">${ago(p.last_active)}</td></tr>`;
+    }).join("") : `<tr><td colspan="10" class="empty">No projects found yet.</td></tr>`;
   }
 
   // sessions
