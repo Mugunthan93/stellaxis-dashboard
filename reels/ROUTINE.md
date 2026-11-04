@@ -35,6 +35,11 @@ Do not invent extra shell one-liners (use Read/Write/Edit for JSON and markdown 
 - Do not touch anything outside `~/Knowledge/reels/` (reading project folders and `gh repo list` for the monthly map refresh is fine).
 - Never delete or rewrite existing notes, or untick items in ACTIONS.md. Only add.
 
+## Repeat pages (user's rule, 2026-11-04)
+Pages the user saves from again and again are worth reading in full. They are listed in `R/.pages.json`, and
+`R/.tools/fetch_page.js` lists a page's posts with read-only GETs. It is slow on purpose: 20-30 s per request, 8 per
+call, stops on the first non-200. Never retry a 429 the same day. Classify and process these like saved posts.
+
 ## Steps
 1. Read `R/.processed.json` (object keyed by shortcode). Build the list of shortcodes whose
    `status` is `ok`, `caption-only` or `skipped` → DONE. Note today's date (YYYY-MM-DD, local time).
