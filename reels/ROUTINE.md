@@ -36,9 +36,10 @@ Do not invent extra shell one-liners (use Read/Write/Edit for JSON and markdown 
 - Never delete or rewrite existing notes, or untick items in ACTIONS.md. Only add.
 
 ## Repeat pages (user's rule, 2026-11-04)
-Pages the user saves from again and again are worth reading in full. They are listed in `R/.pages.json`, and
-`R/.tools/fetch_page.js` lists a page's posts with read-only GETs. It is slow on purpose: 20-30 s per request, 8 per
-call, stops on the first non-200. Never retry a 429 the same day. Classify and process these like saved posts.
+Pages the user saves from again and again are worth reading in full. They are listed in `R/.pages.json`.
+The API routes for a page return 404, so read the pages themselves: open `/<user>/reels/`, scroll about every 7 s and
+collect `/reel/<code>/` links, then open each reel at least 10 s apart and run `R/.tools/fetch_reel.js`. Never click.
+Stop on any 429 or error page. Classify and process these like saved posts; note them with `found_via: repeat page`.
 
 ## Steps
 1. Read `R/.processed.json` (object keyed by shortcode). Build the list of shortcodes whose
