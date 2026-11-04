@@ -96,7 +96,11 @@ def parse_note(path):
     # Detail view: everything after the TL;DR line (title, cover and hook are shown on the card).
     rest = body.split(tldr, 1)[1] if tldr else body
     tags = [t.strip() for t in fm.get("tags", "").strip("[]").split(",") if t.strip()]
-    return {**fm, "code": code, "title": title, "hook": hook, "tldr": tldr, "body": rest, "tags": tags}
+    tools = re.findall(r"\*\*([^*]+)\*\*(?: \(`([\w.-]+/[\w.-]+)`)?", section(body, "Tools, repos & links"))
+    worth = section(body, "Worth acting on?").split("\n\n")[0].replace("\n", " ")
+    verdict = re.split(r"(?<=[.!?])\s", worth)[0] if worth else ""
+    return {**fm, "code": code, "title": title, "hook": hook, "tldr": tldr, "body": rest, "tags": tags,
+            "tools": tools, "verdict": verdict}
 
 
 FIT = [("strong", ("strong", "do now")), ("good", ("good", "moderate", "relevant")),
@@ -147,11 +151,12 @@ def main():
     open_actions = [l[6:] for l in actions.splitlines() if l.startswith("- [ ] ")]
     done_actions = sum(1 for l in actions.splitlines() if l.lower().startswith("- [x] "))
     last_run = ([l[2:] for l in runlog.splitlines() if l.startswith("- ")] or ["never"])[-1]
-    last_run = re.sub(r" \([^)]*\)", "", last_run.split(";")[0])  # "2026-10-27: 6 new notes"
+    last_date = last_run.split(":")[0]  # "2026-10-27"
 
     topics = TOPICS + sorted({n.get("topic", "Other") for n in notes} - set(TOPICS))
     groups = [(t, [n for n in notes if n.get("topic", "Other") == t]) for t in topics]
     groups = [(t, ns) for t, ns in groups if ns]
+    by_code = {n["code"]: n for n in notes}
 
     def chips(code):
         fs = sorted((f for f in fits.get(code, []) if f["fit"] != "no"), key=lambda f: order[f["fit"]])
@@ -159,129 +164,230 @@ def main():
             f'<a class="pchip {f["fit"]}" href="#p-{slug(f["project"])}" title="{html.escape(f["raw"])}">{html.escape(f["project"])}</a>'
             for f in fs) + "</div>") if fs else ""
 
+    def thumbs(codes, limit=6):
+        """Reel covers instead of shortcodes: people recognise the picture, not De-REw8FdXv."""
+        out = []
+        for c in [c for c in codes if c in by_code][:limit]:
+            t = html.escape(re.sub(r"`", "", by_code[c]["title"]), quote=True)
+            out.append(f'<a class="thumb" href="#n-{c}" title="{t}"><img src="images/{c}.jpg" alt="{t}" loading="lazy"></a>'
+                       if os.path.exists(os.path.join(R, f"images/{c}.jpg")) else f'<a class="thumb none" href="#n-{c}" title="{t}">{c[:4]}</a>')
+        return '<div class="thumbs">' + "".join(out) + "</div>" if out else ""
+
+    def tool_links(n, limit=5):
+        items = "".join(
+            f'<a class="tool" href="https://github.com/{repo}" target="_blank" rel="noopener">{html.escape(name)}</a>' if repo
+            else f'<span class="tool">{html.escape(name)}</span>' for name, repo in n["tools"][:limit])
+        more = len(n["tools"]) - limit
+        return f'<div class="tools">{items}{f"<span class=more>+{more}</span>" if more > 0 else ""}</div>' if items else ""
+
     def card(n):
         cover = f'images/{n["code"]}.jpg'
         img = (f'<img src="{cover}" alt="" loading="lazy">' if os.path.exists(os.path.join(R, cover))
                else '<div class="noimg">no cover</div>')
-        tags = "".join(f"<span>{html.escape(t)}</span>" for t in n["tags"])
+        label = html.escape("Open on Instagram: " + re.sub(r"`", "", n["title"]), quote=True)
+        hay = " ".join([n["title"], n["tldr"], n.get("author", ""), " ".join(n["tags"]),
+                        " ".join(t for t, _ in n["tools"])]).lower()
+        projs = " ".join(slug(f["project"]) for f in fits.get(n["code"], []) if f["fit"] != "no")
+        verdict = f'<p class="verdict"><b>Worth it?</b> {inline(n["verdict"])}</p>' if n["verdict"] else ""
         return f"""
-<article class="card" id="n-{n['code']}">
-  <a class="cover" href="{html.escape(n.get('source', '#'))}" target="_blank" rel="noopener" title="Open the reel on Instagram">{img}</a>
+<article class="card" id="n-{n['code']}" data-s="{html.escape(hay, quote=True)}" data-p="{projs}">
+  <a class="cover" href="{html.escape(n.get('source', '#'))}" target="_blank" rel="noopener" aria-label="{label}">{img}</a>
   <div class="meta">
     <h3>{inline(n['title'])}</h3>
-    {f'<p class="hook">“{html.escape(n["hook"])}”</p>' if n['hook'] else ''}
     <p class="tldr">{inline(n['tldr'])}</p>
-    <p class="by">{html.escape(n.get('author', ''))} · posted {n.get('posted', '?')} · added {n.get('processed', '?')}</p>
-    <div class="tags">{tags}</div>
+    {tool_links(n)}
+    {verdict}
     {chips(n['code'])}
+    <p class="by">{html.escape(n.get('author', ''))} · {n.get('posted', '?')}</p>
   </div>
   <details class="full"><summary>Full note</summary><div class="note">{md(n['body'])}</div></details>
 </article>"""
 
-    nav = "".join(f'<a href="#t-{i}">{html.escape(t)} <b>{len(ns)}</b></a>' for i, (t, ns) in enumerate(groups))
-    body = "".join(f'<section id="t-{i}"><h2>{html.escape(t)}</h2><div class="grid">{"".join(card(n) for n in ns)}</div></section>'
+    filters = "".join(f'<button type="button" class="chip" data-t="t-{i}" aria-pressed="false">{html.escape(t)} <b>{len(ns)}</b></button>'
+                      for i, (t, ns) in enumerate(groups))
+    body = "".join(f'<section class="topic" id="t-{i}"><h3 class="th">{html.escape(t)} <span>{len(ns)}</span></h3><div class="grid">{"".join(card(n) for n in ns)}</div></section>'
                    for i, (t, ns) in enumerate(groups))
     titles = {n["code"]: n["title"] for n in notes}
-    proj_cards = []
+    proj_cards, proj_opts = [], []
     for pr in projects:
         rows = sorted(((code, f) for code, fl in fits.items() for f in fl if f["project"] == pr["name"] and code in titles),
                       key=lambda x: order[x[1]["fit"]])
+        rows = [r for r in rows if r[1]["fit"] != "no"]
         if not rows:
             continue
         items = "".join(
             f'<li><span class="fit {f["fit"]}">{f["fit"]}</span> <a href="#n-{code}">{inline(titles[code])}</a>'
             f'<p>{inline(f["why"])}</p></li>' for code, f in rows)
-        where = f'<p class="where">{inline(pr["where"])}</p>' if pr["where"] else ""
+        strong = sum(1 for _, f in rows if f["fit"] == "strong")
+        count = f'{strong} strong · {len(rows)} reels' if strong else f'{len(rows)} reels'
         what = f'<p class="what">{inline(pr["what"])}</p>' if pr["what"] else ""
-        proj_cards.append(f'<div class="proj" id="p-{slug(pr["name"])}"><h3>{html.escape(pr["name"])}</h3>{what}{where}<ul>{items}</ul></div>')
-    by_project = (f'<section id="projects"><h2>By project</h2><div class="pgrid">{"".join(proj_cards)}</div></section>'
-                  if proj_cards else "")
-    nav = '<a href="#projects">By project</a>' + nav if proj_cards else nav
-    acts = "".join(f"<li>{inline(a)}</li>" for a in open_actions) or "<li>Nothing open.</li>"
+        proj_cards.append(f'<details class="proj" id="p-{slug(pr["name"])}"><summary><b>{html.escape(pr["name"])}</b><span>{count}</span></summary>{what}<ul>{items}</ul></details>')
+        proj_opts.append(f'<option value="{slug(pr["name"])}">{html.escape(pr["name"])}</option>')
+
+    # "Do next": the map's ranked order, not the 33-item backlog.
+    steps = re.findall(r"^\d+\. (.+)$", section(read("PROJECT-MAP.md"), "Suggested order"), re.M)
+    do_next = "".join(f'<li><b>{inline(s.split(":", 1)[0])}</b>{f"<span>{inline(s.split(chr(58), 1)[1].strip())}</span>" if ":" in s else ""}</li>' for s in steps)
+
+    trend_cards = []
+    for line in trends.splitlines():
+        m = re.match(r"- \*\*(.+?)\*\*\s*(?:—\s*)?(.*?)\s*(\(\[.*)?$", line.strip())
+        if m:
+            codes = re.findall(r"\[([\w-]+)\]\(", m.group(3) or "")
+            trend_cards.append(f'<article class="trend"><h3>{inline(m.group(1))}</h3><p>{inline(m.group(2))}</p>{thumbs(codes)}</article>')
+
+    groups_a = {}
+    for a in open_actions:
+        m = re.match(r"\*\*(\w+\??)\*\*\s*(.*?)(?:\s+—\s+\[([\w-]+)\]\([^)]*\))?\s*$", a)
+        verb, text, code = (m.group(1), m.group(2), m.group(3)) if m else ("Other", a, None)
+        groups_a.setdefault(verb.rstrip("?"), []).append(
+            f'<li>{thumbs([code], 1) if code else ""}<span>{inline(text)}</span></li>')
+    act_groups = "".join(f'<div class="agroup"><h3>{html.escape(v)} <span>{len(ls)}</span></h3><ul>{"".join(ls)}</ul></div>'
+                         for v, ls in sorted(groups_a.items(), key=lambda kv: -len(kv[1])))
 
     head = """<title>AI Reel Knowledge</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">"""
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">"""
     style = """<style>
-/* Layout: summary strip, trends + to-try side by side, then 9:16 reel-cover cards grouped by topic. */
+/* Order of the page answers: what do I do next, what is changing, find a reel, what fits each project. */
 :root {
-  --bg:#f3f4f8; --panel:#ffffff; --ink:#1b1d29; --mute:#5d6175; --line:#dfe1ea; --accent:#4553c9; --chip:#e9ebf8;
-  --strong:#1d7a46; --strong-bg:#e2f4ea; --good:#2f5fb3; --good-bg:#e4ecfa; --possible:#8a5a00; --possible-bg:#fbf0d9;
-  --display:"Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
-  --body:"Source Sans 3", -apple-system, "Segoe UI", sans-serif;
+  --bg:#f8fafc; --panel:#ffffff; --ink:#1e293b; --mute:#475569; --line:#e2e8f0; --accent:#2563eb; --chip:#eaeff3; --on-accent:#fff;
+  --strong:#166534; --strong-bg:#dcfce7; --good:#1e40af; --good-bg:#dbeafe; --possible:#854d0e; --possible-bg:#fef3c7;
+  --body:"Atkinson Hyperlegible", -apple-system, "Segoe UI", sans-serif;
   --mono:"IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg:#12131a; --panel:#1b1d27; --ink:#e8e9f1; --mute:#9a9eb3; --line:#2b2e3d; --accent:#94a0ff; --chip:#262a40; --strong:#6fd59a; --strong-bg:#173426; --good:#93b4ff; --good-bg:#1d2a47; --possible:#f1c46b; --possible-bg:#3a2e14; color-scheme:dark } }
+  --bg:#0f172a; --panel:#1e293b; --ink:#e2e8f0; --mute:#a3b1c6; --line:#334155; --accent:#7cb0ff; --chip:#2b3a50; --on-accent:#0f172a;
+  --strong:#86efac; --strong-bg:#14351f; --good:#a5c8ff; --good-bg:#1c2f52; --possible:#fcd34d; --possible-bg:#3b2d0c; color-scheme:dark } }
 :root[data-theme="dark"] {
-  --bg:#12131a; --panel:#1b1d27; --ink:#e8e9f1; --mute:#9a9eb3; --line:#2b2e3d; --accent:#94a0ff; --chip:#262a40; --strong:#6fd59a; --strong-bg:#173426; --good:#93b4ff; --good-bg:#1d2a47; --possible:#f1c46b; --possible-bg:#3a2e14; color-scheme:dark }
+  --bg:#0f172a; --panel:#1e293b; --ink:#e2e8f0; --mute:#a3b1c6; --line:#334155; --accent:#7cb0ff; --chip:#2b3a50; --on-accent:#0f172a;
+  --strong:#86efac; --strong-bg:#14351f; --good:#a5c8ff; --good-bg:#1c2f52; --possible:#fcd34d; --possible-bg:#3b2d0c; color-scheme:dark }
 * { box-sizing:border-box }
-body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 var(--body) }
-main { max-width:1180px; margin:0 auto; padding-block:24px 64px;
+html { scroll-behavior:smooth; scroll-padding-top:128px }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 var(--body) }
+main { max-width:1180px; margin:0 auto; padding-block:28px 72px;
   padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)) }
-a { color:var(--accent) } a:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
-h1, h2, h3 { font-family:var(--display); text-wrap:balance; letter-spacing:-0.01em }
-header h1 { margin:0; font-size:30px } header p { margin:4px 0 0; color:var(--mute) }
-.stats { display:flex; gap:10px; flex-wrap:wrap; margin:18px 0 }
-.stat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:110px; flex:1 1 110px }
-.stat b { display:block; font:600 24px var(--display); font-variant-numeric:tabular-nums }
-.stat span { color:var(--mute); font-size:12px; text-transform:uppercase; letter-spacing:.06em }
-.top { display:grid; grid-template-columns:3fr 2fr; gap:16px }
-@media (max-width:820px) { .top { grid-template-columns:1fr } }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; min-width:0 }
-.panel h2 { margin:0 0 8px; font-size:18px } .panel ul { margin:0; padding-left:18px } .panel li { margin:7px 0 }
-.panel em { color:var(--mute); font-size:13px }
-nav { display:flex; gap:8px; flex-wrap:wrap; margin:22px 0 0 }
-nav a { text-decoration:none; background:var(--chip); padding:4px 11px; border-radius:999px; font-size:14px }
-nav b { font-family:var(--mono); font-weight:500; font-size:12px; margin-left:2px }
-section h2 { font-size:21px; margin:28px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--line) }
-.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap:16px }
-.card { display:grid; grid-template-columns:112px minmax(0, 1fr); gap:14px; align-content:start;
-  background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px }
+a { color:var(--accent); text-underline-offset:2px }
+a:focus-visible, summary:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+summary, button { cursor:pointer }
+h1, h2, h3 { text-wrap:balance; line-height:1.25; margin:0 }
+header h1 { font-size:32px } header p { margin:4px 0 0; color:var(--mute) }
+.jump { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; font-size:14px }
+section.block { margin-top:36px } section.block > h2 { font-size:24px; margin-bottom:4px }
+.sub { margin:0 0 14px; color:var(--mute); font-size:14px }
+.next { list-style:none; counter-reset:n; margin:0; padding:0; display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 280px), 1fr)) }
+.next li { counter-increment:n; position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px 14px 56px; min-width:0 }
+.next li::before { content:counter(n); position:absolute; left:14px; top:14px; width:30px; height:30px; display:grid; place-items:center;
+  border-radius:50%; background:var(--accent); color:var(--on-accent); font-weight:700; font-size:14px }
+.next b { display:block; line-height:1.3 } .next span { display:block; color:var(--mute); font-size:14px; margin-top:2px }
+.trends { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)) }
+.trend { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0 }
+.trend h3 { font-size:17px } .trend p { margin:4px 0 10px; color:var(--mute); font-size:14px }
+.thumbs { display:flex; gap:6px; flex-wrap:wrap }
+.thumb { display:block; flex:none; width:36px; height:64px; border-radius:6px; overflow:hidden; background:var(--line); transition:transform .18s }
+.thumb:hover { transform:translateY(-2px) } .thumb img { width:100%; height:100%; object-fit:cover; display:block }
+.thumb.none { font:10px var(--mono); color:var(--mute); display:grid; place-items:center; text-decoration:none }
+.bar { position:sticky; top:0; z-index:5; background:var(--bg); padding:12px 0 10px; border-bottom:1px solid var(--line); margin-bottom:6px }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center }
+.row input, .row select { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:8px; min-height:44px; padding:0 12px }
+.row input { flex:1 1 240px; min-width:0 } .row select { flex:0 1 220px; min-width:0 }
+#count { color:var(--mute); font-size:14px; white-space:nowrap }
+.chips { display:flex; gap:6px; margin-top:8px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px }
+.chip { font:inherit; font-size:14px; flex:none; min-height:36px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--ink); transition:background .18s }
+.chip b { font:500 12px var(--mono); color:var(--mute) } .chip[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--on-accent) }
+.chip[aria-pressed="true"] b { color:inherit }
+@media (pointer:coarse) {
+  .chip, .jump a, details.full > summary { min-height:44px } .jump a, details.full > summary { display:flex; align-items:center }
+  a.tool, a.pchip { min-height:32px; display:inline-flex; align-items:center }
+}
+.th { font-size:18px; margin:24px 0 12px } .th span { color:var(--mute); font:500 13px var(--mono) }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap:14px }
+.card { display:grid; grid-template-columns:104px minmax(0, 1fr); gap:14px; align-content:start; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px }
 .card:target { outline:2px solid var(--accent) }
-.cover img, .noimg { width:112px; max-width:100%; aspect-ratio:9/16; object-fit:cover; border-radius:8px; display:block; background:var(--line) }
+.cover img, .noimg { width:104px; aspect-ratio:9/16; object-fit:cover; border-radius:8px; display:block; background:var(--line) }
 .noimg { display:grid; place-items:center; color:var(--mute); font-size:12px }
-.meta { min-width:0 } .meta h3 { margin:0 0 6px; font-size:16px; line-height:1.3 }
-.hook { margin:0 0 6px; color:var(--mute); font-style:italic; font-size:14px }
-.tldr { margin:0 0 6px; font-size:15px } .by { margin:0 0 6px; color:var(--mute); font-size:13px }
-.tags span { display:inline-block; background:var(--chip); border-radius:6px; padding:1px 7px; margin:0 4px 4px 0; font:12px var(--mono) }
+.meta { min-width:0 } .meta h3 { font-size:16px; line-height:1.3 }
+.tldr { margin:6px 0 8px; font-size:15px; color:var(--ink) }
+.tools { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px }
+.tool { font:12px var(--mono); padding:2px 7px; border-radius:6px; background:var(--chip); color:var(--ink); text-decoration:none; overflow-wrap:anywhere }
+a.tool { color:var(--accent) } a.tool:hover { text-decoration:underline } .more { font:12px var(--mono); color:var(--mute); padding:2px }
+.verdict { margin:0 0 8px; font-size:14px; color:var(--mute) } .verdict b { color:var(--ink) }
+.by { margin:6px 0 0; color:var(--mute); font-size:13px }
 .card > details.full { grid-column:1/-1; min-width:0 }
-details > summary { cursor:pointer; color:var(--accent); font-size:14px }
+details > summary { color:var(--accent); font-size:14px; min-height:28px }
 .note { font-size:15px; overflow-wrap:anywhere } .note h3 { font-size:15px; margin:14px 0 4px }
 .note ul, .note ol { padding-left:18px } .note blockquote { margin:6px 0; padding-left:10px; border-left:3px solid var(--line); color:var(--mute) }
-.projs { display:flex; flex-wrap:wrap; gap:4px; margin-top:2px }
+.projs { display:flex; flex-wrap:wrap; gap:4px }
 .pchip, .fit { display:inline-block; border-radius:999px; padding:1px 8px; font-size:12px; text-decoration:none; white-space:nowrap }
 .strong { color:var(--strong); background:var(--strong-bg) } .good { color:var(--good); background:var(--good-bg) }
 .possible { color:var(--possible); background:var(--possible-bg) } .no { color:var(--mute); background:var(--chip) }
 .fit { font:500 11px var(--mono); text-transform:uppercase; letter-spacing:.04em; padding:1px 7px }
-.pgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap:16px }
-.proj { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0 }
+.pgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap:10px; align-items:start }
+.proj { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:0 14px; min-width:0 }
 .proj:target { outline:2px solid var(--accent) }
-.proj h3 { margin:0 0 2px; font-size:17px } .proj .what { margin:0; font-size:14px }
-.proj .where { margin:2px 0 8px; color:var(--mute); font-size:13px; overflow-wrap:anywhere }
-.proj ul { list-style:none; margin:0; padding:0; display:grid; gap:10px }
+.proj > summary { display:flex; justify-content:space-between; gap:12px; align-items:center; min-height:52px; color:var(--ink); font-size:16px }
+.proj > summary span { color:var(--mute); font-size:13px; white-space:nowrap; margin-left:auto }
+.proj .what { margin:0 0 10px; font-size:14px; color:var(--mute) }
+.proj ul { list-style:none; margin:0 0 14px; padding:0; display:grid; gap:10px }
 .proj li p { margin:3px 0 0; font-size:14px; color:var(--mute) }
+.agroups { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(min(100%, 340px), 1fr)); align-items:start }
+.agroup { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0 }
+.agroup h3 { font-size:16px; margin-bottom:8px } .agroup h3 span { color:var(--mute); font:500 13px var(--mono) }
+.agroup ul { list-style:none; margin:0; padding:0; display:grid; gap:10px }
+.agroup li { display:flex; gap:10px; font-size:14px; align-items:flex-start } .agroup .thumb { width:27px; height:48px } .agroup li span { min-width:0; overflow-wrap:anywhere }
 code { background:var(--chip); padding:1px 4px; border-radius:4px; font:13px var(--mono) }
 pre { background:var(--chip); padding:8px; border-radius:6px; overflow-x:auto }
+[hidden] { display:none !important }
+@media (max-width:480px) { header h1 { font-size:26px } .card { grid-template-columns:76px minmax(0, 1fr); gap:10px } .cover img, .noimg { width:76px } html { scroll-padding-top:170px } }
+@media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto } .thumb, .chip { transition:none } }
 </style>"""
+    script = """<script>
+(function () {
+  var q = document.getElementById('q'), proj = document.getElementById('proj'), count = document.getElementById('count');
+  if (!q) return;
+  var cards = [].slice.call(document.querySelectorAll('.card')), topics = [].slice.call(document.querySelectorAll('.topic'));
+  var chips = [].slice.call(document.querySelectorAll('.chip')), active = '';
+  function apply() {
+    var words = q.value.toLowerCase().split(/\\s+/).filter(Boolean), p = proj.value, shown = 0;
+    cards.forEach(function (c) {
+      var ok = words.every(function (w) { return c.dataset.s.indexOf(w) >= 0; }) && (!p || c.dataset.p.split(' ').indexOf(p) >= 0);
+      c.hidden = !ok; if (ok && (!active || c.closest('.topic').id === active)) shown++;
+    });
+    topics.forEach(function (t) { t.hidden = (active && t.id !== active) || !t.querySelector('.card:not([hidden])'); });
+    count.textContent = shown + ' of ' + cards.length + ' reels';
+  }
+  function reset() { q.value = ''; proj.value = ''; active = ''; chips.forEach(function (x) { x.setAttribute('aria-pressed', 'false'); }); apply(); }
+  chips.forEach(function (c) { c.addEventListener('click', function () {
+    active = active === c.dataset.t ? '' : c.dataset.t;
+    chips.forEach(function (x) { x.setAttribute('aria-pressed', String(x.dataset.t === active)); }); apply();
+  }); });
+  q.addEventListener('input', apply); proj.addEventListener('change', apply);
+  function follow() {
+    var t = location.hash && document.getElementById(location.hash.slice(1)); if (!t) return;
+    if (t.classList.contains('proj')) t.open = true;
+    if (t.classList.contains('card') && t.hidden || (t.closest && t.closest('.topic[hidden]'))) { reset(); t.scrollIntoView(); }
+  }
+  addEventListener('hashchange', follow); follow();
+  addEventListener('keydown', function (e) { if (e.key === '/' && document.activeElement !== q) { e.preventDefault(); q.focus(); } });
+  apply();
+})();
+</script>"""
     content = f"""<main>
 <header><h1>AI Reel Knowledge</h1>
-<p>AI ideas, tools and trends from your saved Instagram reels. Last run: {inline(last_run)}</p></header>
-<div class="stats">
-  <div class="stat"><b>{len(notes)}</b><span>AI notes</span></div>
-  <div class="stat"><b>{len(groups)}</b><span>topics</span></div>
-  <div class="stat"><b>{len(open_actions)}</b><span>open actions</span></div>
-  <div class="stat"><b>{done_actions}</b><span>actions done</span></div>
-</div>
-<div class="top">
-  <div class="panel"><h2>Current trends</h2>{md(trends) or '<p>No trends yet.</p>'}</div>
-  <div class="panel"><h2>To try</h2><ul>{acts}</ul></div>
-</div>
-<nav>{nav}</nav>
-{by_project}
-{body}
+<p>{len(notes)} notes from your saved reels · updated <span style="white-space:nowrap">{last_date}</span></p>
+<nav class="jump" aria-label="Sections"><a href="#next">Do next</a><a href="#trends">Trends</a><a href="#reels">All reels</a><a href="#projects">By project</a><a href="#actions">All actions ({len(open_actions)})</a></nav></header>
+<section class="block" id="next"><h2>Do next</h2><p class="sub">The highest-value steps, in order. {done_actions} of {len(open_actions) + done_actions} actions done.</p><ol class="next">{do_next}</ol></section>
+<section class="block" id="trends"><h2>What's changing in AI</h2><p class="sub">Patterns across your saves. Tap a cover to open that reel's note.</p><div class="trends">{''.join(trend_cards) or '<p>No trends yet.</p>'}</div></section>
+<section class="block" id="reels"><h2>All reels</h2>
+<div class="bar"><div class="row"><input id="q" type="search" placeholder="Search tools, topics, authors  ( / )" aria-label="Search reels">
+<select id="proj" aria-label="Filter by project"><option value="">All projects</option>{''.join(proj_opts)}</select>
+<span id="count" role="status" aria-live="polite">{len(notes)} reels</span></div>
+<div class="chips" role="group" aria-label="Filter by topic">{filters}</div></div>
+{body}</section>
+<section class="block" id="projects"><h2>By project</h2><p class="sub">Which reels help which project. Tap to expand.</p><div class="pgrid">{''.join(proj_cards)}</div></section>
+<section class="block" id="actions"><h2>All actions</h2><p class="sub">Everything worth trying, grouped by what it takes.</p><div class="agroups">{act_groups or '<p>Nothing open.</p>'}</div></section>
 </main>
+{script}
 """
     # Local copy is a full document; the artifact copy is a fragment (the publisher adds the skeleton).
     local = f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n{head}\n{style}</head><body>\n{content}</body></html>\n'
