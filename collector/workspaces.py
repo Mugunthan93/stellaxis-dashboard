@@ -447,12 +447,16 @@ def _task_file(ws: str) -> Path:
     return _home() / "tasks" / (ws + ".md")
 
 
-def _task_lines(f: Path) -> list[str]:
+def _task_raw(f: Path) -> bytes:
     try:
-        with open(f, newline="", encoding="utf-8") as fh:
-            return re.findall(r"[^\n]*\n|[^\n]+", fh.read())  # split on \n only, line endings kept
+        return f.read_bytes()
     except FileNotFoundError:
-        return []
+        return b""
+
+
+def _task_lines(raw: bytes) -> list[str]:
+    try:
+        return re.findall(r"[^\n]*\n|[^\n]+", raw.decode("utf-8"))  # split on \n only, line endings kept
     except UnicodeDecodeError:
         raise ApiError(422, "the task file isn't valid UTF-8")
 
@@ -467,7 +471,7 @@ def _task_rows(lines: list[str]) -> list[dict]:
 
 
 def read_tasks(ws: str) -> list[dict]:
-    return _task_rows(_task_lines(_task_file(ws)))
+    return _task_rows(_task_lines(_task_raw(_task_file(ws))))
 
 
 def write_task(ws: str, op: dict) -> list[dict]:
@@ -486,29 +490,33 @@ def write_task(ws: str, op: dict) -> list[dict]:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1 or not isinstance(op.get("expect"), str):
             raise ApiError(400, f"send {{\"{kind}\": line, \"expect\": text}}")
     with _TASK_LOCK:
-        lines = _task_lines(f)
-        if kind == "add":
-            if lines and not lines[-1].endswith("\n"):
-                lines[-1] += "\n"
-            lines.append("- [ ] " + t + "\n")
-        else:
-            m = TASK_RE.fullmatch(lines[n - 1]) if n <= len(lines) else None
-            if not m or m.group(2) != op["expect"]:
-                raise ApiError(409, "that task changed; the list was reloaded")
-            if kind == "remove":
-                del lines[n - 1]
-            else:
-                lines[n - 1] = f"- [{' ' if m.group(1) == 'x' else 'x'}] {m.group(2)}{m.group(3) or ''}"
         f.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=f.parent, prefix=f.name + ".", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-                fh.write("".join(lines))
-            os.replace(name, f)
-        except BaseException:
-            os.unlink(name)
-            raise
-        return _task_rows(lines)
+        for _ in range(2):  # another program may edit the file between our read and our replace: redo once
+            raw = _task_raw(f)
+            lines = _task_lines(raw)
+            if kind == "add":
+                if lines and not lines[-1].endswith("\n"):
+                    lines[-1] += "\n"
+                lines.append("- [ ] " + t + "\n")
+            else:
+                m = TASK_RE.fullmatch(lines[n - 1]) if n <= len(lines) else None
+                if not m or m.group(2) != op["expect"]:
+                    raise ApiError(409, "that task changed; the list was reloaded")
+                if kind == "remove":
+                    del lines[n - 1]
+                else:
+                    lines[n - 1] = f"- [{' ' if m.group(1) == 'x' else 'x'}] {m.group(2)}{m.group(3) or ''}"
+            fd, name = tempfile.mkstemp(dir=f.parent, prefix=f.name + ".", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+                    fh.write("".join(lines))
+                if _task_raw(f) == raw:
+                    os.replace(name, f)
+                    return _task_rows(lines)
+            finally:
+                if os.path.exists(name):
+                    os.unlink(name)
+        raise ApiError(409, "the task file keeps changing; try again")
 
 
 def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:

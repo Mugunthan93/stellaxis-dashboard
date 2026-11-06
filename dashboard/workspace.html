@@ -171,27 +171,41 @@ function drawTabs() {  // the Sessions views and the Tasks view never show toget
   $("arch-row").hidden = t; $("tree").hidden = t; $("tasks").hidden = !t;
   if (t) $("new-session").hidden = true;
 }
-function drawTasks() {  // only the list is redrawn; the input above it is never touched, so typing survives a poll
+let seq = 0, shownRows, adding = false;  // seq: only the newest list request may set taskRows
+function drawTasks() {  // only the list is redrawn, and only when it changed, so typing and keyboard focus survive a poll
+  const key = JSON.stringify(taskRows);
+  if (key === shownRows) return;
+  shownRows = key;
   $("task-list").innerHTML = taskRows === null ? `<div class="empty">Loading…</div>` : taskRows.length
     ? `<ul class="rows">` + taskRows.map(r => `<li class="${r.done ? "done" : ""}"><label class="t"><input type="checkbox" data-line="${r.line}" data-text="${esc(r.text)}" ${r.done ? "checked" : ""}> <span>${esc(r.text)}</span></label>`
       + `<button class="btn small" type="button" data-rm="${r.line}" data-text="${esc(r.text)}" aria-label="Remove ${esc(r.text)}">Remove</button></li>`).join("") + `</ul>`
     : `<div class="empty">No tasks yet.</div>`;
 }
 async function loadTasks() {
+  const my = ++seq;
   const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/tasks", { cache: "no-store" });
   if (!r.ok) throw 0;
-  taskRows = await r.json(); drawTasks();
+  const rows = await r.json();
+  if (my === seq) { taskRows = rows; drawTasks(); }  // an older answer must not overwrite a newer one
 }
 async function taskPost(body) {
-  try { taskRows = await post("/api/workspaces/" + encodeURIComponent(id) + "/tasks", body); $("task-err").hidden = true; return true; }
+  const my = ++seq;
+  try {
+    const rows = await post("/api/workspaces/" + encodeURIComponent(id) + "/tasks", body);
+    if (my === seq) taskRows = rows;
+    $("task-err").hidden = true; return true;
+  }
   catch (e) { $("task-err").textContent = e.message; $("task-err").hidden = false; await loadTasks().catch(() => {}); return false; }
   finally { drawTasks(); }
 }
 $("task-form").addEventListener("submit", async e => {
   e.preventDefault();
   const i = $("task-text"), text = i.value.trim();
-  if (!text) return;
-  if (await taskPost({ add: text }) && i.value.trim() === text) i.value = "";  // keep anything typed while it was saving
+  if (!text || adding) return;
+  adding = true;
+  const ok = await taskPost({ add: text });
+  adding = false;
+  if (ok && i.value.trim() === text) i.value = "";  // keep anything typed while it was saving
 });
 $("task-list").addEventListener("change", e => { const t = e.target; if (t.dataset.line) taskPost({ toggle: +t.dataset.line, expect: t.dataset.text }); });
 $("task-list").addEventListener("click", e => { const b = e.target.closest("button[data-rm]"); if (b) taskPost({ remove: +b.dataset.rm, expect: b.dataset.text }); });

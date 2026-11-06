@@ -919,6 +919,35 @@ class ActionApiTest(unittest.TestCase):
         self.assertFalse(f.exists())
         self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "x" * 500})[0], 200)
 
+    def edit_during_write(self, f, times):
+        """Patch W._task_raw so the file gains a line from outside right after each of the first `times` reads."""
+        real, n = W._task_raw, [0]
+
+        def raw(p):
+            out = real(p)
+            if n[0] < times:
+                n[0] += 1
+                p.write_bytes(out + f"- [ ] outside {n[0]}\n".encode())
+            return out
+        return mock.patch.object(W, "_task_raw", raw)
+
+    def test_edit_on_disk_between_read_and_write_is_not_lost(self):
+        f = self.tasks()
+        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        with self.edit_during_write(f, 1):
+            code, rows = self.post("/api/workspaces/w/tasks", {"add": "b"})
+        self.assertEqual(code, 200)
+        self.assertEqual(f.read_text(), "- [ ] a\n- [ ] outside 1\n- [ ] b\n")
+        self.assertEqual([r["text"] for r in rows], ["a", "outside 1", "b"])
+
+    def test_file_that_keeps_changing_is_409_and_keeps_outside_edit(self):
+        f = self.tasks()
+        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        with self.edit_during_write(f, 3):  # the read and the check of attempt 1, then the read of attempt 2
+            self.assertEqual(self.post("/api/workspaces/w/tasks", {"toggle": 1, "expect": "a"})[0], 409)
+        self.assertEqual(f.read_text(), "- [ ] a\n- [ ] outside 1\n- [ ] outside 2\n- [ ] outside 3\n")
+        self.assertEqual([p.name for p in f.parent.iterdir()], ["w.md"])
+
     def test_task_posts_need_localhost_and_json(self):
         self.tasks()
         self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "a"}, headers={"Host": "evil.example"})[0], 403)
