@@ -243,10 +243,10 @@ def relay(socket: str, body: str, cfg: dict) -> None:
         for c in parts if isinstance(parts, list) else []:
             if not isinstance(c, dict):
                 continue
-            if d["type"] == "assistant" and c.get("type") == "tool_use" and c.get("name") == "SendMessage":
-                m = c["input"].get("message") if isinstance(c.get("input"), dict) else None
-                sent.append((c.get("id"), m if isinstance(m, str) else ""))
-            elif d["type"] == "user" and c.get("type") == "tool_result":
+            if d.get("type") == "assistant" and c.get("type") == "tool_use" and c.get("name") == "SendMessage":
+                inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+                sent.append((c.get("id"), inp.get("message") if isinstance(inp.get("message"), str) else "", inp.get("to")))
+            elif d.get("type") == "user" and c.get("type") == "tool_result":
                 t = c.get("content")
                 if isinstance(t, list):
                     t = "".join(x.get("text", "") for x in t if isinstance(x, dict) and isinstance(x.get("text"), str))
@@ -254,16 +254,21 @@ def relay(socket: str, body: str, cfg: dict) -> None:
                     res = json.loads(t) if isinstance(t, str) else None
                 except ValueError:
                     res = None
-                results[c.get("tool_use_id")] = res if isinstance(res, dict) else {}
+                results[c.get("tool_use_id")] = res if isinstance(res, dict) else {"_text": t if isinstance(t, str) else ""}
     if len(sent) != 1:
         raise ApiError(502, f"relay made {len(sent)} SendMessage calls instead of 1" + (f": {final}" if final else ""))
     if sent[0][1].rstrip() != body.rstrip():
         raise ApiError(502, "relay sent a different text than the one you wrote, so nothing was delivered")
+    if sent[0][2] != f"uds:{socket}":
+        raise ApiError(502, "relay sent the message to the wrong recipient, so nothing was delivered")
     res = results.get(sent[0][0])
     if not res:
         raise ApiError(502, "relay did not confirm delivery" + (f": {final}" if final else ""))
     if res.get("success") is not True:
-        raise ApiError(502, str(res.get("message") or final or "relay did not confirm delivery"))
+        raise ApiError(502, str(res.get("message") or res.get("_text") or final or "relay did not confirm delivery"))
+
+
+RELAY_NOTE = "\n\n(Sent from the Stellaxis dashboard. Reply here in this session, not to the sender.)"
 
 
 def message(session_id: str, prompt: str, cfg: dict) -> dict:
@@ -275,7 +280,7 @@ def message(session_id: str, prompt: str, cfg: dict) -> dict:
         sock = socket_of(session_id, _claude_dir() / "sessions")
         if not sock:
             raise ApiError(409, "this session is open but has no message socket; open it to talk to it")
-        relay(sock, prompt, cfg)
+        relay(sock, prompt + RELAY_NOTE, cfg)
         return {"via": "relay"}
     path = next((s.get("path") for w in _index().get("workspaces", []) for r in w.get("repos", [])
                  for b in r.get("branches", []) for s in b.get("sessions", []) if s.get("id") == session_id), None)

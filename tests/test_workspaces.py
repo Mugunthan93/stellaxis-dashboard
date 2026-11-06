@@ -285,11 +285,14 @@ if kind == "relay":  # stream-json: calls x (SendMessage tool_use + tool_result)
     rows = [{"type": "system"}]
     for n in range(b.get("calls", 1)):
         rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}, {
-            "type": "tool_use", "id": "toolu_%d" % n, "name": "SendMessage", "input": {"message": b.get("send", stdin)}}]}})
+            "type": "tool_use", "id": "toolu_%d" % n, "name": "SendMessage", "input": {"to": b.get("to", "uds:" + a[a.index("--append-system-prompt") + 1].split("uds:")[1].split(" ")[0]),
+                                                                  "message": b.get("send", stdin)}}]}})
         if b.get("tool", True) is not None:
             tr = b.get("tool") or {"success": True, "message": "sent"}
+            txt = tr if isinstance(tr, str) else json.dumps(tr)
             rows.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": b.get("tool_id", "toolu_%d" % n),
-                                                                  "content": [{"type": "text", "text": json.dumps(tr)}]}]}})
+                                                                  "content": [{"type": "text", "text": txt}]}]}})
+    rows.insert(1, {"no_type": 1})
     rows.append({"type": "result", "result": b.get("result", "DELIVERED")})
     sys.stdout.write("junk\n" + "\n".join(json.dumps(x) for x in rows) + "\n")
 sys.stdout.write(b.get("out", ""))
@@ -483,7 +486,8 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual((code, body), (200, {"via": "relay"}))
         self.assertEqual(self.calls("bg"), [])
         r = self.calls("relay")[0]
-        self.assertEqual(r["stdin"], "hello there")
+        self.assertEqual(r["stdin"], "hello there" + W.RELAY_NOTE)
+        self.assertTrue(r["stdin"].endswith("\n\n(Sent from the Stellaxis dashboard. Reply here in this session, not to the sender.)"))
         self.assertNotIn("hello there", " ".join(r["argv"]))
         self.assertIn("uds:/tmp/s.sock", " ".join(r["argv"]))
 
@@ -513,9 +517,23 @@ class ActionApiTest(unittest.TestCase):
         self.behave(relay={"result": "Thanks, the other session replied something else"})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"}), (200, {"via": "relay"}))
 
+    def test_relay_wrong_recipient_is_502(self):
+        self.listed()
+        self.behave(relay={"to": "uds:/tmp/other.sock"})
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+        self.assertEqual(code, 502)
+        self.assertIn("wrong recipient", body["error"])
+
+    def test_relay_plain_text_tool_result_keeps_its_text(self):
+        self.listed()
+        self.behave(relay={"tool": "Error: socket closed"})
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+        self.assertEqual(code, 502)
+        self.assertIn("socket closed", body["error"])
+
     def test_relay_trailing_whitespace_difference_is_fine(self):
         self.listed()
-        self.behave(relay={"send": "x\n"})
+        self.behave(relay={"send": "x" + W.RELAY_NOTE + "\n"})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 200)
 
     def test_listed_session_without_socket_is_refused(self):
