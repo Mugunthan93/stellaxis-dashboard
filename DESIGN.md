@@ -1,8 +1,8 @@
 # Stellaxis design system
 
 The rules every dashboard page follows, taken from the pages as they are. Read this before changing
-UI. `dashboard/index.html`, `hierarchy.html` and `settings.html` each carry the same tokens in
-`:root`; a colour or font changes in all three plus `shell.html`, or not at all. `/reels/` has its
+UI. `dashboard/home.html`, `workspace.html`, `index.html`, `hierarchy.html` and `settings.html` each
+carry the same tokens in `:root`; a colour or font changes in all five plus `shell.html`, or not at all. `/reels/` has its
 own Instagram-style look and is not covered here.
 
 ## Colour
@@ -48,7 +48,8 @@ One `h1` per page at 1.55rem; `h2` panel titles at 1.12rem.
 ## Components
 
 Reuse before adding: `.btn` and `.btn.primary`, `.seg` (segmented), `.tabs`, `.chip` (filters),
-`.pill` with `good`, `warn`, `crit`, `acc`, `.notice`, `.kpis`, `.minibar`. At most one `.btn.primary`
+`.pill` with `good`, `warn`, `crit`, `acc`, `.notice`, `.kpis`, `.minibar`, `.sw` (a labelled on/off
+switch in a row), `.card` (a linked tile). At most one `.btn.primary`
 in a view.
 
 ## Behaviour

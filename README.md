@@ -87,11 +87,18 @@ collector/prune.py       archive / move / restore / purge (dry run by default)
 collector/mcp_server.py  stdio MCP server, one read-only tool: stellaxis_snapshot
 collector/install.sh     macOS service + desktop MCP registration
 collector/settings_api.py  /api/settings: read, diff, back up and save Claude settings.json files
+collector/workspaces.py  command centre: workspace index, sessions, tasks, approvals, plans, tests
+collector/approval_hook.py  PermissionRequest hook behind "Approve from page"
 dashboard/index.html     dashboard (same file is the artifact and the localhost page)
+dashboard/home.html      Home: what needs you, what is running, what isn't backed up (localhost only)
+dashboard/workspace.html  Workspace: sessions, tasks, plans, routines, tests (localhost only)
+dashboard/hierarchy.html  Hierarchy page (same file is the artifact and the localhost page)
 dashboard/settings.html  Settings page: edit user / project / local settings.json (localhost only)
+dashboard/shell.html     sidebar every localhost page sits in
+reels/                   Reel Brain code, shown at /reels/
 skills/stellaxis/        plugin skill
 agents/                  plugin agent: stellaxis-auditor
-tests/test_e2e.py        fake-HOME end-to-end test (python3 -m unittest discover -s tests)
+tests/                   fake-HOME tests, end to end (python3 -m unittest discover -s tests)
 ```
 
 ## Decisions (2026-10-08)

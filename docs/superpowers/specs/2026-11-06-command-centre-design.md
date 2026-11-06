@@ -79,6 +79,8 @@ the denial.
   setting, so it needs the owner's yes.
 - While the hook waits, the app's own prompt doesn't appear. So it stays off per session unless you
   switch on "Approve from page", and if the wait times out the normal prompt appears.
+- The hook stays silent for anything it can't show whole: over-long input, hidden characters, questions
+  and plans. Those get the normal prompt.
 - **A session can still approve its own request.** Page approval is a convenience, not a security
   boundary. Sessions run as the same Mac user, and your always-allow rules include `Write`, `Edit`,
   `Bash(cp:*)`, `Bash(tee:*)`, `Bash(npm:*)` and others. So a session (or a subagent working while the
@@ -93,4 +95,5 @@ the denial.
 - Task lists live in `~/.stellaxis/tasks/<workspace>.md` as checkbox lines, not in repos, so they
   don't touch branches or worktrees. That folder has no backup.
 - Started sessions use Claude's default permission prompts and default model; nothing bypasses them.
-- Test runs use a `test_command` set per repo in config, against the main checkout.
+- Test runs use the command set per repo in config, `workspaces[].tests` as `{repo: argv}`, against the
+  main checkout.

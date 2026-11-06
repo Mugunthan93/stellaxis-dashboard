@@ -29,7 +29,8 @@ that with `launchctl kickstart -k gui/$(id -u)/com.stellaxis.collector`.
 
 ## Architecture
 
-Everything flows through one file, `$STELLAXIS_HOME/snapshot.json`, written by `collect.py`:
+The measuring side flows through one file, `$STELLAXIS_HOME/snapshot.json`, written by `collect.py`. The
+command centre (Home and Workspace pages) reads a separate index, `workspaces.json`, written in the same pass:
 
 - `collector/collect.py` is the core. `parse_transcripts` reads `~/.claude/projects/**/*.jsonl`
   incrementally (per-file offsets kept in `cache.json`) for usage: `Skill`, `Agent`/`Task`,
@@ -46,8 +47,29 @@ Everything flows through one file, `$STELLAXIS_HOME/snapshot.json`, written by `
   registered only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It
   asks the running `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting
   inline, because inline collection inside the app can hang on a macOS folder-permission prompt.
+- `collector/workspaces.py` is the command centre. `build_index` writes `workspaces.json`: every session
+  (not just the capped snapshot ones) grouped workspace > repo > branch, plus configured folders with no
+  sessions as repos with no branches. It also starts and messages sessions, and holds the task lists,
+  approvals, plans, routines and test runs. It must not import `collect` (that would be circular);
+  `collect.py` passes it `load_config()`.
+- `collector/approval_hook.py` is the `PermissionRequest` hook. It runs on the system Python, stays silent
+  unless the session's switch is on and it can show the request whole, writes `<id>.req` and waits for
+  `<id>.ans`. `approve_ready` looks for it in `settings.json`; Stellaxis never installs it.
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
+
+Other files under `$STELLAXIS_HOME`: `tasks/<workspace id>.md` (checkbox lines), `approvals/` (`<id>.req`,
+`<id>.ans`, and `on/<session uuid>`, the per-session switch), `test-results/` (last result per repo).
+
+Config keys for the command centre (`config.json`): `claude_bin` (default `~/.local/bin/claude`) and
+`workspaces`, a list of `{"id", "name", "folders": [path], "tests": {repo: argv}, "routines": [name]}`.
+An entry with no id is skipped. Test commands come from config only, never from a request.
+
+API routes (`workspaces.handle`, all behind `settings_api.host_ok`; POSTs need `application/json`):
+`GET /api/workspaces`; `GET` and `POST /api/workspaces/<id>/tasks`; `GET /api/workspaces/<id>/work` (plans,
+routines, tests); `POST /api/workspaces/<id>/tests/run`; `POST /api/sessions/new`;
+`POST /api/sessions/<uuid>/message`; `GET /api/sessions/<uuid>/reply`; `GET /api/approvals`;
+`POST /api/approvals/<id>`; `POST /api/approvals/session/<uuid>`.
 
 ### Item ids and token sources
 
@@ -69,7 +91,11 @@ Routes (`PAGES` in `collect.py`): `/` is `home.html` (what needs you, from `GET 
 `/overview` is `index.html`, `/workspace?id=<id>` is `workspace.html`. The sidebar's workspace links are
 built in `shell.html` from the same API; static links still work if it fails.
 
-`dashboard/index.html` (Overview), `home.html`, `workspace.html` and `hierarchy.html` are authored as artifact bodies (no
+`dashboard/home.html` and `workspace.html` are localhost only, not artifacts: they may use absolute `/api`
+paths and need no artifact path. `/reels/raw` runs only its own script (`reels_scripts` in `collect.py`
+hashes the last script in the file), so that page can't use inline event handlers.
+
+`dashboard/index.html` (Overview) and `hierarchy.html` are authored as artifact bodies (no
 `<html>`/`<head>` skeleton). The same file serves both as:
 - the localhost page: `collect.py`'s `Handler` wraps it in a skeleton and serves `snapshot.json`,
   `api/status`, `api/refresh` next to it, and
