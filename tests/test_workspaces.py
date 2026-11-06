@@ -364,7 +364,7 @@ class ActionApiTest(unittest.TestCase):
 
     def index(self, sessions=()):
         (self.dir / "stx" / "workspaces.json").write_text(json.dumps({"workspaces": [
-            {"id": "w", "name": "W", "repos": [{"path": self.repo, "exists": True, "branches": [
+            {"id": "w", "name": "W", "repos": [{"path": self.repo, "abs": self.repo, "exists": True, "branches": [
                 {"name": "b", "sessions": list(sessions)}]}]}]}))
 
     def calls(self, kind=None):
@@ -956,6 +956,66 @@ class ActionApiTest(unittest.TestCase):
         c.request("POST", "/api/workspaces/w/tasks", '{"add": "a"}', {"Content-Type": "text/plain"})
         self.assertEqual(c.getresponse().status, 415)
         self.assertFalse((self.dir / "stx" / "tasks").exists())
+
+    # --- plans and routines ---
+    def plan(self, rel, text, mtime=None):
+        f = Path(self.repo) / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+        if mtime:
+            os.utime(f, (mtime, mtime))
+        return f
+
+    def routine(self, name, text):
+        f = self.dir / "claude" / "scheduled-tasks" / name / "SKILL.md"
+        f.parent.mkdir(parents=True)
+        f.write_text(text)
+
+    def test_plans_find_both_folders_and_titles(self):
+        self.plan("docs/plans/a.md", "intro\n# Alpha plan\nbody\n", 2000)
+        self.plan("docs/superpowers/plans/b.md", "no heading here\n", 3000)
+        self.plan("docs/plans/c.txt", "# not markdown\n")
+        rows = W.plans([self.repo])
+        self.assertEqual([r["title"] for r in rows], ["b", "Alpha plan"])  # newest first; no heading: file name
+        self.assertEqual(rows[0]["repo"], self.repo)
+        self.assertEqual(rows[1]["path"], str(Path(self.repo) / "docs/plans/a.md"))
+        self.assertTrue(rows[0]["modified"].startswith("1970-01-01T00:50:00"))
+
+    def test_plans_empty_repo_and_missing_repo(self):
+        self.assertEqual(W.plans([self.repo, str(self.dir / "nope")]), [])
+
+    def test_plans_title_only_from_first_20_lines_and_cap_200(self):
+        self.plan("docs/plans/late.md", "x\n" * 25 + "# Late\n")
+        self.assertEqual(W.plans([self.repo])[0]["title"], "late")
+        for i in range(210):
+            self.plan(f"docs/plans/p{i:03}.md", "# t\n", 1000 + i)
+        rows = W.plans([self.repo])
+        self.assertEqual(len(rows), 200)
+        self.assertTrue(rows[0]["path"].endswith("late.md"))  # written just now
+        self.assertTrue(rows[-1]["path"].endswith("p011.md"))
+
+    def test_routines_read_frontmatter_and_skip_missing(self):
+        self.routine("r-one", "---\nname: r-one\ndescription: Does a thing, with: colons\n---\nbody\n")
+        self.routine("r-two", "no frontmatter\n")
+        ws = {"id": "w", "routines": ["r-one", "r-two", "absent", "../evil", "a/b"]}
+        rows = W.routines(ws, {})
+        self.assertEqual(rows, [{"name": "r-one", "description": "Does a thing, with: colons"},
+                                {"name": "r-two", "description": ""}])
+        self.assertEqual(W.routines({"id": "w"}, {}), [])
+
+    def test_work_route(self):
+        self.plan("docs/plans/a.md", "# Alpha\n")
+        self.routine("r-one", "---\nname: r-one\ndescription: D\n---\n")
+        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo], "routines": ["r-one"]}]
+        code, d = self.get("/api/workspaces/w/work")
+        self.assertEqual(code, 200)
+        self.assertEqual([p["title"] for p in d["plans"]], ["Alpha"])
+        self.assertEqual(d["routines"], [{"name": "r-one", "description": "D"}])
+        self.assertEqual(self.get("/api/workspaces/nope/work")[0], 404)
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("GET", "/api/workspaces/w/work", headers={"Host": "evil.example"})
+        self.assertEqual(c.getresponse().status, 403)
 
 
 if __name__ == "__main__":

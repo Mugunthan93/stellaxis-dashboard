@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions and Tasks tabs so far. */
+/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions, Tasks, Plans and Routines tabs so far. */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
   --accent: #2c55c9; --accent-soft: #dfe6f8;
@@ -92,12 +92,14 @@ textarea.inp { resize: vertical; }
     <div class="tabs" role="tablist" aria-label="Workspace views">
       <button type="button" role="tab" id="tab-sessions" data-tab="sessions" aria-selected="true">Sessions</button>
       <button type="button" role="tab" id="tab-tasks" data-tab="tasks" aria-selected="false">Tasks</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Plans</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Routines</button>
+      <button type="button" role="tab" id="tab-plans" data-tab="plans" aria-selected="false">Plans</button>
+      <button type="button" role="tab" id="tab-routines" data-tab="routines" aria-selected="false">Routines</button>
       <button type="button" role="tab" aria-selected="false" disabled>Tests</button>
     </div>
     <div class="chips" id="arch-row"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
     <div id="tree"></div>
+    <div id="plans" hidden></div>
+    <div id="routines" hidden></div>
     <div id="tasks" hidden>
       <form class="actions" id="task-form">
         <input class="inp" id="task-text" maxlength="500" aria-label="New task" placeholder="Add a task" autocomplete="off" style="flex:1 1 240px; width:auto">
@@ -165,11 +167,38 @@ function draw() {
   drawForm();
   drawTabs();
 }
-function drawTabs() {  // the Sessions views and the Tasks view never show together
-  const t = tab === "tasks";
-  $("tab-sessions").setAttribute("aria-selected", !t); $("tab-tasks").setAttribute("aria-selected", t);
-  $("arch-row").hidden = t; $("tree").hidden = t; $("tasks").hidden = !t;
-  if (t) $("new-session").hidden = true;
+function drawTabs() {  // one view shows at a time
+  for (const n of ["sessions", "tasks", "plans", "routines"]) $("tab-" + n).setAttribute("aria-selected", tab === n);
+  const s = tab === "sessions";
+  $("arch-row").hidden = !s; $("tree").hidden = !s; $("tasks").hidden = tab !== "tasks";
+  $("plans").hidden = tab !== "plans"; $("routines").hidden = tab !== "routines";
+  if (!s) $("new-session").hidden = true;
+}
+let work = null, workAt = 0, workBusy = false;  // /work scans the disk, so it is fetched at most once a minute (or when forced)
+const when = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+function section(title, rows) {  // a section with nothing in it is not drawn
+  return rows.length ? `<h3>${esc(title)}</h3><ul class="rows">${rows.join("")}</ul>` : "";
+}
+function drawWork() {
+  if (!work) { $("plans").innerHTML = $("routines").innerHTML = `<div class="empty">Loading…</div>`; return; }
+  const byRepo = {};
+  for (const p of work.plans) (byRepo[p.repo] = byRepo[p.repo] || []).push(p);
+  $("plans").innerHTML = work.plans.length
+    ? Object.keys(byRepo).map(r => section(r, byRepo[r].map(p => `<li><span class="t">${esc(p.title)}</span><span class="m mono">${esc(p.repo)}</span><span class="m">${esc(when(p.modified))}</span></li>`))).join("")
+    : `<div class="empty">No plans in this workspace's repos.</div>`;
+  $("routines").innerHTML = `<p class="hint">Run history isn't available here.</p>` + (work.routines.length
+    ? `<ul class="rows">` + work.routines.map(r => `<li><span class="t mono">${esc(r.name)}</span><span class="m">${esc(r.description)}</span></li>`).join("") + `</ul>`
+    : `<div class="empty">No routines for this workspace.</div>`);
+}
+async function loadWork(force) {
+  if (workBusy || (!force && Date.now() - workAt < 60000)) return;
+  workBusy = true;
+  try {
+    const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/work", { cache: "no-store" });
+    if (!r.ok) throw 0;
+    work = await r.json(); workAt = Date.now(); drawWork();
+  } catch { if (!work) $("plans").innerHTML = $("routines").innerHTML = `<div class="empty">Couldn't load this view.</div>`; }
+  finally { workBusy = false; }
 }
 let seq = 0, shownRows, adding = false;  // seq: only the newest list request may set taskRows
 function drawTasks() {  // only the list is redrawn, and only when it changed, so typing and keyboard focus survive a poll
@@ -214,6 +243,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   if (!b || b.dataset.tab === tab) return;
   tab = b.dataset.tab; draw();
   if (tab === "tasks") loadTasks().catch(() => { $("task-err").textContent = "Couldn't load tasks."; $("task-err").hidden = false; });
+  if (tab === "plans" || tab === "routines") { drawWork(); loadWork(); }
 });
 function drawTree() {
   const w = data && data.workspaces.find(x => x.id === id);
@@ -330,6 +360,7 @@ async function tick() {
   try { data = await load(); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
   draw();
   if (tab === "tasks") loadTasks().then(() => { $("task-err").hidden = true; }).catch(() => {});
+  if (tab === "plans" || tab === "routines") loadWork();  // throttled to once a minute
 }
 tick();
 setInterval(() => { if (!document.hidden) tick(); }, 10000);

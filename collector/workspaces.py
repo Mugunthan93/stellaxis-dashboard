@@ -535,14 +535,91 @@ def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:
     return True
 
 
+# --- plans and routines: docs plan files in a workspace's repos, and <claude dir>/scheduled-tasks/<name>/SKILL.md ---
+PLAN_DIRS = ("docs/plans", "docs/superpowers/plans")
+MAX_PLANS = 200
+
+
+def _title(f: Path) -> str:
+    """First `# ` line within the first 20 lines, else the file name without .md."""
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for _, line in zip(range(20), fh):
+                if line.startswith("# ") and line[2:].strip():
+                    return line[2:].strip()
+    except OSError:
+        pass
+    return f.stem
+
+
+def plans(repos: list[str]) -> list[dict]:
+    """Plan files of these repos, newest first, at most MAX_PLANS: {"repo", "path", "title", "modified"} (ISO UTC)."""
+    found = []
+    for repo in repos:
+        for d in PLAN_DIRS:
+            try:
+                for f in (_norm(repo) / d).glob("*.md"):
+                    if f.is_file() and not f.is_symlink():
+                        found.append((f.stat().st_mtime, repo, f))
+            except OSError:
+                continue
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [{"repo": repo, "path": str(f), "title": _title(f),
+             "modified": datetime.fromtimestamp(m, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            for m, repo, f in found[:MAX_PLANS]]
+
+
+def routines(ws: dict, cfg: dict) -> list[dict]:
+    """{"name", "description"} for each routine the workspace lists whose SKILL.md exists; frontmatter is read line by line."""
+    out = []
+    for name in ws.get("routines") or []:
+        if not isinstance(name, str) or not re.fullmatch(r"[\w-]+", name):
+            continue
+        try:
+            lines = (_claude_dir() / "scheduled-tasks" / name / "SKILL.md").read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        meta = {}
+        if lines and lines[0].strip() == "---":
+            for l in lines[1:]:
+                if l.strip() == "---":
+                    break
+                k, sep, v = l.partition(":")
+                if sep and k.strip() in ("name", "description"):
+                    meta[k.strip()] = v.strip()
+        out.append({"name": meta.get("name") or name, "description": meta.get("description", "")})
+    return out
+
+
+def _work(handler, ws: str, cfg: dict) -> bool:
+    """GET /api/workspaces/<id>/work: {"plans", "routines"}; <id> must be a configured workspace or `other`."""
+    try:
+        if not settings_api.host_ok(handler):
+            raise ApiError(403, "only same-origin localhost requests are answered")
+        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
+        if ws != "other" and not w:
+            raise ApiError(404, "unknown workspace")
+        entry = next((e for e in _index().get("workspaces", []) if e.get("id") == ws), {})
+        repos = [r["abs"] for r in entry.get("repos", []) if isinstance(r.get("abs"), str) and _norm(r["abs"]).is_dir()]
+        settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg)})
+    except ApiError as e:
+        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+    except OSError as e:
+        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+    return True
+
+
 def handle(handler, method: str, cfg: dict) -> bool:
-    """Serve /api/workspaces, /api/workspaces/<id>/tasks, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
+    """Serve /api/workspaces, /api/workspaces/<id>/tasks and /work, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
     path = handler.path.split("?")[0]
     if path.startswith("/api/approvals") and _approvals(handler, method, path):
         return True
     t = re.fullmatch(r"/api/workspaces/(.+)/tasks", path)
     if t and method in ("GET", "POST"):
         return _tasks(handler, method, t.group(1), cfg)
+    k = re.fullmatch(r"/api/workspaces/(.+)/work", path)
+    if k and method == "GET":
+        return _work(handler, k.group(1), cfg)
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
     if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
