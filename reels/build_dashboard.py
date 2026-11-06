@@ -15,10 +15,15 @@ def read(name):
     return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
 
 
+NOTE_TAG = re.compile(r'</?(?:details|summary)>|</a>|<a href="https://[^"<>\s]+">'
+                      r'|<img src="images/[\w-]+\.jpg"(?: width="\d+")?(?: alt="[\w ]*")?>')
+
+
 def inline(s):
-    """Escape text but keep the few inline HTML tags the notes use, then apply md inline syntax."""
+    """Escape text but keep the few inline HTML tags the notes use, then apply md inline syntax.
+    Notes quote reel captions, so only these exact tag shapes pass; anything else is shown as text."""
     keep = []
-    s = re.sub(r"</?(a|img|details|summary)\b[^>]*>", lambda m: keep.append(m.group(0)) or f"\x00{len(keep)-1}\x00", s)
+    s = NOTE_TAG.sub(lambda m: keep.append(m.group(0)) or f"\x00{len(keep)-1}\x00", s)
     s = html.escape(s, quote=False)
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
@@ -33,7 +38,9 @@ def slug(name):
 
 def note_href(href):
     m = re.match(r"\d{4}-\d{2}-\d{2}-([\w-]+)\.md$", href)
-    return f"#n-{m.group(1)}" if m else href
+    if m:
+        return f"#n-{m.group(1)}"
+    return href.replace('"', "&quot;") if re.match(r"https?://", href) else "#"
 
 
 def md(text):
@@ -185,7 +192,7 @@ def main():
         img = (f'<img src="{cover}" alt="" loading="lazy">' if os.path.exists(os.path.join(R, cover))
                else '<div class="noimg">no cover</div>')
         plain = re.sub(r"`", "", n["title"])
-        source = html.escape(n.get("source", "#"))
+        source = html.escape(note_href(n.get("source", "#")).replace("&quot;", ""))
         hay = " ".join([n["title"], n["tldr"], n.get("author", ""), " ".join(n["tags"]),
                         " ".join(t for t, _ in n["tools"])]).lower()
         projs = " ".join(slug(f["project"]) for f in fits.get(n["code"], []) if f["fit"] != "no")

@@ -4,7 +4,7 @@ Usage: ~/Knowledge/reels/.tools/venv/bin/python reel.py queue.json
 queue.json is the `items` array from fetch_saved.js. Writes $REELS_HOME/.tools/out/<code>.txt per item
 (caption, Whisper transcript, de-duplicated OCR) and prints a one-line status each.
 """
-import json, os, re, subprocess, sys, wave
+import json, os, re, subprocess, sys, urllib.parse, wave
 import numpy as np
 
 R = os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels"))  # the notes; code lives in the repo
@@ -24,7 +24,10 @@ def model(size):
 
 
 def get(url, path):
-    subprocess.run(["curl", "-sf", "-m", "120", "-o", path, url], check=True)
+    u = urllib.parse.urlsplit(url)
+    if u.scheme != "https" or not (u.hostname or "").endswith((".cdninstagram.com", ".fbcdn.net")):
+        raise ValueError(f"not an Instagram media URL: {url[:80]}")
+    subprocess.run(["curl", "-sf", "-m", "120", "--proto", "=https", "-o", path, "--url", url], check=True)
 
 
 def ocr(paths):
@@ -50,7 +53,10 @@ def transcribe(audio_mp4, wav):
 
 
 def run(item):
-    code = item["code"]; d = os.path.join(WORK, code); os.makedirs(d, exist_ok=True)
+    code = item["code"]
+    if not re.fullmatch(r"[\w-]{5,20}", code):  # code becomes a path that is deleted below
+        raise ValueError(f"bad code: {code[:40]!r}")
+    d = os.path.join(WORK, code); os.makedirs(d, exist_ok=True)
     if item.get("thumb"):
         get(item["thumb"], os.path.join(IMAGES, f"{code}.jpg"))
     speech, lang, frames = "", "", []
