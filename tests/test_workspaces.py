@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
@@ -201,6 +202,27 @@ class RepoStateTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        W._STATE_CACHE.clear()
+
+    def test_git_runs_without_optional_locks(self):
+        d = self.repo("a")
+        real = subprocess.run
+        with mock.patch.object(W.subprocess, "run", wraps=real) as run:
+            W.repo_state(str(d))
+        self.assertTrue(run.call_args_list)
+        for c in run.call_args_list:
+            self.assertEqual(c.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
+
+    def test_repo_states_caches_errors_too_until_cleared(self):
+        gone = str(Path(self.tmp.name) / "nope")
+        with mock.patch.object(W, "repo_state", wraps=W.repo_state) as rs:
+            a = W.repo_states([gone, gone])
+            W.repo_states([gone])
+            self.assertEqual(rs.call_count, 1)
+            W._STATE_CACHE.clear()
+            W.repo_states([gone])
+            self.assertEqual(rs.call_count, 2)
+        self.assertIn("error", a[gone])
 
     def test_no_remote(self):
         d = self.repo("a")

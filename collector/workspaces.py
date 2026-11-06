@@ -9,6 +9,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -53,7 +55,7 @@ def repo_state(path: str) -> dict:
     """{"remote", "ahead", "dirty"} for a repo: has a remote, commits ahead of upstream, changed files."""
     def git(*args):
         r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=5,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
         if r.returncode:
             raise ValueError(r.stderr.strip() or "git failed")
         return r.stdout
@@ -66,6 +68,21 @@ def repo_state(path: str) -> dict:
     m = re.search(r"\[ahead (\d+)", head)
     return {"remote": remote, "ahead": int(m.group(1)) if m else 0,
             "dirty": sum(1 for l in lines if not l.startswith("##"))}
+
+
+_STATE_CACHE: dict[str, tuple[float, dict]] = {}  # path > (time computed, repo_state); errors are cached too
+STATE_TTL = 300
+
+
+def repo_states(paths: list[str]) -> dict[str, dict]:
+    """repo_state per path, cached for STATE_TTL seconds; misses run in a small thread pool."""
+    now = time.monotonic()
+    miss = [p for p in dict.fromkeys(paths) if p not in _STATE_CACHE or now - _STATE_CACHE[p][0] >= STATE_TTL]
+    if miss:
+        with ThreadPoolExecutor(max_workers=min(8, len(miss))) as ex:
+            for p, st in zip(miss, ex.map(repo_state, miss)):
+                _STATE_CACHE[p] = (time.monotonic(), st)
+    return {p: _STATE_CACHE[p][1] for p in paths}
 
 
 def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str | None = None) -> dict:
@@ -88,6 +105,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
         tree.setdefault(wid, {}).setdefault(repo, {}).setdefault(branch, []).append(row)
         if (s.get("last_ts") or "")[:19] >= cut:
             cost[wid] = cost.get(wid, 0) + row["cost"]
+    states = repo_states([str(_norm(r)) for repos in tree.values() for r in repos])
     out = []
     for w in [*wss, {"id": "other", "name": "Other"}]:
         repos = []
@@ -97,7 +115,8 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
                 rows.sort(key=lambda r: r["first_ts"] or "", reverse=True)
                 bl.append({"name": name, "sessions": rows})
             bl.sort(key=lambda b: max(r["last_ts"] or "" for r in b["sessions"]), reverse=True)
-            repos.append({"path": repo, "exists": _norm(repo).exists(), "state": repo_state(str(_norm(repo))),"branches": bl})
+            ab = _norm(repo)
+            repos.append({"path": repo, "exists": ab.exists(), "state": states[str(ab)], "branches": bl})
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
     return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
