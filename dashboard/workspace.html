@@ -84,6 +84,7 @@ textarea.inp { resize: vertical; }
 <div class="wrap">
   <header><h1 id="title">Workspace</h1></header>
   <div class="notice" id="live-note" hidden>Live status is unavailable, so session status can't be shown.</div>
+  <div class="bad" id="sw-err" role="alert" hidden></div>
   <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
   <section class="panel">
     <div class="tabs" role="tablist" aria-label="Workspace views">
@@ -222,7 +223,8 @@ $("tree").addEventListener("change", async e => {
   const t = e.target;
   if (!t.dataset || t.dataset.act !== "approve") return;
   t.disabled = true;
-  try { await post("/api/approvals/session/" + encodeURIComponent(t.dataset.id), { on: t.checked }); } catch {}
+  try { await post("/api/approvals/session/" + encodeURIComponent(t.dataset.id), { on: t.checked }); $("sw-err").hidden = true; }
+  catch (x) { $("sw-err").textContent = "Couldn't change Approve from page: " + x.message; $("sw-err").hidden = false; }
   tick();  // redraws from the server's answer, so a failed change flips back
 });
 $("tree").addEventListener("input", e => { const t = e.target; if (t.matches("textarea") && t.dataset.id && msg[t.dataset.id]) msg[t.dataset.id].draft = t.value; });

@@ -15,29 +15,44 @@ from pathlib import Path
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 CAP = 2000
+SKIP_TOOLS = ("AskUserQuestion", "ExitPlanMode")  # their prompts are questions or plans, not a command to judge here
+HIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
-def summary_of(tool: str, inp: dict) -> str:
+def summary_of(tool, inp):
+    """(summary, extra) the owner will see, or None when it can't be shown whole and plainly."""
     cmd = inp.get("command")
-    if tool == "Bash" and isinstance(cmd, str):
-        return cmd  # never shortened: the owner must see all of it
+    if tool == "Bash":
+        if not isinstance(cmd, str):
+            return None
+        # every other key can change the run (e.g. dangerouslyDisableSandbox), so it is shown too
+        return cmd, {k: v for k, v in inp.items() if k not in ("command", "description", "timeout")}
     s = json.dumps(inp, separators=(",", ":"), ensure_ascii=False)
-    return s if len(s) <= CAP else s[:CAP] + f" ... [truncated, {len(s) - CAP} more characters]"
+    return (s, {}) if len(s) <= CAP else None  # too long to show whole: the normal prompt handles it
 
 
-def decision(behavior: str) -> dict:
+def plain(*vals):
+    """True when none of the values has control, bidi or zero-width characters (newline and tab are fine)."""
+    return not any(HIDDEN.search(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)) for v in vals)
+
+
+def decision(behavior):
     d = {"behavior": behavior}
     if behavior == "deny":
         d["message"] = "Denied from the Stellaxis page."
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": d}}
 
 
-def run() -> dict | None:
+def run():
     req = json.loads(sys.stdin.read())
     if not isinstance(req, dict) or req.get("hook_event_name") != "PermissionRequest":
         return None
     sid, tool, inp = req.get("session_id"), req.get("tool_name"), req.get("tool_input")
     if not (isinstance(sid, str) and UUID_RE.fullmatch(sid) and isinstance(tool, str) and isinstance(inp, dict)):
+        return None
+    cwd = req.get("cwd") if isinstance(req.get("cwd"), str) else ""
+    shown = None if tool in SKIP_TOOLS else summary_of(tool, inp)
+    if shown is None or not plain(shown[0], shown[1], cwd, tool):
         return None
     home = Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
     try:
@@ -52,7 +67,7 @@ def run() -> dict | None:
         pass
     d = home / "approvals"
     rid = uuid.uuid4().hex
-    body = json.dumps({"id": rid, "session_id": sid, "tool": tool, "summary": summary_of(tool, inp),
+    body = json.dumps({"id": rid, "session_id": sid, "tool": tool, "summary": shown[0], "extra": shown[1], "cwd": cwd,
                        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     tmp, rq, ans = d / (rid + ".tmp"), d / (rid + ".req"), d / (rid + ".ans")
     try:
@@ -78,7 +93,7 @@ def run() -> dict | None:
                 pass
 
 
-def main() -> None:
+def main():
     try:
         out = run()
         if out is not None:

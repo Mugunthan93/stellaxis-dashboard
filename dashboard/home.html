@@ -73,7 +73,7 @@ a { color: var(--accent); }
     <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval.</p></div>
     <div class="bad" id="ap-err" role="alert" hidden></div>
     <ul class="rows" id="ap-list"></ul>
-    <ul class="rows" id="needs-list"></ul>
+    <ul class="rows" id="needs-list" hidden></ul>
   </section>
   <section class="panel" id="running" hidden>
     <div class="panel-head"><h2>Running</h2><p>Sessions working right now.</p></div>
@@ -108,7 +108,7 @@ let titles = {}, appr = [], apKey = "", armed = 0;
 // Approvals: the command is shown escaped and in full. Buttons ignore clicks for a moment after the list changes,
 // so a click aimed at one request can't land on another that just took its place.
 function drawAppr(force) {
-  const key = JSON.stringify(appr.map(a => [a.id, a.summary, titles[a.session_id] || ""]));
+  const key = JSON.stringify(appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]));
   $("needs-you").hidden = !appr.length && $("needs-list").hidden;
   $("ap-list").hidden = !appr.length;
   if (key === apKey && !force) return;
@@ -116,6 +116,8 @@ function drawAppr(force) {
   apKey = key;
   $("ap-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || a.session_id.slice(0, 8))}</span><span class="m">${esc(ago(a.at))}</span>`
     + `<div class="ask"><span class="m">This session asks to run <b>${esc(a.tool)}</b>:</span><pre class="cmd mono">${esc(a.summary)}</pre>`
+    + (a.cwd ? `<span class="m">In <span class="mono">${esc(a.cwd)}</span></span>` : "")
+    + (Object.keys(a.extra || {}).length ? `<span class="m">With these settings:</span><pre class="cmd mono">${esc(JSON.stringify(a.extra, null, 1))}</pre>` : "")
     + `<div class="actions"><button class="btn small" type="button" data-allow="1" data-id="${esc(a.id)}">Allow</button>`
     + `<button class="btn small" type="button" data-allow="0" data-id="${esc(a.id)}">Deny</button></div></div></li>`).join("");
 }

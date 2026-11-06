@@ -689,7 +689,7 @@ class ActionApiTest(unittest.TestCase):
         pr = self.hook(self.req(tool_input={"command": cmd}), wait="3")
         p = self.wait_pending()[0]
         self.assertEqual((p["session_id"], p["tool"], p["summary"]), (UID, "Bash", cmd))
-        self.assertEqual(set(p), {"id", "session_id", "tool", "summary", "at"})
+        self.assertEqual(set(p), {"id", "session_id", "tool", "summary", "at", "extra", "cwd"})
         d = self.dir / "stx" / "approvals"
         self.assertEqual(oct(d.stat().st_mode & 0o777), "0o700")
         self.assertEqual(oct((d / (p["id"] + ".req")).stat().st_mode & 0o777), "0o600")
@@ -698,16 +698,87 @@ class ActionApiTest(unittest.TestCase):
         W.decide(p["id"], False)
         self.finish(pr)
 
-    def test_other_tools_get_compact_json_capped(self):
+    def silent(self, payload, wait="1"):
+        self.assertEqual(self.finish(self.hook(payload, wait=wait)), ("", 0), payload)
+        self.assertEqual(self.reqs(), [])
+
+    def test_other_tools_get_compact_json(self):
         self.switch_on()
-        pr = self.hook(self.req(tool_name="Write", tool_input={"file_path": "/a", "content": "x" * 5000}), wait="3")
+        pr = self.hook(self.req(tool_name="Write", tool_input={"file_path": "/a", "content": "xy"}, cwd="/work"), wait="3")
         p = self.wait_pending()[0]
-        self.assertEqual(p["tool"], "Write")
-        self.assertTrue(p["summary"].startswith('{"file_path":"/a","content":"xxx'))
-        self.assertIn("truncated", p["summary"])
-        self.assertLess(len(p["summary"]), 2100)
+        self.assertEqual((p["tool"], p["summary"], p["extra"], p["cwd"]), ("Write", '{"file_path":"/a","content":"xy"}', {}, "/work"))
         pr.kill()
         pr.wait()
+
+    def test_too_long_to_show_whole_is_silent(self):
+        self.switch_on()
+        self.silent(self.req(tool_name="Write", tool_input={"content": "x" * 5000, "file_path": "x"}))
+
+    def test_bash_shows_every_key_that_affects_the_run(self):
+        self.switch_on()
+        pr = self.hook(self.req(tool_input={"command": "ls", "description": "d", "timeout": 5,
+                                            "dangerouslyDisableSandbox": True}), wait="3")
+        p = self.wait_pending()[0]
+        self.assertEqual((p["summary"], p["extra"]), ("ls", {"dangerouslyDisableSandbox": True}))
+        pr.kill()
+        pr.wait()
+        for f in self.reqs():  # a killed hook can't clean up
+            f.unlink()
+        self.silent(self.req(tool_input={"command": ["ls"]}))
+
+    def test_questions_and_plans_are_silent(self):
+        self.switch_on()
+        for t in ("AskUserQuestion", "ExitPlanMode"):
+            self.silent(self.req(tool_name=t, tool_input={"x": "y"}))
+
+    def test_hidden_characters_are_silent(self):
+        self.switch_on()
+        for bad in ("a\x1b[2Jb", "a\rb", "a\x00b", "a\u202eb", "a\u200bb", "a\u2066b", "a\ufeffb", "a\x85b"):
+            self.silent(self.req(tool_input={"command": bad}))
+            self.silent(self.req(tool_input={"command": "ls", "env": bad}))
+            self.silent(self.req(tool_name="Write", tool_input={"content": bad}))
+            self.silent(self.req(cwd=bad))
+        pr = self.hook(self.req(tool_input={"command": "a\n\tb"}), wait="3")  # newline and tab are fine
+        self.assertEqual(self.wait_pending()[0]["summary"], "a\n\tb")
+        pr.kill()
+        pr.wait()
+
+    def test_switch_for_another_session_or_odd_file_is_silent(self):
+        other = "99999999-2222-3333-4444-555555555555"
+        self.switch_on(other)
+        self.silent(self.req())
+        on = self.dir / "stx" / "approvals" / "on"
+        (on / UID).symlink_to(on / other)
+        self.silent(self.req())
+        (on / UID).unlink()
+        (on / UID).mkdir()
+        self.silent(self.req())
+
+    def test_runs_on_the_system_python(self):
+        sysp = "/usr/bin/python3"
+        if not os.path.exists(sysp):
+            self.skipTest("no system python")
+        env = {**os.environ, "STELLAXIS_HOME": str(self.dir / "stx")}
+        r = subprocess.run([sysp, "-I", self.HOOK], input=json.dumps(self.req()), capture_output=True, text=True, env=env)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_racing_decisions_have_one_winner(self):
+        import threading
+        for i in range(10):
+            rid = f"{i:032x}"
+            d = self.mkreq(rid)
+            res, go = [], threading.Barrier(2)
+
+            def go_post(allow):
+                go.wait()
+                res.append((allow, self.post("/api/approvals/" + rid, {"allow": allow})[0]))
+            ts = [threading.Thread(target=go_post, args=(a,)) for a in (True, False)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+            self.assertEqual(sorted(c for _, c in res), [200, 409])
+            win = next(a for a, c in res if c == 200)
+            self.assertEqual((d / (rid + ".ans")).read_text(), "allow" if win else "deny")
+            self.assertEqual(list(d.glob(rid + ".*.tmp")), [])
 
     def test_pending_ignores_and_removes_old_requests(self):
         rid = "a" * 32

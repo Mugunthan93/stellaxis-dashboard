@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -345,7 +346,8 @@ def pending() -> list[dict]:
     d, out, now = _appr_dir(), [], time.time()
     for f in d.glob("*.req"):
         try:
-            if now - f.stat().st_mtime > APPROVAL_TTL:
+            st = f.stat()  # once: a hook finishing mid-scan can't make a later stat fail
+            if now - st.st_mtime > APPROVAL_TTL:
                 f.unlink(missing_ok=True)
                 f.with_suffix(".ans").unlink(missing_ok=True)
                 continue
@@ -358,7 +360,10 @@ def pending() -> list[dict]:
             continue
         if f.with_suffix(".ans").exists():
             continue  # already answered; the hook is about to pick it up
-        out.append({k: r[k] for k in ("id", "session_id", "tool", "summary", "at")} | {"_m": f.stat().st_mtime})
+        extra, cwd = r.get("extra", {}), r.get("cwd", "")
+        if not (isinstance(extra, dict) and isinstance(cwd, str)):
+            continue
+        out.append({k: r[k] for k in ("id", "session_id", "tool", "summary", "at")} | {"extra": extra, "cwd": cwd, "_m": st.st_mtime})
     out.sort(key=lambda r: r.pop("_m"))
     return out
 
@@ -373,16 +378,15 @@ def decide(id: str, allow: bool) -> None:
             raise OSError
     except OSError:
         raise ApiError(404, "no such request (it may have timed out)")
-    tmp = d / (id + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, name = tempfile.mkstemp(dir=d, prefix=id + ".", suffix=".tmp")  # unique and O_EXCL, mode 0600
     try:
         with os.fdopen(fd, "w") as f:
             f.write("allow" if allow else "deny")
-        os.link(tmp, d / (id + ".ans"))  # atomic and never replaces: the first answer wins
+        os.link(name, d / (id + ".ans"))  # atomic and never replaces: the first answer wins
     except FileExistsError:
         raise ApiError(409, "this request was already answered")
     finally:
-        tmp.unlink(missing_ok=True)
+        os.unlink(name)
 
 
 def set_approve(session_id: str, on: bool) -> None:
