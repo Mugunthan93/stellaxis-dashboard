@@ -845,6 +845,76 @@ class ActionApiTest(unittest.TestCase):
         self.assertIs(row()["approve"], False)
         self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
 
+    # --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md ---
+    def tasks(self):
+        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo]}]
+        return self.dir / "stx" / "tasks" / "w.md"
+
+    def test_add_toggle_remove_round_trip(self):
+        f = self.tasks()
+        self.assertEqual(self.get("/api/workspaces/w/tasks"), (200, []))
+        code, rows = self.post("/api/workspaces/w/tasks", {"add": "  write tests "})
+        self.assertEqual((code, rows), (200, [{"line": 1, "text": "write tests", "done": False}]))
+        self.assertEqual(f.read_text(), "- [ ] write tests\n")
+        self.post("/api/workspaces/w/tasks", {"add": "ship"})
+        code, rows = self.post("/api/workspaces/w/tasks", {"toggle": 2, "expect": "ship"})
+        self.assertEqual([r["done"] for r in rows], [False, True])
+        self.assertEqual(f.read_text(), "- [ ] write tests\n- [x] ship\n")
+        code, rows = self.post("/api/workspaces/w/tasks", {"toggle": 2, "expect": "ship"})
+        self.assertEqual([r["done"] for r in rows], [False, False])
+        code, rows = self.post("/api/workspaces/w/tasks", {"remove": 1, "expect": "write tests"})
+        self.assertEqual(rows, [{"line": 1, "text": "ship", "done": False}])
+        self.assertEqual(self.get("/api/workspaces/w/tasks")[1], rows)
+
+    def test_other_lines_in_the_file_survive(self):
+        f = self.tasks()
+        f.parent.mkdir()
+        f.write_bytes("# Plan\n\nnotes  with trailing  \n- [ ] a\n* bullet\r\n- [x] b".encode())
+        self.assertEqual([r["line"] for r in self.get("/api/workspaces/w/tasks")[1]], [4, 6])
+        self.post("/api/workspaces/w/tasks", {"toggle": 4, "expect": "a"})
+        self.post("/api/workspaces/w/tasks", {"add": "c"})
+        self.post("/api/workspaces/w/tasks", {"remove": 6, "expect": "b"})
+        self.assertEqual(f.read_bytes().decode(), "# Plan\n\nnotes  with trailing  \n- [x] a\n* bullet\r\n- [ ] c\n")
+
+    def test_stale_edit_is_refused(self):
+        f = self.tasks()
+        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        before = f.read_bytes()
+        for op in ({"toggle": 1, "expect": "other"}, {"remove": 1, "expect": "other"},
+                   {"toggle": 5, "expect": "a"}, {"remove": 5, "expect": "a"}):
+            self.assertEqual(self.post("/api/workspaces/w/tasks", op)[0], 409, op)
+        self.assertEqual(f.read_bytes(), before)
+
+    def test_unknown_workspace_id_cannot_escape_the_folder(self):
+        self.tasks()
+        (self.dir / "stx" / "x.md").write_text("- [ ] secret\n")
+        for bad in ("../x", "..%2Fx", "nope", "%2e%2e"):
+            self.assertEqual(self.get(f"/api/workspaces/{bad}/tasks")[0], 404, bad)
+            self.assertEqual(self.post(f"/api/workspaces/{bad}/tasks", {"add": "x"})[0], 404, bad)
+        self.assertEqual(self.get("/api/workspaces/other/tasks"), (200, []))
+        self.assertEqual((self.dir / "stx" / "x.md").read_text(), "- [ ] secret\n")
+        self.assertFalse((self.dir / "stx" / "tasks" / "nope.md").exists())
+        with self.assertRaises(W.ApiError):
+            W.read_tasks("../x")
+
+    def test_bad_task_text_and_ops_are_400(self):
+        f = self.tasks()
+        for op in ({"add": ""}, {"add": "  "}, {"add": "a\nb"}, {"add": "a\rb"}, {"add": "x" * 501}, {"add": 5},
+                   {}, {"add": "a", "toggle": 1}, {"toggle": "1", "expect": "a"}, {"toggle": True, "expect": "a"},
+                   {"toggle": 1}):
+            self.assertEqual(self.post("/api/workspaces/w/tasks", op)[0], 400, op)
+        self.assertFalse(f.exists())
+        self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "x" * 500})[0], 200)
+
+    def test_task_posts_need_localhost_and_json(self):
+        self.tasks()
+        self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "a"}, headers={"Host": "evil.example"})[0], 403)
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", "/api/workspaces/w/tasks", '{"add": "a"}', {"Content-Type": "text/plain"})
+        self.assertEqual(c.getresponse().status, 415)
+        self.assertFalse((self.dir / "stx" / "tasks").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

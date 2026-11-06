@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Only the Sessions tab exists so far. */
+/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions and Tasks tabs so far. */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
   --accent: #2c55c9; --accent-soft: #dfe6f8;
@@ -79,6 +79,8 @@ textarea.inp { resize: vertical; }
 .msgbox { flex: 1 1 100%; display: grid; gap: 6px; padding: 6px 0 4px; }
 .reply { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sunk); border-radius: 8px; padding: 8px 10px; max-height: 240px; overflow: auto; }
 .bad { color: var(--crit); font-size: 0.86rem; }
+.rows li.done .t { text-decoration: line-through; color: var(--muted); }
+.rows label.t { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
 .sw { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--muted); cursor: pointer; }
 </style>
 <div class="wrap">
@@ -88,14 +90,22 @@ textarea.inp { resize: vertical; }
   <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
   <section class="panel">
     <div class="tabs" role="tablist" aria-label="Workspace views">
-      <button type="button" role="tab" aria-selected="true">Sessions</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Tasks</button>
+      <button type="button" role="tab" id="tab-sessions" data-tab="sessions" aria-selected="true">Sessions</button>
+      <button type="button" role="tab" id="tab-tasks" data-tab="tasks" aria-selected="false">Tasks</button>
       <button type="button" role="tab" aria-selected="false" disabled>Plans</button>
       <button type="button" role="tab" aria-selected="false" disabled>Routines</button>
       <button type="button" role="tab" aria-selected="false" disabled>Tests</button>
     </div>
-    <div class="chips"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
+    <div class="chips" id="arch-row"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
     <div id="tree"></div>
+    <div id="tasks" hidden>
+      <form class="actions" id="task-form">
+        <input class="inp" id="task-text" maxlength="500" aria-label="New task" placeholder="Add a task" autocomplete="off" style="flex:1 1 240px; width:auto">
+        <button class="btn" type="submit">Add</button>
+      </form>
+      <div class="bad" id="task-err" role="alert" hidden></div>
+      <div id="task-list"></div>
+    </div>
   </section>
   <section class="panel" id="new-session" hidden>
     <div class="panel-head"><h2>New session</h2></div>
@@ -125,7 +135,7 @@ const pill = st => STATUS[st] ? `<span class="pill ${STATUS[st][0]}">${STATUS[st
 const $ = id => document.getElementById(id);
 async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
 const id = new URLSearchParams(location.search).get("id");
-let data = null, showArch = false;
+let data = null, showArch = false, tab = "sessions", taskRows = null;
 const shut = new Set();  // keys of sections the user closed; everything else is open, and this survives polls
 const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
 const msg = {};  // per session id: { open, draft, busy, error, sent, reply, timer }; survives polls
@@ -153,7 +163,44 @@ function draw() {
   drawTree();
   if (fid) { const t = $("tree").querySelector(`textarea[data-id="${CSS.escape(fid[0])}"]`); if (t) { t.focus(); t.setSelectionRange(fid[1], fid[2]); } }
   drawForm();
+  drawTabs();
 }
+function drawTabs() {  // the Sessions views and the Tasks view never show together
+  const t = tab === "tasks";
+  $("tab-sessions").setAttribute("aria-selected", !t); $("tab-tasks").setAttribute("aria-selected", t);
+  $("arch-row").hidden = t; $("tree").hidden = t; $("tasks").hidden = !t;
+  if (t) $("new-session").hidden = true;
+}
+function drawTasks() {  // only the list is redrawn; the input above it is never touched, so typing survives a poll
+  $("task-list").innerHTML = taskRows === null ? `<div class="empty">Loading…</div>` : taskRows.length
+    ? `<ul class="rows">` + taskRows.map(r => `<li class="${r.done ? "done" : ""}"><label class="t"><input type="checkbox" data-line="${r.line}" data-text="${esc(r.text)}" ${r.done ? "checked" : ""}> <span>${esc(r.text)}</span></label>`
+      + `<button class="btn small" type="button" data-rm="${r.line}" data-text="${esc(r.text)}" aria-label="Remove ${esc(r.text)}">Remove</button></li>`).join("") + `</ul>`
+    : `<div class="empty">No tasks yet.</div>`;
+}
+async function loadTasks() {
+  const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/tasks", { cache: "no-store" });
+  if (!r.ok) throw 0;
+  taskRows = await r.json(); drawTasks();
+}
+async function taskPost(body) {
+  try { taskRows = await post("/api/workspaces/" + encodeURIComponent(id) + "/tasks", body); $("task-err").hidden = true; return true; }
+  catch (e) { $("task-err").textContent = e.message; $("task-err").hidden = false; await loadTasks().catch(() => {}); return false; }
+  finally { drawTasks(); }
+}
+$("task-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const i = $("task-text"), text = i.value.trim();
+  if (!text) return;
+  if (await taskPost({ add: text }) && i.value.trim() === text) i.value = "";  // keep anything typed while it was saving
+});
+$("task-list").addEventListener("change", e => { const t = e.target; if (t.dataset.line) taskPost({ toggle: +t.dataset.line, expect: t.dataset.text }); });
+$("task-list").addEventListener("click", e => { const b = e.target.closest("button[data-rm]"); if (b) taskPost({ remove: +b.dataset.rm, expect: b.dataset.text }); });
+document.querySelector(".tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b || b.dataset.tab === tab) return;
+  tab = b.dataset.tab; draw();
+  if (tab === "tasks") loadTasks().catch(() => { $("task-err").textContent = "Couldn't load tasks."; $("task-err").hidden = false; });
+});
 function drawTree() {
   const w = data && data.workspaces.find(x => x.id === id);
   $("live-note").hidden = !data || data.live_ok !== false;
@@ -268,6 +315,7 @@ $("arch").onclick = () => { showArch = !showArch; $("arch").setAttribute("aria-p
 async function tick() {
   try { data = await load(); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
   draw();
+  if (tab === "tasks") loadTasks().then(() => { $("task-err").hidden = true; }).catch(() => {});
 }
 tick();
 setInterval(() => { if (!document.hidden) tick(); }, 10000);

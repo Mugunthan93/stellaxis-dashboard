@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -434,11 +435,106 @@ def _approvals(handler, method: str, path: str) -> bool:
     return True
 
 
+# --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md; "- [ ] text" / "- [x] text" lines, every other line is left alone ---
+TASK_RE = re.compile(r"- \[([ x])\] (.*?)(\r?\n)?")
+MAX_TASK = 500
+_TASK_LOCK = threading.Lock()  # one read-modify-write at a time
+
+
+def _task_file(ws: str) -> Path:
+    if not isinstance(ws, str) or not re.fullmatch(r"[\w-]+", ws):
+        raise ApiError(404, "unknown workspace")
+    return _home() / "tasks" / (ws + ".md")
+
+
+def _task_lines(f: Path) -> list[str]:
+    try:
+        with open(f, newline="", encoding="utf-8") as fh:
+            return re.findall(r"[^\n]*\n|[^\n]+", fh.read())  # split on \n only, line endings kept
+    except FileNotFoundError:
+        return []
+    except UnicodeDecodeError:
+        raise ApiError(422, "the task file isn't valid UTF-8")
+
+
+def _task_rows(lines: list[str]) -> list[dict]:
+    rows = []
+    for i, l in enumerate(lines, 1):
+        m = TASK_RE.fullmatch(l)
+        if m:
+            rows.append({"line": i, "text": m.group(2), "done": m.group(1) == "x"})
+    return rows
+
+
+def read_tasks(ws: str) -> list[dict]:
+    return _task_rows(_task_lines(_task_file(ws)))
+
+
+def write_task(ws: str, op: dict) -> list[dict]:
+    """op: {"add": text}, {"toggle": line, "expect": text} or {"remove": line, "expect": text}; line is 1-based."""
+    f = _task_file(ws)
+    kinds = [k for k in ("add", "toggle", "remove") if k in op]
+    if len(kinds) != 1:
+        raise ApiError(400, "send one of add, toggle or remove")
+    kind = kinds[0]
+    if kind == "add":
+        t = op["add"].strip() if isinstance(op["add"], str) else ""
+        if not t or len(t) > MAX_TASK or re.search(r"[\r\n]", t):
+            raise ApiError(400, f"a task is one line of 1 to {MAX_TASK} characters")
+    else:
+        n = op[kind]
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or not isinstance(op.get("expect"), str):
+            raise ApiError(400, f"send {{\"{kind}\": line, \"expect\": text}}")
+    with _TASK_LOCK:
+        lines = _task_lines(f)
+        if kind == "add":
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append("- [ ] " + t + "\n")
+        else:
+            m = TASK_RE.fullmatch(lines[n - 1]) if n <= len(lines) else None
+            if not m or m.group(2) != op["expect"]:
+                raise ApiError(409, "that task changed; the list was reloaded")
+            if kind == "remove":
+                del lines[n - 1]
+            else:
+                lines[n - 1] = f"- [{' ' if m.group(1) == 'x' else 'x'}] {m.group(2)}{m.group(3) or ''}"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=f.parent, prefix=f.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+                fh.write("".join(lines))
+            os.replace(name, f)
+        except BaseException:
+            os.unlink(name)
+            raise
+        return _task_rows(lines)
+
+
+def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:
+    """GET and POST /api/workspaces/<id>/tasks; <id> must be a configured workspace or `other`."""
+    try:
+        if not settings_api.host_ok(handler):
+            raise ApiError(403, "only same-origin localhost requests are answered")
+        if ws != "other" and not any(isinstance(w, dict) and w.get("id") == ws for w in cfg.get("workspaces") or []):
+            raise ApiError(404, "unknown workspace")
+        out = read_tasks(ws) if method == "GET" else write_task(ws, settings_api.read_body(handler))
+        settings_api._send(handler, 200, out)
+    except ApiError as e:
+        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+    except OSError as e:
+        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+    return True
+
+
 def handle(handler, method: str, cfg: dict) -> bool:
-    """Serve /api/workspaces, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
+    """Serve /api/workspaces, /api/workspaces/<id>/tasks, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
     path = handler.path.split("?")[0]
     if path.startswith("/api/approvals") and _approvals(handler, method, path):
         return True
+    t = re.fullmatch(r"/api/workspaces/(.+)/tasks", path)
+    if t and method in ("GET", "POST"):
+        return _tasks(handler, method, t.group(1), cfg)
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
     if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
