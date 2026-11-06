@@ -53,6 +53,8 @@ DEFAULT_CONFIG = {
     "probe_timeout": 20,
     "max_sessions": 400,          # sessions kept in snapshot (newest first)
     "series_days": 30,
+    "workspaces": [],             # [{id, name, folders: [path]}]: folders grouped into a project
+    "claude_bin": "~/.local/bin/claude",
     "projects": [],               # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
     # USD per million tokens. cache_write_5m = 1.25x input, cache_write_1h = 2x input.
     # Longest matching prefix of the model id wins. Notional on a Max plan.
