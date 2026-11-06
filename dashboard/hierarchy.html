@@ -182,7 +182,7 @@ details.full > summary::-webkit-details-marker { display: none; }
     </div>
     <span class="spacer"></span>
     <span class="muted mono" id="updated"></span>
-    <button class="btn" id="refresh" type="button">Refresh now</button>
+    <button class="btn" id="refresh" type="button" aria-live="polite">Refresh now</button>
   </header>
 
   <div class="notice" id="note">Loading snapshot…</div>
@@ -449,12 +449,13 @@ details.full > summary::-webkit-details-marker { display: none; }
     const idle = kidsOf(view).length - kids.length;
     const G = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c7", "--c6"];
     groupCol = new Map(kidsOf(M.nodes.get(GLOBAL)).sort((a, b) => b.cost - a.cost).map((g, i) => [g.id, G[i % G.length]]));
-    let html = "";
+    let html = "", tiny = 0;
     const tile = (n, r, inner) => {
+      if (r.w < 6 || r.h < 6) { tiny++; return; }
       const big = !inner && r.w > 170 && r.h > 120 && kidsOf(n).some(c => val(c) > 0);
       const showName = r.w > 54 && r.h > 26, showVal = r.h > (inner ? 46 : 58) && r.w > 58;
       html += `<div class="tile${inner ? " inner" : ""}${n.kind === "worktree" && st.color !== "owner" ? " hatch" : ""}${!n.all.length ? " idle" : ""}${n.id === st.sel ? " sel" : ""}"
-        role="button" tabindex="0" data-id="${esc(n.id)}" title="${esc(n.label)} · ${fmtV(val(n))}"
+        role="button" tabindex="0" data-id="${esc(n.id)}" title="${esc(n.label)} · ${fmtV(val(n))}" aria-label="${esc(nameOf(n))}, ${fmtV(val(n))}"${n.id === st.sel ? ' aria-current="true"' : ""}
         style="left:${r.x.toFixed(1)}px;top:${r.y.toFixed(1)}px;width:${r.w.toFixed(1)}px;height:${r.h.toFixed(1)}px;${tileStyle(n, inner)}">
         ${showName ? `<div class="tn">${esc(nameOf(n))}</div>` : ""}${big ? `<span class="th">${fmtV(val(n))}</span>` : showVal ? `<span class="tv">${fmtV(val(n))}</span>` : ""}</div>`;
       if (big) {
@@ -470,7 +471,7 @@ details.full > summary::-webkit-details-marker { display: none; }
     const crumbs = [];
     for (let p = view; p; p = M.nodes.get(p.parent)) if (p.id !== "@dir:~") crumbs.unshift(p);
     $("#crumbbar").innerHTML = `<nav>${crumbs.map((c, i) => i < crumbs.length - 1 ? `<button type="button" data-go="${esc(c.id)}">${esc(nameOf(c))}</button><span>›</span>` : `<span class="cur">${esc(nameOf(c))}</span>`).join("")}</nav>
-      <span class="tot">${fmtV(val(view))}${idle ? ` · ${idle} idle hidden` : ""}</span>`;
+      <span class="tot">${fmtV(val(view))}${idle ? ` · ${idle} idle hidden` : ""}${tiny ? ` · ${tiny} too small to draw` : ""}</span>`;
     $("#maplegend").innerHTML = st.color === "owner"
       ? LAYERS.map(([k, label, c]) => `<li><i style="background:var(${c})"></i>${label}</li>`).join("") + `<li><i style="background:repeating-linear-gradient(-45deg,var(--muted) 0 1px,transparent 1px 3px)"></i>Inherited share (hatched)</li>`
       : [...groupCol].slice(0, 8).map(([id, c]) => `<li><i style="background:var(${c})"></i>${esc(nameOf(M.nodes.get(id)))}</li>`).join("") + `<li><i style="background:repeating-linear-gradient(-45deg,var(--muted) 0 1px,transparent 1px 3px)"></i>Worktree</li>`;
@@ -494,9 +495,10 @@ details.full > summary::-webkit-details-marker { display: none; }
     const carry = sum(ss.map(x => M.sessCalc.get(x.id).carryShared));
     const projects = [...M.nodes.values()].filter(c => c.kind === "project" && (n.id === GLOBAL || isUnder(c, n))).length;
     const L = avgLayers(ss, n);
+    const kept = M.s.sessions.length, partial = n.id === GLOBAL && M.s.totals.sessions > kept;
     const cell = (dot, lab, big, small, up) => `<div class="cell"><span class="lab">${dot ? `<i style="background:var(${dot})"></i>` : ""}${esc(lab)}</span><span class="big">${big}${small ? `<small${up ? ' class="up"' : ""}>${esc(small)}</small>` : ""}</span></div>`;
     $("#strip").innerHTML =
-      cell(null, n.id === GLOBAL ? "Total cost" : "Cost here", fmt$(cost), n.id === GLOBAL ? "API-equivalent" : `${Math.round(cost / allCost * 100)}% of all`, n.id !== GLOBAL) +
+      cell(null, partial ? `Cost, newest ${kept} sessions` : n.id === GLOBAL ? "Total cost" : "Cost here", fmt$(cost), partial ? `of ${M.s.totals.sessions.toLocaleString()} sessions` : n.id === GLOBAL ? "API-equivalent" : `${Math.round(cost / allCost * 100)}% of all`, n.id !== GLOBAL) +
       cell("--good", "Tokens", fmtT(tokens), `${ss.length} sessions`) +
       cell("--warn", "Baseline context", fmtT(sum(Object.values(L))), `${fmtT(L.own + L.parent)} own`) +
       cell("--c6", "Shared carry", fmt$(carry), `${projects} project${projects === 1 ? "" : "s"}`);
@@ -777,12 +779,30 @@ details.full > summary::-webkit-details-marker { display: none; }
       if (!s || !s.items) { $("#note").textContent = "No snapshot found. Start the collector: python3 collector/collect.py serve"; return; }
       st.snap = s; M = build(s);
       $("#updated").textContent = "updated " + ago(s.generated_at);
-      $("#note").innerHTML = `${s.totals.projects} projects${s.totals.worktrees ? ` + ${s.totals.worktrees} worktrees` : ""} · ${s.sessions.length} sessions · ${s.items.length} items. ${s.meta?.pricing ? "" : "Carry cost uses built-in cache-read prices (this snapshot has no pricing table)."}`;
+      $("#note").innerHTML = `${s.totals.projects} projects${s.totals.worktrees ? ` + ${s.totals.worktrees} worktrees` : ""} · ${s.totals.sessions > s.sessions.length ? `newest ${s.sessions.length} of ${s.totals.sessions.toLocaleString()} sessions` : `${s.sessions.length} sessions`} · ${s.items.length} items. ${s.meta?.pricing ? "" : "Carry cost uses built-in cache-read prices (this snapshot has no pricing table)."}`;
       const hash = decodeURIComponent(location.hash.slice(1));
       select(hash && M.nodes.has(hash) ? hash : st.sel);
     } catch (e) { $("#note").textContent = "Could not load snapshot: " + e.message; }
   }
-  $("#refresh").addEventListener("click", async () => { try { await fetch("api/refresh"); } catch {} setTimeout(load, 4000); });
+  $("#refresh").addEventListener("click", async () => {
+    const b = $("#refresh"); b.disabled = true; b.textContent = "Refreshing…";
+    const status = () => fetch("api/status", { cache: "no-store" }).then(r => r.json());
+    let result = "Refresh failed";
+    try {
+      const before = (await status()).last_snapshot;
+      if ((await fetch("api/refresh", { cache: "no-store" })).ok) {
+        result = "Still collecting";
+        for (let i = 0; i < 40 && result !== "Updated"; i++) {
+          await new Promise(r => setTimeout(r, 750));
+          const c = await status();
+          if (c.phase === "idle" && c.last_snapshot !== before) result = "Updated";
+        }
+      }
+    } catch {}
+    await load();
+    b.disabled = false; b.textContent = result;
+    setTimeout(() => { b.textContent = "Refresh now"; }, 2000);
+  });
   window.addEventListener("hashchange", () => { const h = decodeURIComponent(location.hash.slice(1)); if (M && h && h !== st.sel) select(h); });
   load();
   setInterval(load, 60000);

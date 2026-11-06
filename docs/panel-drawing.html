@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Panel Drawing</title>
+<style>
+:root{--paper:#ececec;--sheet:#fff;--ink:#111;--ink2:#444;--ink3:#7a7a7a;--fill:#f3f3f3;--fill2:#e6e6e6;--f:Arimo,'Helvetica Neue',Helvetica,Arial,sans-serif;color-scheme:light}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f)}
+.wrap{max-width:1760px;margin:0 auto;padding:24px 16px 40px}
+.tb{background:var(--sheet);border:1.2px solid var(--ink);border-radius:16px;display:grid;grid-template-columns:2.4fr 1fr 1fr 1fr;margin-bottom:24px;overflow:hidden}
+.tb>div{border-right:.8px solid var(--ink);border-bottom:.8px solid var(--ink);padding:10px 12px;min-width:0}
+.tb .big{grid-row:span 2}
+.tb h1{font-size:clamp(24px,3.6vw,38px);line-height:1;margin:0 0 8px;font-weight:300;letter-spacing:.08em;text-transform:uppercase}
+.tb p{margin:0;font-size:13px;color:var(--ink2)}
+.lbl{text-transform:uppercase;letter-spacing:.08em;font-size:9.5px;color:var(--ink2)}
+.v{font-size:13px;margin-top:3px;text-transform:uppercase}
+.notes{grid-column:1/-1;border-right:0!important;font-size:12.5px;color:var(--ink2)}
+.notes ol{margin:6px 0 0;padding-left:18px;columns:2;column-gap:32px}
+.figs{grid-column:1/-1;border:0!important;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 16px}
+.scroll{overflow-x:auto;background:var(--sheet);border-radius:16px}
+svg{display:block;width:100%;min-width:1100px;height:auto}
+.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink2);padding:10px 2px 0;text-transform:uppercase;letter-spacing:.06em}
+.border{fill:none;stroke:var(--ink);stroke-width:1.2}
+.obj{fill:var(--sheet);stroke:var(--ink);stroke-width:1.6}
+.well{fill:var(--fill);stroke:var(--ink);stroke-width:1}
+.hug{fill:var(--fill2);stroke:var(--ink);stroke-width:1}
+.slot{fill:none;stroke:var(--ink2);stroke-width:.8;stroke-dasharray:4 3}
+.cl{fill:none;stroke:var(--ink3);stroke-width:.7;stroke-dasharray:16 3 2 3}
+.dl{stroke:var(--ink);stroke-width:.7;fill:none}
+.ext{stroke:var(--ink);stroke-width:.55;fill:none}
+.rule{stroke:var(--ink3);stroke-width:.7}
+.arrow{fill:var(--ink)}
+.dot{fill:var(--ink)}
+.dt{font:400 11px var(--f);fill:var(--ink);paint-order:stroke;stroke:var(--sheet);stroke-width:4px;stroke-linejoin:round}
+.sl{font:400 9px var(--f);fill:var(--ink2);letter-spacing:.08em;text-transform:uppercase}
+.nt{font:400 11.5px var(--f);fill:var(--ink);letter-spacing:.05em;text-transform:uppercase}
+.nth{font:700 13px var(--f);fill:var(--ink);letter-spacing:.06em}
+.vt{font:400 12px var(--f);fill:var(--ink);letter-spacing:.1em;text-transform:uppercase}
+.vs{font:400 9.5px var(--f);fill:var(--ink2);letter-spacing:.06em;text-transform:uppercase}
+.nb{fill:var(--sheet);stroke:var(--ink);stroke-width:.9}
+.nbt{font:400 9.5px var(--f);fill:var(--ink)}
+.th{font:700 10.5px var(--f);fill:var(--ink);letter-spacing:.05em;text-transform:uppercase}
+.tc{font:400 10.5px var(--f);fill:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="tb">
+  <div class="big"><h1>Data panel</h1><p>Heading, one summary line, a bounded table and a footnote. Measured at a 1440 px viewport.</p></div>
+  <div><div class="lbl">Dwg no.</div><div class="v">UI-PANEL-001</div></div>
+  <div><div class="lbl">Rev</div><div class="v">A</div></div>
+  <div><div class="lbl">Sheets</div><div class="v">1 of 1</div></div>
+  <div><div class="lbl">Units</div><div class="v">CSS px</div></div>
+  <div><div class="lbl">Scale</div><div class="v">As noted</div></div>
+  <div><div class="lbl">Source</div><div class="v">Rendered page, computed styles</div></div>
+  <div class="notes"><span class="lbl">Notes: (unless otherwise specified)</span>
+    <ol><li>Do not scale the drawing.</li><li>Dimensions in CSS px at 14 px root type.</li><li>Slots are placeholders; real copy is not drawn.</li><li>Every dimension is a code; tables give variable and value.</li><li>HUG: sized by content. FLEX: takes remaining space. FILL: parent width.</li><li>[TBD]: not defined by the source.</li><li>Grayscale by design.</li></ol></div>
+  <div class="figs">
+    <div><div class="lbl">W · panel-w</div><div class="v">1172 fill</div></div>
+    <div><div class="lbl">H0 · panel-h</div><div class="v">440.5 hug</div></div>
+    <div><div class="lbl">S1 · panel-pad</div><div class="v">18</div></div>
+    <div><div class="lbl">S2 · stack-gap</div><div class="v">14</div></div>
+    <div><div class="lbl">H3 · row-h</div><div class="v">2·S4+LH+B = 35.6</div></div>
+    <div><div class="lbl">N · rows</div><div class="v">8</div></div>
+  </div>
+</div>
+<div class="scroll"><svg id="s" viewBox="0 0 1700 1060" role="img" aria-label="Dimensional drawing of a data panel"></svg></div>
+<div class="foot"><span>2026-11-04 | UI component reference</span><span>Data panel, architecture | 1</span></div>
+</div>
+<script>
+const NS='http://www.w3.org/2000/svg',s=document.getElementById('s');
+const el=(n,a,t)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);if(t!=null)e.textContent=t;s.appendChild(e);return e};
+const defs=document.createElementNS(NS,'defs');defs.innerHTML='<marker id="a" viewBox="0 0 7 7" refX="7" refY="3.5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="arrow" d="M0 0L7 3.5L0 7z"/></marker>';s.appendChild(defs);
+el('rect',{class:'border',x:16,y:16,width:1668,height:1028,rx:14});
+const rect=(c,x,y,w,h,r)=>el('rect',{class:c,x,y,width:w,height:h,rx:r||0});
+const line=(c,x1,y1,x2,y2)=>el('line',{class:c,x1,y1,x2,y2});
+const text=(c,x,y,t,a)=>el('text',{class:c,x,y,...(a||{})},t);
+const arrows=(x1,y1,x2,y2)=>{const l=line('dl',x1,y1,x2,y2);l.setAttribute('marker-start','url(#a)');l.setAttribute('marker-end','url(#a)')};
+function dimH(x1,x2,y,ey1,ey2,label,o={}){line('ext',x1,ey1,x1,y+(y>ey1?5:-5));line('ext',x2,ey2,x2,y+(y>ey2?5:-5));
+  if(x2-x1<28){line('dl',x1-16,y,x1,y).setAttribute('marker-end','url(#a)');line('dl',x2+16,y,x2,y).setAttribute('marker-end','url(#a)')}else arrows(x1,y,x2,y);
+  text('dt',(x1+x2)/2+(o.dx||0),y-5+(o.dy||0),label,{'text-anchor':'middle'})}
+function dimV(y1,y2,x,ex1,ex2,label,o={}){line('ext',ex1,y1,x+(x>ex1?5:-5),y1);line('ext',ex2,y2,x+(x>ex2?5:-5),y2);
+  if(y2-y1<28){line('dl',x,y1-16,x,y1).setAttribute('marker-end','url(#a)');line('dl',x,y2+16,x,y2).setAttribute('marker-end','url(#a)')}else arrows(x,y1,x,y2);
+  const r=o.side==='r';text('dt',x+(r?8:-8),(y1+y2)/2+4+(o.dy||0),label,{'text-anchor':r?'start':'end'})}
+function nb(x,y,n){rect('nb',x,y,16,14);text('nbt',x+8,y+10.5,n,{'text-anchor':'middle'})}
+function callout(px,py,ex,ey,label){el('circle',{class:'dot',cx:px,cy:py,r:2});line('dl',px,py,ex,ey);line('dl',ex,ey,ex+14,ey);text('dt',ex+18,ey+4,label)}
+function title(x,y,t,sub){text('vt',x,y,t);text('vs',x,y+14,sub)}
+function table(x,y,t,rows){text('th',x,y,t);let ry=y+8;line('rule',x,ry,x+250,ry);
+  for(const[c,v,n]of rows){ry+=18;text('tc',x,ry-4,c);text('tc',x+42,ry-4,v);text('tc',x+250,ry-4,n,{'text-anchor':'end'});line('rule',x,ry+1,x+250,ry+1)}return ry+24}
+// notes
+text('nth',40,52,'NOTES:');
+[[1,'PANEL HEIGHT HUGS; TABLE GROWS WITH ROWS.'],[2,'SUMMARY DROPS UNDER THE TITLE WHEN NARROW.'],[3,'TABLE WELL SCROLLS SIDEWAYS, NEVER THE PAGE.'],[4,'HEADER CELLS STICK TO THE WELL TOP.'],[5,'NUMERIC COLUMNS ALIGN END AND DO NOT WRAP.'],[6,'NOTE MARGIN S5 ADDS TO THE STACK GAP S2.']].forEach(([n,t],i)=>{nb(40,66+i*22,n);text('nt',64,77+i*22,t)});
+text('nt',40,214,'PANEL HIDDEN WHEN IT HAS NO ROWS.');
+// plan, 0.7:1. Numbers below are CSS px from the panel's outer corner.
+const k=.7,ox=470,oy=170,P=v=>v*k,X=v=>ox+v*k,Y=v=>oy+v*k;
+title(470,70,'Plan view','Scale 0.7:1 · 1440 viewport');
+rect('obj',ox,oy,P(1172),P(440.5),P(10));
+const head=[19,45.9],well=[59.9,379.8],note=[401.8,421.5],L=19,Rt=1153;
+rect('slot',X(L),Y(head[0]),P(252),P(26.9));text('sl',X(L)+8,Y(head[0])+13,'Title slot · hug');
+rect('slot',X(L)+P(268),Y(head[0]),P(626),P(26.9));text('sl',X(L)+P(268)+8,Y(head[0])+13,'Summary slot · hug · max 70ch · wraps');
+rect('well',X(L),Y(well[0]),P(1134),P(319.9),P(8));
+rect('hug',X(L)+P(1),Y(well[0])+P(1),P(1132),P(32.3));
+const cols=[272,457.3,1105.9,1190.6,1278.8].map(v=>v-252);
+for(const c of cols.slice(1))line('dl',X(c),Y(well[0])+P(1),X(c),Y(well[1])-P(1));
+for(let i=0;i<=8;i++){const y=Y(well[0])+P(33.3+i*35.6);if(i<8)line('rule',X(L),y,X(Rt),y)}
+['Stamp · hug','Label slot · flex','Num','Num','Num'].forEach((t,i)=>text('sl',X(cols[i])+7,Y(well[0])+P(1)+14,t));
+rect('slot',X(L),Y(note[0]),P(1134),P(19.7));text('sl',X(L)+8,Y(note[0])+10,'Footnote slot · fill');
+line('cl',X(586),oy-14,X(586),oy+P(440.5)+14);
+dimH(ox,ox+P(1172),126,oy-3,oy-3,'W · FILL · 1172');
+dimH(X(19),X(1153),148,oy+9,oy+9,'W1 = W−2·(S1+B) = 1134');
+const px=oy+P(440.5);
+['C1','C2','C3','C4','C5'].forEach((c,i)=>dimH(X(cols[i]),i<4?X(cols[i+1]):X(1152),px+34,px+3,px+3,c));
+dimV(oy,px,ox-70,ox-3,ox-3,'H0 · HUG · 440.5');
+dimV(Y(head[0]),Y(head[1]),ox-26,X(L)-3,X(L)-3,'H1');
+dimV(Y(well[0]),Y(well[1]),ox-26,X(L)-3,X(L)-3,'H2');
+dimV(Y(note[0]),Y(note[1]),ox-26,X(L)-3,X(L)-3,'H4');
+const rx=ox+P(1172)+26;
+dimV(oy,Y(19),rx,ox+P(1172)+3,ox+P(1172)+3,'S1+B',{side:'r'});
+dimV(Y(head[1]),Y(well[0]),rx,X(Rt)+3,X(Rt)+3,'S2',{side:'r'});
+dimV(Y(well[1]),Y(note[0]),rx,X(Rt)+3,X(Rt)+3,'S2+S5',{side:'r'});
+dimV(Y(note[1]),px,rx,X(Rt)+3,X(Rt)+3,'S1+B',{side:'r'});
+nb(X(L)+P(910),Y(head[0])+1,2);nb(X(Rt)-22,Y(well[0])+40,3);nb(X(cols[4])-20,Y(well[0])+6,4);nb(X(cols[2])+6,Y(well[0])+40,5);nb(X(Rt)-22,Y(note[0])-1,6);nb(X(cols[1])+6,Y(well[0])+40,1);
+callout(ox+P(1172)-2,oy+2,ox+P(1172)+60,oy-34,'R1');
+// row detail, 2:1
+const dx=70,dy=640;title(dx,590,'Detail A · table row','Scale 2:1');
+const z=2,cw=170;
+rect('hug',dx+30,dy,cw*z,P(0)+32.3*z);text('sl',dx+42,dy+33,'Header label · hug');
+rect('well',dx+30,dy+32.3*z,cw*z,35.6*z);
+rect('slot',dx+30+10*z,dy+32.3*z+7*z,cw*z-20*z,20.64*z);text('sl',dx+30+10*z+8,dy+32.3*z+7*z+24,'Cell slot · line height');
+dimV(dy,dy+32.3*z,dx+14,dx+27,dx+27,'H5');
+dimV(dy+32.3*z,dy+67.9*z,dx+14,dx+27,dx+27,'H3');
+const rr=dx+30+cw*z;
+dimV(dy+32.3*z,dy+39.3*z,rr+24,rr+3,rr+3,'S4',{side:'r'});
+dimV(dy+39.3*z,dy+59.94*z,rr+24,rr-17,rr-17,'LH',{side:'r'});
+dimH(dx+30,dx+30+10*z,dy+68*z+34,dy+68*z+3,dy+68*z+3,'S3');
+line('ext',dx+30,dy+32.3*z+35.6*z,rr,dy+32.3*z+35.6*z);
+callout(rr-90,dy+67.9*z,rr-60,dy+67.9*z+44,'B · ROW RULE');
+// corner detail
+const cx=560,cy=640;title(cx,590,'Detail B · nested corners','Scale 6:1 · not concentric');
+const zz=6,o=cx+20,p=cy+10,I=19*zz;
+el('path',{class:'obj',d:`M${o} ${p+170}V${p+10*zz}A${10*zz} ${10*zz} 0 0 1 ${o+10*zz} ${p}H${o+250}`});
+el('path',{class:'obj',d:`M${o+I} ${p+170}V${p+I+8*zz}A${8*zz} ${8*zz} 0 0 1 ${o+I+8*zz} ${p+I}H${o+250}`});
+callout(o+3*zz,p+3*zz,o+150,p-14,'R1 = 10');
+callout(o+I+2.3*zz,p+I+2.3*zz,o+210,p+I+70,'R2 = 8');
+text('sl',o+I+30,p+I+150,'Inner radius [TBD] by rule');
+dimH(o,o+I,p+190,p+173,p+173,'S1+B');
+// responsive, schematic
+const rxx=880,ry=640;title(rxx,590,'Viewport behaviour','Schematic · not to scale');
+rect('obj',rxx,ry,300,150,10);rect('slot',rxx+14,ry+14,110,14);rect('slot',rxx+136,ry+14,150,14);rect('well',rxx+14,ry+40,272,84,6);text('sl',rxx+14,ry+172,'Wide · head on one line');
+rect('obj',rxx+340,ry,120,190,10);rect('slot',rxx+352,ry+12,96,14);rect('slot',rxx+352,ry+32,96,28);rect('well',rxx+352,ry+68,96,100,6);text('sl',rxx+340,ry+212,'Narrow · head stacks');
+nb(rxx+428,ry+100,3);text('sl',rxx,ry+240,'Stack breakpoint and well scroll hint: [TBD]');
+// tables
+let ty=70;const tx=1400;
+ty=table(tx,ty,'Spacing',[['S1','panel-pad','18'],['S2','stack-gap','14'],['S3','cell-pad-x','10'],['S4','cell-pad-y','7'],['S5','note-margin','8'],['B','border','1']]);
+ty=table(tx,ty,'Size',[['W','panel-w','1172'],['W1','inner-w','1134'],['H0','panel-h','440.5'],['H1','head-h','26.9'],['H2','well-h','319.9'],['H3','row-h','35.6'],['H4','note-h','19.7'],['H5','header-h','32.3'],['LH','row-line','20.64'],['N','rows','8']]);
+ty=table(tx,ty,'Columns',[['C1','stamp','185.3 hug'],['C2','label','648.5 flex'],['C3','num-1','84.7 hug'],['C4','num-2','88.2 hug'],['C5','num-3','125.2 hug']]);
+ty=table(tx,ty,'Radius',[['R1','r-panel','10'],['R2','r-well','8']]);
+text('th',tx,ty,'Closure');line('rule',tx,ty+8,tx+250,ty+8);text('tc',tx,ty+24,'H0 = 2·(S1+B)+H1+2·S2+H2+S5+H4');text('tc',tx,ty+40,'    = 440.5');text('tc',tx,ty+56,'H2 = H5+N·H3+2·B ≈ 319.9 (borders collapse)');
+</script>
+</body>
+</html>

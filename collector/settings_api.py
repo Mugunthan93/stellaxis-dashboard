@@ -277,7 +277,7 @@ def save(body: dict) -> dict:
 
 # ---------------------------------------------------------------- http
 
-def _host_ok(handler) -> bool:
+def host_ok(handler) -> bool:
     # reject DNS-rebinding and cross-site requests: only our own localhost origin may read or write
     port = handler.server.server_address[1]
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
@@ -304,7 +304,7 @@ def handle(handler, method: str) -> bool:
     if not u.path.startswith("/api/settings"):
         return False
     try:
-        if not _host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "settings API only answers same-origin localhost requests")
         if method == "GET" and u.path == "/api/settings":
             q = {k: v[0] for k, v in parse_qs(u.query).items()}

@@ -67,6 +67,14 @@
   .sx-frame { height: calc(100dvh - 56px); }
   :root { --sx-side-w: 0px; }
 }
+@media (max-width: 480px) {
+  .sx-side { padding: 6px 8px; }
+  .sx-brand, .sx-link svg { display: none; }
+  .sx-nav { flex: 1; justify-content: space-between; }
+  .sx-group { display: contents; }
+  .sx-link { padding: 8px; }
+}
+@media (pointer: coarse) { .sx-link { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { .sx-link, .sx-link svg { transition: none; } }
 </style>
 

@@ -140,6 +140,10 @@ tr.detail td { background: var(--sunk); }
 .selbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 0.86rem; }
 .empty { padding: 28px; text-align: center; color: var(--muted); }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tags details { font-size: 0.8rem; color: var(--muted); }
+.tags details[open] { flex-basis: 100%; }
+.tags summary { cursor: pointer; }
+.tags details p { margin: 6px 0 2px; }
 footer { font-size: 0.8rem; color: var(--muted); }
 @media (pointer: coarse) {
   .btn, .seg button, .tabs button, .chip, .filters select, .filters input[type="search"], .filters input[type="number"] { min-height: 44px; }
@@ -158,7 +162,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     <span class="status" id="status" data-mode="none"><span class="dot"></span><span id="status-text">Waiting for data</span></span>
     <span class="spacer"></span>
     <span class="muted mono" id="updated"></span>
-    <button class="btn" id="refresh" type="button">Refresh now</button>
+    <button class="btn" id="refresh" type="button" aria-live="polite">Refresh now</button>
   </header>
 
   <div class="notice" id="feed-note" hidden></div>
@@ -419,13 +423,22 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
   $("#refresh").addEventListener("click", async () => {
     const b = $("#refresh"); b.disabled = true; b.textContent = "Refreshing…";
+    let result = "Updated";
     try {
       if (mcp && st.mode !== "local") {
         const r = await mcp.callTool("host:stellaxis", "stellaxis_snapshot", { view: "dashboard", refresh: true }, { cache: false });
         if (r.payload?.items) { feed.app = "ok"; feed.collector = r.payload.collector_status || null; renderFeed(); setData(r.payload, "live"); note(null); }
       } else if (st.mode === "local") {
-        await fetch("api/refresh", { cache: "no-store" }).catch(() => {});
-        await new Promise(r => setTimeout(r, 2500));
+        const status = () => fetch("api/status", { cache: "no-store" }).then(r => r.json());
+        const before = (await status()).last_snapshot;
+        const r = await fetch("api/refresh", { cache: "no-store" });
+        if (!r.ok) throw Object.assign(new Error("The collector refused the request."), { code: "refresh_" + r.status });
+        result = "Still collecting";
+        for (let i = 0; i < 40 && result !== "Updated"; i++) {
+          await new Promise(r => setTimeout(r, 750));
+          const c = await status();
+          if (c.phase === "idle" && c.last_snapshot !== before) result = "Updated";
+        }
         await loadFile();
       } else { await loadFile(); }
     } catch (e) {
@@ -439,8 +452,10 @@ footer { font-size: 0.8rem; color: var(--muted); }
       }[code] || "";
       note(`Refresh failed (<code>${esc(code)}</code>). ${esc(e?.message || "")} ${esc(hint)}`);
       feed.app = "error " + code; renderFeed();
+      result = "Refresh failed";
     }
-    b.disabled = false; b.textContent = "Refresh now";
+    b.disabled = false; b.textContent = result;
+    setTimeout(() => { b.textContent = "Refresh now"; }, 2000);
   });
 
   function setData(s, mode) { st.snap = s; st.mode = mode; render(); }
@@ -524,10 +539,11 @@ footer { font-size: 0.8rem; color: var(--muted); }
     const m = s.sessions[0]?.measured_context;
     const flags = [];
     if (m?.skill_count) flags.push(`<span class="pill acc">${m.skill_count} skills listed</span>`);
-    (m?.needs_auth_mcp || []).forEach(x => flags.push(`<span class="pill warn">needs auth: ${esc(x)}</span>`));
-    (m?.pending_mcp || []).forEach(x => flags.push(`<span class="pill">connecting: ${esc(x)}</span>`));
+    const group = (names, cls, label) => names?.length && flags.push(`<details><summary><span class="pill ${cls}">${names.length} ${label}</span></summary><p>${names.map(esc).join(", ")}</p></details>`);
+    group(m?.needs_auth_mcp, "warn", "need sign-in");
+    group(m?.pending_mcp, "", "still connecting");
     $("#budget-flags").innerHTML = flags.join("");
-    $("#budget-sub").textContent = `Measured from the latest session (${ago(s.sessions[0]?.first_ts)}, ${s.sessions[0]?.project || ""}). ~${fmtT(total)} of ${fmtT(s.totals.baseline_latest)} baseline tokens attributed.`;
+    $("#budget-sub").textContent = `Measured from the latest session (${ago(s.sessions[0]?.first_ts)}, ${s.sessions[0]?.project || ""}). ${total <= s.totals.baseline_latest ? `~${fmtT(total)} of ${fmtT(s.totals.baseline_latest)} baseline tokens attributed.` : `The sources below add up to more than the ${fmtT(s.totals.baseline_latest)} measured baseline, so treat them as rough.`}`;
   }
 
   function bucketSeries(s) {
@@ -588,7 +604,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     renderCloud();
     if (!s) return;
     $("#c-items").textContent = s.items.length; $("#c-projects").textContent = s.projects.length;
-    $("#c-sessions").textContent = s.sessions.length; $("#c-dupes").textContent = s.duplicates.length;
+    $("#c-sessions").textContent = s.totals.sessions > s.sessions.length ? `${s.sessions.length} of ${s.totals.sessions.toLocaleString()}` : s.sessions.length; $("#c-dupes").textContent = s.duplicates.length;
     renderItems(s); renderProjects(s); renderSessions(s); renderDupes(s);
   }
 
@@ -665,7 +681,12 @@ footer { font-size: 0.8rem; color: var(--muted); }
     more.hidden = rows.length <= st.limit;
     more.textContent = `Show all ${rows.length} items`;
     $("#items-foot").textContent = `${Math.min(rows.length, st.limit)} of ${rows.length} items shown · ~${fmtT(tot)} always-on tokens (plugins excluded from the sum; their parts are listed separately).`;
-    $$("#items-table th[data-sort]").forEach(th => th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (th.dataset.sort === st.sort.key ? (st.sort.dir > 0 ? " ↑" : " ↓") : ""));
+    $$("#items-table th[data-sort]").forEach(th => {
+      const on = th.dataset.sort === st.sort.key;
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (on ? (st.sort.dir > 0 ? " ↑" : " ↓") : "");
+      th.tabIndex = 0;
+      th.setAttribute("aria-sort", on ? (st.sort.dir > 0 ? "ascending" : "descending") : "none");
+    });
     renderSel();
   }
   function renderSel() {
@@ -679,9 +700,13 @@ footer { font-size: 0.8rem; color: var(--muted); }
   $("#unused-on").addEventListener("change", e => { st.unusedOn = e.target.checked; store.set("unusedOn", st.unusedOn); renderItems(st.snap); });
   $("#unused-days").addEventListener("input", e => { st.unusedDays = Math.max(0, +e.target.value || 0); store.set("unusedDays", st.unusedDays); if (st.unusedOn) renderItems(st.snap); });
   $("#hide-managed").addEventListener("change", e => { st.hideManaged = e.target.checked; renderItems(st.snap); });
-  $("#items-table thead").addEventListener("click", e => {
-    const th = e.target.closest("th[data-sort]"); if (!th) return;
+  function sortBy(th) {
     const k = th.dataset.sort; st.sort = { key: k, dir: st.sort.key === k ? -st.sort.dir : (["name", "kind", "scope"].includes(k) ? 1 : -1) }; renderItems(st.snap);
+  }
+  $("#items-table thead").addEventListener("click", e => { const th = e.target.closest("th[data-sort]"); if (th) sortBy(th); });
+  $("#items-table thead").addEventListener("keydown", e => {
+    const th = e.target.closest("th[data-sort]");
+    if (th && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); sortBy(th); }
   });
   $("#items-table tbody").addEventListener("click", e => {
     const cb = e.target.closest("[data-sel]");

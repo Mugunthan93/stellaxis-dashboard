@@ -25,11 +25,12 @@ import sys
 import threading
 import time
 import urllib.parse
+import zlib
 from pathlib import Path
 
 import settings_api
 
-VERSION = "0.2.0"
+VERSION = "0.2.2"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
 CLAUDE_JSON = (CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json"
@@ -228,7 +229,7 @@ def new_file_state(path: str) -> dict:
     return {"path": path, "offset": 0, "size": 0, "session": None, "cwd": None, "first_ts": None,
             "last_ts": None, "entrypoint": None, "version": None, "branch": None,
             "sidechain": "/subagents/" in path, "models": {}, "hourly": {}, "baseline": None,
-            "calls": {}, "mcp_tools": {}, "agent_tokens": {}, "context": {}, "recent_ids": [],
+            "calls": {}, "mcp_tools": {}, "agent_tokens": {}, "context": {}, "recent": {},
             "pending": {}, "turns": 0, "prompts": 0, "last_turn": None, "cache_losses": []}
 
 
@@ -266,11 +267,15 @@ def _attachment(st: dict, a: dict):
         for n, b in zip(names, blocks):
             mi[norm_mcp(n)] = len(str(b).encode())
     elif t == "deferred_tools_delta":
-        dfr = ctx.setdefault("deferred", {})
-        for name in a.get("addedNames") or []:
+        names = ctx.setdefault("deferred_names", {})  # by name: a resumed session announces the same tools again
+        names.update((n, len(n) + 1) for n in (a.get("addedNames") or []) + (a.get("readdedNames") or []))
+        for n in a.get("removedNames") or []:
+            names.pop(n, None)
+        dfr = ctx["deferred"] = {}
+        for name, size in names.items():
             parts = name.split("__")
             key = norm_mcp(parts[1]) if name.startswith("mcp__") and len(parts) > 2 else "builtin"
-            dfr[key] = dfr.get(key, 0) + len(name) + 1
+            dfr[key] = dfr.get(key, 0) + size
         for k in ("pendingMcpServers", "needsAuthMcpServers"):
             if a.get(k):
                 ctx[k] = sorted(set(a[k]))
@@ -302,7 +307,7 @@ def _cache_loss(st: dict, ts, model: str, row: list):
         st["cache_losses"].append([ts, round((b - a).total_seconds() / 60), model, row[1], row[2]])
 
 
-def _line(st: dict, d: dict):
+def _line(st: dict, d: dict, ids: dict, owner: int):
     t = d.get("type")
     ts = d.get("timestamp")
     if ts:
@@ -317,8 +322,18 @@ def _line(st: dict, d: dict):
         m = d.get("message") or {}
         mid = m.get("id") or d.get("requestId") or d.get("uuid")
         u = m.get("usage") or {}
-        if mid and mid not in st["recent_ids"] and u:
-            st["recent_ids"] = (st["recent_ids"] + [mid])[-60:]
+        if mid and u and mid in st["recent"]:
+            # Streamed copies of one call share an id; only the last carries the final output count.
+            model, hour, out = st["recent"][mid]
+            extra = (u.get("output_tokens") or 0) - out
+            if extra > 0:
+                st["recent"][mid][2] += extra
+                st["models"][model][4] += extra
+                if hour:
+                    st["hourly"][hour][model][4] += extra
+        elif mid and u and mid[-16:] in ids:
+            return  # resumed and forked sessions replay old calls, in this file or another one
+        elif mid and u:
             cc = u.get("cache_creation") or {}
             cw_total = u.get("cache_creation_input_tokens") or 0
             w1 = cc.get("ephemeral_1h_input_tokens") or 0
@@ -329,6 +344,10 @@ def _line(st: dict, d: dict):
             model = m.get("model") or "unknown"
             if model == "<synthetic>":
                 return
+            ids[mid[-16:]] = owner
+            st["recent"][mid] = [model, (ts or "")[:13], row[4]]
+            if len(st["recent"]) > 60:
+                del st["recent"][next(iter(st["recent"]))]
             mm = st["models"].setdefault(model, [0, 0, 0, 0, 0, 0])
             for i in range(5):
                 mm[i] += row[i]
@@ -383,19 +402,32 @@ def _line(st: dict, d: dict):
         _attachment(st, d["attachment"])
 
 
+def _owner(key: str) -> int:
+    return zlib.crc32(key.encode())
+
+
 def parse_transcripts(cache: dict) -> dict:
     files = cache.setdefault("files", {})
-    seen = set()
+    ids = cache.setdefault("ids", {})  # call id -> owning file, across all files; a replay is not new usage
     proj_root = CLAUDE_DIR / "projects"
+    found, seen = [], set()
     for p in proj_root.rglob("*.jsonl") if proj_root.exists() else []:
-        key = str(p)
-        seen.add(key)
+        seen.add(str(p))
         try:
-            size = p.stat().st_size
+            s = p.stat()
         except OSError:
             continue
+        found.append((s.st_mtime, str(p), s.st_size, p))
+    found.sort(key=lambda x: x[:3])  # oldest first, so the original of a replay is the one counted
+    sizes = {k: size for _, k, size, _ in found}
+    stale = {k for k, st in files.items()
+             if k not in seen or sizes.get(k, st["size"]) < st["size"] or st.get("v") != VERSION}
+    if stale:
+        gone = {_owner(k) for k in stale}
+        cache["ids"] = ids = {i: o for i, o in ids.items() if o not in gone}
+    for _, key, size, p in found:
         st = files.get(key)
-        if st is None or size < st["size"] or st.get("v") != VERSION:
+        if st is None or key in stale:
             st = files[key] = new_file_state(key)
             st["v"] = VERSION
         if size == st["offset"]:
@@ -411,7 +443,7 @@ def parse_transcripts(cache: dict) -> dict:
             continue
         for raw in chunk[:last_nl].splitlines():
             try:
-                _line(st, json.loads(raw))
+                _line(st, json.loads(raw), ids, _owner(key))
             except (ValueError, TypeError, AttributeError):
                 continue
         st["offset"] += last_nl + 1
@@ -482,6 +514,12 @@ def scan_skill_dir(base: Path, scope: str, scope_path=None, plugin=None, prefix=
     return out
 
 
+def _origin(url: str) -> str:
+    """Scheme and host only: hosted MCP URLs can carry their credential in the path."""
+    u = urllib.parse.urlsplit(str(url))
+    return f"{u.scheme}://{u.hostname}" if u.hostname else ""
+
+
 def scan_md_dir(base: Path, kind: str, scope: str, scope_path=None, plugin=None, prefix="") -> list:
     out = []
     if not base.is_dir():
@@ -508,7 +546,7 @@ def mcp_items(servers: dict, scope: str, path: Path, scope_path=None, plugin=Non
         if not isinstance(conf, dict):
             continue
         transport = conf.get("type") or ("stdio" if conf.get("command") else "http" if conf.get("url") else "?")
-        target = conf.get("url") or " ".join([str(conf.get("command", ""))] + [str(a) for a in conf.get("args", [])][:4])
+        target = _origin(conf["url"]) if conf.get("url") else " ".join([str(conf.get("command", ""))] + [str(a) for a in conf.get("args", [])][:4])
         out.append(item("mcp", name, scope, path, 0, 0, scope_path=scope_path, plugin=plugin,
                         transport=transport, target=target[:200], enabled=name not in disabled,
                         conf_hash=hashlib.sha1(json.dumps(conf, sort_keys=True).encode()).hexdigest()[:12],
@@ -781,6 +819,8 @@ def run_probes(items: list, cfg: dict, cache: dict, force=False):
     for it in items:
         conf = it.get("_conf")
         if it["kind"] != "mcp" or not conf or not conf.get("command"):
+            continue
+        if it["scope"] == "project":  # a cloned repo's .mcp.json is not trusted until Claude Code asks; never run it here
             continue
         h = it["conf_hash"]
         if not force and h in probes and time.time() - probes[h].get("at", 0) < max_age:
@@ -1267,7 +1307,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # /reels/raw shows text copied from reels: it gets no API calls or forms. Not a sandbox, the app's browser
+        # pane refuses images inside sandboxed frames.
+        raw = "connect-src 'none'; form-action 'none'; base-uri 'none'; " if self.path.split("?")[0] == "/reels/raw" else ""
+        self.send_header("Content-Security-Policy", raw + "frame-ancestors 'self'")
+        super().end_headers()
+
     def do_GET(self):
+        if not settings_api.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
+            return self.send_error(403)
         if settings_api.handle(self, "GET"):
             return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot"):
@@ -1302,7 +1352,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if self.path.split("?")[0] == "/api/refresh":
-            threading.Thread(target=collect, daemon=True).start()
+            if not _lock.locked():
+                threading.Thread(target=collect, daemon=True).start()
             self.send_response(202)
             self.end_headers()
             return
@@ -1329,6 +1380,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_body(f.read_bytes(), ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
     def do_POST(self):
+        if not settings_api.host_ok(self):
+            return self.send_error(403)
         if not settings_api.handle(self, "POST"):
             self.send_error(404)
 
