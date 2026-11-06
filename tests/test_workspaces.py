@@ -277,9 +277,17 @@ d = os.path.dirname(os.path.abspath(__file__))
 beh = json.load(open(d + "/behaviour.json"))
 a = sys.argv[1:]
 kind = "agents" if a[:1] == ["agents"] else "relay" if "-p" in a else "bg"
-open(d + "/calls.jsonl", "a").write(json.dumps({"kind": kind, "argv": a, "cwd": os.getcwd(),
-                                                  "stdin": sys.stdin.read() if kind == "relay" else None}) + "\n")
+stdin = sys.stdin.read() if kind == "relay" else None
+open(d + "/calls.jsonl", "a").write(json.dumps({"kind": kind, "argv": a, "cwd": os.getcwd(), "stdin": stdin,
+                                                  "tool_search": os.environ.get("ENABLE_TOOL_SEARCH")}) + "\n")
 b = beh[kind]
+if kind == "relay":  # stream-json: calls x SendMessage (send or the stdin), then a result row unless result is null
+    rows = [{"type": "system"}] + [{"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "ok"}, {"type": "tool_use", "name": "SendMessage",
+                                          "input": {"message": b.get("send", stdin)}}]}}] * b.get("calls", 1)
+    if b.get("result", "DELIVERED") is not None:
+        rows.append({"type": "result", "result": b.get("result", "DELIVERED")})
+    sys.stdout.write("junk\n" + "\n".join(json.dumps(x) for x in rows) + "\n")
 sys.stdout.write(b.get("out", ""))
 sys.stderr.write(b.get("err", ""))
 sys.exit(b.get("code", 0))
@@ -333,7 +341,7 @@ class ActionApiTest(unittest.TestCase):
         self.bin.chmod(0o755)
         self.cfg = {"claude_bin": str(self.bin)}
         self.__class__.srv_cfg = self.cfg
-        self.behave(agents={"out": "[]"}, bg={"out": BG_OUT}, relay={"out": '{"result":"DELIVERED"}'})
+        self.behave(agents={"out": "[]"}, bg={"out": BG_OUT}, relay={})
         self.index(sessions=[{"id": UID, "path": self.repo}])
 
     def behave(self, **kw):
@@ -432,7 +440,7 @@ class ActionApiTest(unittest.TestCase):
             return real(args, **kw)
         with mock.patch("workspaces.subprocess.run", side_effect=slow_relay):
             self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
-        self.behave(relay={"out": "DELIVERED", "code": 1})
+        self.behave(relay={"code": 1})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
 
     def test_foreign_origin_is_403(self):
@@ -475,13 +483,31 @@ class ActionApiTest(unittest.TestCase):
         self.assertNotIn("hello there", " ".join(r["argv"]))
         self.assertIn("uds:/tmp/s.sock", " ".join(r["argv"]))
 
-    def test_relay_arguments_allow_only_two_tools(self):
+    def test_relay_arguments_allow_only_send_message(self):
         self.listed()
         self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
-        a = self.calls("relay")[0]["argv"]
-        self.assertEqual(a[a.index("--tools") + 1], "ToolSearch,SendMessage")
-        self.assertEqual(a[a.index("--allowedTools") + 1], "ToolSearch,SendMessage")
+        c = self.calls("relay")[0]
+        a = c["argv"]
+        self.assertEqual(a[a.index("--tools") + 1], "SendMessage")
+        self.assertEqual(a[a.index("--allowedTools") + 1], "SendMessage")
+        self.assertIn("--strict-mcp-config", a)
         self.assertNotIn("--dangerously-skip-permissions", a)
+        self.assertEqual(c["tool_search"], "false")
+
+    def test_relay_wrong_text_two_calls_or_no_result_are_502(self):
+        self.listed()
+        for beh, word in (({"send": "something else"}, "different text"), ({"calls": 2}, "2 SendMessage"),
+                          ({"result": None}, "0 SendMessage" if False else "did not confirm"),
+                          ({"result": "boom"}, "boom")):
+            self.behave(relay=beh)
+            code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+            self.assertEqual(code, 502, beh)
+            self.assertIn(word, body["error"], beh)
+
+    def test_relay_trailing_whitespace_difference_is_fine(self):
+        self.listed()
+        self.behave(relay={"send": "x\n"})
+        self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 200)
 
     def test_listed_session_without_socket_is_refused(self):
         self.listed(socket=False)
@@ -505,7 +531,7 @@ class ActionApiTest(unittest.TestCase):
 
     def test_relay_failure_reaches_the_page(self):
         self.listed()
-        self.behave(relay={"out": '{"result":"connect ECONNREFUSED /tmp/s.sock"}'})
+        self.behave(relay={"result": "connect ECONNREFUSED /tmp/s.sock"})
         code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
         self.assertEqual(code, 502)
         self.assertIn("ECONNREFUSED", body["error"])
