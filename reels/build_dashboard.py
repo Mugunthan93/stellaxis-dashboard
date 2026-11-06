@@ -23,6 +23,7 @@ def inline(s):
     """Escape text but keep the few inline HTML tags the notes use, then apply md inline syntax.
     Notes quote reel captions, so only these exact tag shapes pass; anything else is shown as text."""
     keep = []
+    s = s.replace("\x00", "")  # NUL marks our placeholders below
     s = NOTE_TAG.sub(lambda m: keep.append(m.group(0)) or f"\x00{len(keep)-1}\x00", s)
     s = html.escape(s, quote=False)
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
@@ -37,6 +38,8 @@ def slug(name):
 
 
 def note_href(href):
+    if "\x00" in href:  # a kept tag would expand inside the attribute
+        return "#"
     m = re.match(r"\d{4}-\d{2}-\d{2}-([\w-]+)\.md$", href)
     if m:
         return f"#n-{m.group(1)}"
@@ -201,7 +204,7 @@ def main():
         initial = html.escape(author.lstrip("@")[:1].upper() or "?")
         return f"""
 <article class="card" id="n-{n['code']}" data-s="{html.escape(hay, quote=True)}" data-p="{projs}" data-t="{tid[n.get('topic', 'Other')]}">
-  <p class="by"><span class="av" aria-hidden="true">{initial}</span><b>{html.escape(author)}</b><span>{n.get('posted', '?')}</span></p>
+  <p class="by"><span class="av" aria-hidden="true">{initial}</span><b>{html.escape(author)}</b><span>{html.escape(n.get('posted', '?'))}</span></p>
   <a class="cover" href="#n-{n['code']}" data-src="{source}" aria-label="{html.escape('Open note: ' + plain, quote=True)}">{img}</a>
   <div class="meta">
     <h3>{inline(n['title'])}</h3>

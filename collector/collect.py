@@ -11,6 +11,7 @@ and writes ~/.stellaxis/snapshot.json (+ history.jsonl). Transcripts are parsed 
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import datetime as dt
 import hashlib
@@ -1309,6 +1310,15 @@ REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/r
 REELS_FRAME = '<title>Reels · Stellaxis</title><iframe class="sx-frame" src="/reels/raw" title="Reel Brain dashboard"></iframe>'
 
 
+def reels_scripts(body: bytes) -> str:
+    """script-src for the Reel Brain page: only its own script, the last one in the file (build_dashboard.py writes one,
+    after all note text). Hashing every script would approve one smuggled in through a note."""
+    start, end = body.rfind(b"<script>"), body.rfind(b"</script>")
+    if start < 0 or end < start:
+        return "script-src 'none'; "
+    return f"script-src 'sha256-{base64.b64encode(hashlib.sha256(body[start + 8:end]).digest()).decode()}'; "
+
+
 def shell_page(page: str) -> bytes:
     """A page body inside the localhost app shell (sidebar), with the skeleton the artifact host would add."""
     shell = (REPO_DIR / "dashboard" / "shell.html").read_text(encoding="utf-8")
@@ -1327,9 +1337,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
-        # /reels/raw shows text copied from reels: it gets no API calls or forms. Not a sandbox, the app's browser
-        # pane refuses images inside sandboxed frames.
-        raw = "connect-src 'none'; form-action 'none'; base-uri 'none'; " if self.path.split("?")[0] == "/reels/raw" else ""
+        # /reels/raw shows text copied from reels. It shares this origin, and connect-src doesn't stop a script calling
+        # the API through its parent frame, so only the page's own script may run: script-src blocks injected scripts
+        # and event handlers. Not a sandbox, the app's browser pane refuses images inside sandboxed frames.
+        raw = (getattr(self, "reels_csp", "script-src 'none'; ") + "connect-src 'none'; form-action 'none'; base-uri 'none'; "
+               if self.path.split("?")[0] == "/reels/raw" else "")
         self.send_header("Content-Security-Policy", raw + "frame-ancestors 'self'")
         super().end_headers()
 
@@ -1397,7 +1409,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if not f.is_file():
             return self.send_error(404, "Reel Brain dashboard not built yet (run reels/build_dashboard.py)")
-        self.send_body(f.read_bytes(), ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
+        body = f.read_bytes()
+        if path == "/reels/raw":
+            self.reels_csp = reels_scripts(body)
+        self.send_body(body, ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
     def do_POST(self):
         if not settings_api.host_ok(self):

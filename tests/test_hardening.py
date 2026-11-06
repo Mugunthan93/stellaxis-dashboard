@@ -1,4 +1,7 @@
 """Local-server hardening: untrusted reel text stays inert, and only localhost can reach the service."""
+import base64
+import hashlib
+import html.parser
 import http.client
 import http.server
 import importlib.util
@@ -16,6 +19,30 @@ TMP = tempfile.TemporaryDirectory()
 ENV = {"REELS_HOME": TMP.name}
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
+
+
+class Page(html.parser.HTMLParser):
+    """Parsed the way a browser reads it: every attribute name and the text of each script."""
+    def __init__(self, text):
+        super().__init__(convert_charrefs=True)
+        self.attrs, self.scripts, self.in_script = [], [], False
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        self.attrs += [a for a, _ in attrs]
+        self.in_script = tag == "script"
+        if self.in_script:
+            self.scripts.append("")
+
+    def handle_endtag(self, tag):
+        self.in_script = False
+
+    def handle_data(self, data):
+        if self.in_script:
+            self.scripts[-1] += data
+
+    def handlers(self):
+        return [a for a in self.attrs if a.startswith("on")]
 
 
 def load(name):
@@ -46,6 +73,38 @@ class NoteRendering(unittest.TestCase):
         self.assertNotIn('" on', self.b.inline('[x](https://a.b/"onmouseover=x())').replace('&quot;', ''))
         self.assertIn('href="https://a.b/c"', self.b.inline("[x](https://a.b/c)"))
         self.assertIn('href="#n-abc"', self.b.inline("[x](2026-11-04-abc.md)"))
+
+
+    def test_kept_tag_cannot_land_inside_a_link_url(self):
+        out = self.b.inline('[t](https://b<a href="https://x/onmouseover=fetch(1)//">)')
+        self.assertEqual(Page(out).handlers(), [], out)
+        self.assertIn('href="#"', out)
+
+    def test_nul_in_a_note_cannot_forge_a_placeholder(self):
+        self.assertEqual(self.b.inline('<a href="https://a.b/">x\x000\x00'), '<a href="https://a.b/">x0')
+
+    def test_built_page_has_no_handlers_and_one_script_the_csp_allows(self):
+        note = ('---\nposted: <img src=x onerror=alert(1)>\ntopic: AI security\n---\n# T\n\n**TL;DR:** tl\n\n'
+                '[t](https://b<a href="https://x/onmouseover=fetch(1)//">)\n')
+        Path(TMP.name, "2026-11-01-abc.md").write_text(note)
+        self.addCleanup(Path(TMP.name, "2026-11-01-abc.md").unlink)
+        with mock.patch("builtins.print"):
+            self.b.main()
+        raw = Path(TMP.name, "dashboard.html").read_bytes()
+        page = Page(raw.decode("utf-8"))
+        self.assertEqual(page.handlers(), [])
+        self.assertEqual(len(page.scripts), 1)
+        digest = base64.b64encode(hashlib.sha256(page.scripts[0].encode("utf-8")).digest()).decode()
+        self.assertEqual(C.reels_scripts(raw), f"script-src 'sha256-{digest}'; ")
+
+
+class ReelsCsp(unittest.TestCase):
+    def test_injected_script_earlier_in_the_page_is_not_approved(self):
+        own = C.reels_scripts(b"<p>x</p><script>good()</script>")
+        self.assertEqual(C.reels_scripts(b"<script>evil()</script><p>x</p><script>good()</script>"), own)
+
+    def test_page_with_no_script_allows_none(self):
+        self.assertEqual(C.reels_scripts(b"<p>x</p>"), "script-src 'none'; ")
 
 
 class CaptureInput(unittest.TestCase):
@@ -136,7 +195,13 @@ class Service(unittest.TestCase):
         with mock.patch.object(C, "REELS_HOME", Path(TMP.name)):
             csp = self.req("/reels/raw").getheader("Content-Security-Policy")
         self.assertIn("connect-src 'none'", csp)
+        self.assertIn("script-src 'none'", csp)
+        self.assertNotIn("unsafe-inline", csp)
         self.assertNotIn("sandbox", csp)
+        Path(TMP.name, "dashboard.html").write_text("<p>x</p><script>go()</script>")
+        with mock.patch.object(C, "REELS_HOME", Path(TMP.name)):
+            csp = self.req("/reels/raw").getheader("Content-Security-Policy")
+        self.assertIn("script-src 'sha256-" + base64.b64encode(hashlib.sha256(b"go()").digest()).decode() + "'", csp)
 
     def test_refresh_does_not_stack_up(self):
         with mock.patch.object(C, "collect") as run:
