@@ -40,8 +40,8 @@ documents, and telling other repos' sessions to update the task list.
 | Start a session from the server | Yes | `claude --bg --name <n>` started a session and printed its id. It refuses untrusted folders: `ph-portals` and `ph-admin` must be opened once in Claude first. |
 | Message a finished session | Yes | `claude -p --resume <uuid>` kept the context of a throwaway session. |
 | Message a running session | Yes, through a relay | `--bg --resume` starts a copy and `-p --resume` is refused, so neither works. A short headless Claude that calls the built-in `SendMessage` does: an idle session woke and replied, and a desktop app session received the message. About $0.005 and 12s per message. |
-| See started sessions in the app | **No** | A `--bg` session had no app record. The app's `claude://resume?session=<uuid>` link imports one, but that link was read in the app's code, not clicked. |
-| Open or prefill from a link | Probably | The app accepts `claude://code/new?folder=&q=` and `claude://code/continue?session=`. Read in the app's code, not clicked. |
+| See started sessions in the app | Yes, by link | A `--bg` session has no app record, but `claude://resume?session=<uuid>` imported a closed test session into the app. |
+| Open or prefill from a link | Yes | `claude://code/continue?session=<app_id>` opened that app session. `claude://code/new?folder=&q=` created no session, so `q` doesn't send at once. |
 | Plans | Partly | Only `parthub` has `docs/plans` (5 files). |
 | Tasks | New | No project has a task file. |
 | Tests | Partly | No past results are stored, so results start from the first run. |
