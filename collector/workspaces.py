@@ -95,7 +95,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
     cost = {}
     for s in sessions:
         proj = by_path.get(s["project"]) or {}
-        repo = proj.get("worktree_of") or s["project"]
+        repo = proj.get("worktree_of") or s["project"].split("/.claude/worktrees/")[0]  # deleted worktrees have no worktree_of
         a = app.get(s["id"]) or {}
         wid = assign(repo, wss)
         row = {"id": s["id"], "title": a.get("title") or "", "first_ts": s.get("first_ts"), "last_ts": s.get("last_ts"),

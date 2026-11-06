@@ -38,6 +38,16 @@ class IndexTest(unittest.TestCase):
     def test_worktree_session_joins_parent_repo(self):
         self.assertEqual(len(W.build_index(SESSIONS, PROJECTS, {}, CFG)["workspaces"][0]["repos"]), 1)
 
+    def test_session_in_deleted_worktree_joins_parent_repo(self):
+        with tempfile.TemporaryDirectory() as t:
+            dead = t + "/.claude/worktrees/dead"
+            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": [t]}]}
+            sess = [{"id": "d", "project": dead, "branch": "b", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 1}]
+            repos = W.build_index(sess, [{"path": dead, "abs": dead, "worktree_of": None}], {}, cfg)["workspaces"][0]["repos"]
+            self.assertEqual([r["path"] for r in repos], [t])
+            self.assertTrue(repos[0]["exists"])
+            self.assertEqual(repos[0]["branches"][0]["sessions"][0]["id"], "d")
+
     def test_session_in_deleted_folder_stays_listed(self):
         r = W.build_index(GONE, PROJECTS, {}, CFG)["workspaces"][0]["repos"][0]
         self.assertFalse(r["exists"])

@@ -38,7 +38,6 @@ a { color: var(--accent); }
 .notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); background: var(--surface); }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
-.panel-head p { margin: 0; color: var(--muted); font-size: 0.86rem; max-width: 70ch; }
 .pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; font-family: var(--body); }
 .pill.good { background: var(--good-soft); color: var(--good); }
 .pill.warn { background: var(--warn-soft); color: var(--warn); }
@@ -57,11 +56,6 @@ a { color: var(--accent); }
 .rows li:hover { background: var(--sunk); }
 .rows .t { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 .rows .m { color: var(--muted); font-size: 0.82rem; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 12px; }
-.card { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
-.card:hover { border-color: var(--accent); }
-.card b { font-family: var(--display); font-size: 1.05rem; overflow-wrap: anywhere; }
-.card span { color: var(--muted); font-size: 0.84rem; }
 @media (pointer: coarse) { .tabs button, .chip { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 .repo, .branch { border: 1px solid var(--line); border-radius: 8px; }
@@ -78,8 +72,10 @@ a { color: var(--accent); }
   <section class="panel">
     <div class="tabs" role="tablist" aria-label="Workspace views">
       <button type="button" role="tab" aria-selected="true">Sessions</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Branches</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Repos</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Tasks</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Plans</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Routines</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Tests</button>
     </div>
     <div class="chips"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
     <div id="tree"></div>
