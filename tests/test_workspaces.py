@@ -4,6 +4,7 @@
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -178,6 +179,62 @@ class ReadApiTest(unittest.TestCase):
 
     def test_other_paths_are_not_ours(self):
         self.assertEqual(self.get("/api/other")[0], 404)
+
+
+class RepoStateTest(unittest.TestCase):
+    def git(self, path, *args):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+
+    def repo(self, name):
+        d = Path(self.tmp.name) / name
+        d.mkdir()
+        self.git(d, "init", "-q", "-b", "main")
+        self.git(d, "config", "user.name", "t")
+        self.git(d, "config", "user.email", "t@example.com")
+        return d
+
+    def commit(self, d, name):
+        (d / name).write_text(name)
+        self.git(d, "add", name)
+        self.git(d, "commit", "-q", "-m", name)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_no_remote(self):
+        d = self.repo("a")
+        self.commit(d, "f")
+        self.assertEqual(W.repo_state(str(d)), {"remote": False, "ahead": 0, "dirty": 0})
+
+    def test_uncommitted_file_is_dirty(self):
+        d = self.repo("a")
+        self.commit(d, "f")
+        (d / "new").write_text("x")
+        self.assertEqual(W.repo_state(str(d))["dirty"], 1)
+
+    def test_clone_with_local_commit_is_ahead(self):
+        src = self.repo("src")
+        self.commit(src, "f")
+        clone = Path(self.tmp.name) / "clone"
+        self.git(self.tmp.name, "clone", "-q", str(src), str(clone))
+        self.git(clone, "config", "user.name", "t")
+        self.git(clone, "config", "user.email", "t@example.com")
+        self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 0, "dirty": 0})
+        self.commit(clone, "g")
+        self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 1, "dirty": 0})
+
+    def test_missing_folder_is_error(self):
+        self.assertIn("error", W.repo_state(str(Path(self.tmp.name) / "nope")))
+
+    def test_build_index_fills_state(self):
+        d = self.repo("a")
+        self.commit(d, "f")
+        projects = [{"path": str(d), "abs": str(d), "worktree_of": None}]
+        sessions = [{"id": "s", "project": str(d), "branch": "main", "first_ts": "2026-11-01T00:00:00Z",
+                     "last_ts": "2026-11-01T01:00:00Z", "cost": 0}]
+        idx = W.build_index(sessions, projects, {}, {}, now="2026-11-06T00:00:00Z")
+        self.assertEqual(idx["workspaces"][-1]["repos"][0]["state"], {"remote": False, "ahead": 0, "dirty": 0})
 
 
 if __name__ == "__main__":

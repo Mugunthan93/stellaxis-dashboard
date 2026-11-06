@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +49,25 @@ def app_base() -> Path:
     return Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
 
 
+def repo_state(path: str) -> dict:
+    """{"remote", "ahead", "dirty"} for a repo: has a remote, commits ahead of upstream, changed files."""
+    def git(*args):
+        r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=5,
+                           stdin=subprocess.DEVNULL)
+        if r.returncode:
+            raise ValueError(r.stderr.strip() or "git failed")
+        return r.stdout
+    try:
+        lines = git("status", "--porcelain=v1", "-b").splitlines()
+        remote = bool(git("remote").strip())
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return {"error": str(e)}
+    head = lines[0] if lines else ""
+    m = re.search(r"\[ahead (\d+)", head)
+    return {"remote": remote, "ahead": int(m.group(1)) if m else 0,
+            "dirty": sum(1 for l in lines if not l.startswith("##"))}
+
+
 def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str | None = None) -> dict:
     """Every session grouped workspace > repo > branch, sessions newest first; `now` (ISO) is for tests."""
     now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
@@ -77,7 +97,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
                 rows.sort(key=lambda r: r["first_ts"] or "", reverse=True)
                 bl.append({"name": name, "sessions": rows})
             bl.sort(key=lambda b: max(r["last_ts"] or "" for r in b["sessions"]), reverse=True)
-            repos.append({"path": repo, "exists": _norm(repo).exists(), "state": {}, "branches": bl})
+            repos.append({"path": repo, "exists": _norm(repo).exists(), "state": repo_state(str(_norm(repo))),"branches": bl})
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
     return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
