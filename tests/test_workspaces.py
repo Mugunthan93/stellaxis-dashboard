@@ -269,6 +269,7 @@ class RepoStateTest(unittest.TestCase):
         self.assertEqual(idx["workspaces"][-1]["repos"][0]["state"], {"remote": False, "ahead": 0, "dirty": 0})
 
 
+BG_OUT = "Starting background service…\nbackgrounded · abcd1234 · fz-probe\n"
 UID = "11111111-2222-3333-4444-555555555555"
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -332,7 +333,7 @@ class ActionApiTest(unittest.TestCase):
         self.bin.chmod(0o755)
         self.cfg = {"claude_bin": str(self.bin)}
         self.__class__.srv_cfg = self.cfg
-        self.behave(agents={"out": "[]"}, bg={"out": "backgrounded · abcd1234\n"}, relay={"out": '{"result":"DELIVERED"}'})
+        self.behave(agents={"out": "[]"}, bg={"out": BG_OUT}, relay={"out": '{"result":"DELIVERED"}'})
         self.index(sessions=[{"id": UID, "path": self.repo}])
 
     def behave(self, **kw):
@@ -378,8 +379,66 @@ class ActionApiTest(unittest.TestCase):
         p = '--dangerously-skip-permissions "x"\n$(rm)'
         W.start(self.repo, p, self.cfg)
         self.assertEqual(self.fake_args()[-2:], ["--", p])
-        self.assertEqual(self.fake_args()[:3], ["--bg", "--name", p[:40]])
+        a = self.fake_args()
+        self.assertEqual(a[:2], ["--bg", "--name=--dangerously-skip-permissions \"x\" $(rm)"])
+        self.assertEqual(a.index("--"), 2)
         self.assertEqual(self.calls("bg")[-1]["cwd"], os.path.realpath(self.repo))
+
+    def test_prompt_never_a_token_before_double_dash(self):
+        p = "--dangerously-skip-permissions"
+        W.start(self.repo, p, self.cfg)
+        a = self.fake_args()
+        self.assertNotIn(p, a[:a.index("--")])
+        self.assertEqual(a[-2:], ["--", p])
+
+    def test_id_found_on_stderr_and_missing_id_is_502(self):
+        self.behave(bg={"out": "", "err": "backgrounded · feed1234 · x\n"})
+        self.assertEqual(W.start(self.repo, "hi", self.cfg), {"id": "feed1234"})
+        self.behave(bg={"out": "nothing useful\n"})
+        with self.assertRaises(W.ApiError) as c:
+            W.start(self.repo, "hi", self.cfg)
+        self.assertEqual(c.exception.status, 502)
+
+    def test_unsendable_prompts_are_400(self):
+        for bad in ("a\x00b", "a\ud800b"):
+            self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": bad})[0], 400)
+        self.assertEqual(self.calls(), [])
+
+    def test_bad_content_length_is_400(self):
+        import http.client
+        for n in ("abc", "-5"):
+            c = http.client.HTTPConnection("127.0.0.1", self.port)
+            c.putrequest("POST", "/api/sessions/new")
+            c.putheader("Content-Type", "application/json")
+            c.putheader("Content-Length", n)
+            c.endheaders()
+            self.assertEqual(c.getresponse().status, 400)
+
+    def test_resume_that_started_a_copy_is_409_with_copy_id(self):
+        self.behave(bg={"out": "note: session a55c6b8f is already running in the background, so this started a copy as 5952a744.\n"
+                               "backgrounded · 5952a744 · x\n"})
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "go"})
+        self.assertEqual(code, 409)
+        self.assertIn("5952a744", body["error"])
+        self.assertEqual(body["copy_id"], "5952a744")
+
+    def test_relay_timeout_and_nonzero_exit_are_502(self):
+        self.listed()
+        real = subprocess.run
+
+        def slow_relay(args, **kw):
+            if "-p" in args:
+                raise subprocess.TimeoutExpired(args, 90)
+            return real(args, **kw)
+        with mock.patch("workspaces.subprocess.run", side_effect=slow_relay):
+            self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
+        self.behave(relay={"out": "DELIVERED", "code": 1})
+        self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
+
+    def test_foreign_origin_is_403(self):
+        body = {"workspace": "w", "folder": self.repo, "prompt": "hi"}
+        self.assertEqual(self.post("/api/sessions/new", body, headers={"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.calls(), [])
 
     def test_start_returns_id_from_output(self):
         self.assertEqual(W.start(self.repo, "hi", self.cfg), {"id": "abcd1234"})

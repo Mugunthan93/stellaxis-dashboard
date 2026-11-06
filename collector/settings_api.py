@@ -301,7 +301,12 @@ def read_body(handler) -> dict:
     """The JSON object a POST sent; ApiError for a wrong content type, a big body or bad JSON."""
     if "application/json" not in handler.headers.get("Content-Type", ""):
         raise ApiError(415, "send application/json")
-    n = int(handler.headers.get("Content-Length") or 0)
+    try:
+        n = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise ApiError(400, "bad Content-Length")
     if n > MAX_BODY:
         raise ApiError(413, "request too large")
     try:

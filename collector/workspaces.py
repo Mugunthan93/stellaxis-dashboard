@@ -170,6 +170,12 @@ def _prompt(body: dict) -> str:
     p = p.rstrip() if isinstance(p, str) else ""
     if not p or len(p) > MAX_PROMPT:
         raise ApiError(400, f"prompt must be 1 to {MAX_PROMPT} characters")
+    try:
+        p.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ApiError(400, "prompt has characters that can't be sent")
+    if "\x00" in p:
+        raise ApiError(400, "prompt has a NUL character")
     return p
 
 
@@ -182,14 +188,20 @@ def _bg(args: list[str], folder: str, cfg: dict) -> str:
         raise ApiError(502, f"could not run claude: {e}")
     if r.returncode:
         raise ApiError(422, (r.stderr or r.stdout).strip() or "claude refused to start the session")
-    m = re.search(r"backgrounded\s*\u00b7\s*(\S+)", r.stdout)
+    out = r.stdout + "\n" + r.stderr
+    c = re.search(r"started a copy as ([0-9a-f-]+)", out)
+    if c:  # --resume of a session that is already running makes a new one instead
+        raise ApiError(409, f"this session is open, so Claude started a copy as {c.group(1)}; "
+                            f"stop it with: claude stop {c.group(1)}", copy_id=c.group(1))
+    m = re.search(r"backgrounded\s*\u00b7\s*(\S+)", out)
     if not m:
-        raise ApiError(502, "claude did not report a session id: " + r.stdout.strip()[:200])
+        raise ApiError(502, "claude did not report a session id: " + out.strip()[:200])
     return m.group(1)
 
 
 def start(folder: str, prompt: str, cfg: dict) -> dict:
-    return {"id": _bg(["--bg", "--name", prompt[:40], "--", prompt], folder, cfg)}
+    name = " ".join(prompt.split())[:40]  # one token, so prompt text never sits before the "--"
+    return {"id": _bg(["--bg", "--name=" + name, "--", prompt], folder, cfg)}
 
 
 def socket_of(session_id: str, sessions_dir: Path) -> str | None:
@@ -230,7 +242,7 @@ def relay(socket: str, body: str, cfg: dict) -> None:
 
 def message(session_id: str, prompt: str, cfg: dict) -> dict:
     """Listed (live) sessions get the relay; unlisted ones are resumed in the background."""
-    rows = live(cfg.get("claude_bin") or "~/.local/bin/claude")
+    rows = live(_bin(cfg))
     if rows is None:
         raise ApiError(503, "can't tell which sessions are open right now (claude agents failed); try again")
     if any(isinstance(r, dict) and r.get("sessionId") == session_id for r in rows):
@@ -314,7 +326,7 @@ def handle(handler, method: str, cfg: dict) -> bool:
 def _list(handler, cfg: dict) -> bool:
     """GET /api/workspaces: the index plus live status per session."""
     idx = _index()
-    rows = live(cfg.get("claude_bin") or "~/.local/bin/claude")
+    rows = live(_bin(cfg))
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
     for w in idx.get("workspaces", []):
         for repo in w.get("repos", []):
