@@ -7,6 +7,7 @@ import http.server
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -208,6 +209,13 @@ class Service(unittest.TestCase):
             with C._lock:
                 self.assertEqual(self.req("/api/refresh").status, 202)
             run.assert_not_called()
+
+
+class Install(unittest.TestCase):
+    def test_service_gets_a_path_that_finds_claude_and_homebrew(self):
+        text = (REPO / "collector" / "install.sh").read_text()
+        self.assertIn("<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:$HOME/.local/bin:", text)
+        self.assertEqual(subprocess.run(["bash", "-n", str(REPO / "collector" / "install.sh")]).returncode, 0)
 
 
 class IndexFailure(unittest.TestCase):

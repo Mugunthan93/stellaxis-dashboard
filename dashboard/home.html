@@ -69,6 +69,7 @@ a { color: var(--accent); }
   <header><h1>Home</h1></header>
   <div class="notice" id="live-note" hidden>Live status is unavailable, so waiting and running sessions can't be shown.</div>
   <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
+  <div class="notice" id="first-note" hidden>Nothing indexed yet. Workspaces appear after the next collection.</div>
   <section class="panel" id="needs-you" hidden>
     <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval, and failed test runs.</p></div>
     <div class="bad" id="ap-err" role="alert" hidden></div>
@@ -162,13 +163,14 @@ function render(d) {
   $("test-list").hidden = !failed.length;
   $("test-list").innerHTML = failed.map(({ w, t }) => `<li><span class="t"><a href="${wsLink(w)}">Tests failed</a></span><span class="m mono">${esc(t.repo)}</span>`
     + `<span class="m">${esc(w.name)} · ${esc(ago(t.finished))}</span><span class="pill crit">Failed</span></li>`).join("");
-  drawAppr(true);
+  drawAppr(false);
   $("running").hidden = !run.length; $("running-list").innerHTML = run.map(row).join("");
   $("unbacked").hidden = !bad.length;
   $("unbacked-list").innerHTML = bad.map(({ w, r, why }) => `<li><span class="t mono">${esc(r.path)}</span>`
     + `<span class="m">${esc(w.name)}</span><span class="pill warn">${esc(why.join(", "))}</span></li>`).join("");
   const ws = d.workspaces.filter(w => w.repos.length);
   $("workspaces").hidden = !ws.length;
+  $("first-note").hidden = ws.length > 0;
   $("cards").innerHTML = ws.map(w => {
     const n = w.repos.reduce((a, r) => a + r.branches.reduce((c, b) => c + b.sessions.length, 0), 0);
     return `<a class="card" href="${wsLink(w)}"><b>${esc(w.name)}</b><span>${n} session${n === 1 ? "" : "s"}</span><span class="num">${money(w.cost_30d)} in 30 days</span></a>`;

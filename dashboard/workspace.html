@@ -136,9 +136,8 @@ const label = s => s.title || s.id.slice(0, 8);
 const STATUS = { waiting: ["warn", "Waiting for you"], running: ["good", "Running"], open: ["acc", "Open"], closed: ["", "Closed"] };
 const pill = st => STATUS[st] ? `<span class="pill ${STATUS[st][0]}">${STATUS[st][1]}</span>` : "";
 const $ = id => document.getElementById(id);
-async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
 const id = new URLSearchParams(location.search).get("id");
-let data = null, showArch = false, tab = "sessions", taskRows = null;
+let data = null, dataText = "", showArch = false, tab = "sessions", taskRows = null;
 const shut = new Set();  // keys of sections the user closed; everything else is open, and this survives polls
 const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
 const msg = {};  // per session id: { open, draft, busy, error, sent, reply, timer }; survives polls
@@ -253,7 +252,7 @@ async function taskPost(body) {
     if (my === seq) taskRows = rows;
     $("task-err").hidden = true; return true;
   }
-  catch (e) { $("task-err").textContent = e.message; $("task-err").hidden = false; await loadTasks().catch(() => {}); return false; }
+  catch (e) { $("task-err").textContent = e.message; $("task-err").hidden = false; shownRows = undefined; await loadTasks().catch(() => {}); return false; }
   finally { drawTasks(); }
 }
 $("task-form").addEventListener("submit", async e => {
@@ -346,7 +345,7 @@ $("tree").addEventListener("change", async e => {
   t.disabled = true;
   try { await post("/api/approvals/session/" + encodeURIComponent(t.dataset.id), { on: t.checked }); $("sw-err").hidden = true; }
   catch (x) { $("sw-err").textContent = "Couldn't change Approve from page: " + x.message; $("sw-err").hidden = false; }
-  tick();  // redraws from the server's answer, so a failed change flips back
+  tick(true);  // redraws from the server's answer, so a failed change flips back
 });
 $("tree").addEventListener("input", e => { const t = e.target; if (t.matches("textarea") && t.dataset.id && msg[t.dataset.id]) msg[t.dataset.id].draft = t.value; });
 // New session form: only the option list is rebuilt on a poll; the prompt and result are never touched.
@@ -376,7 +375,7 @@ $("ns-bg").onclick = async () => {
   $("ns-bg").disabled = true; out.textContent = "Starting…";
   try {
     const j = await post("/api/sessions/new", { workspace: id, folder, prompt });
-    out.innerHTML = `Started session <b class="mono">${esc(j.id)}</b>. View it with <code class="mono">claude attach ${esc(j.id)}</code>. It won't appear in the Claude app until it is imported.`;
+    out.innerHTML = `Started session <b class="mono">${esc(j.id)}</b>. View it with <code class="mono">claude attach ${esc(j.id)}</code>. It shows in this list after the next collection, and won't appear in the Claude app until it is imported.`;
     $("ns-prompt").value = ""; appLink();
   } catch (e) { out.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
   $("ns-bg").disabled = false;
@@ -386,9 +385,17 @@ $("tree").addEventListener("toggle", e => {
   if (k) e.target.open ? shut.delete(k) : shut.add(k);
 }, true);
 $("arch").onclick = () => { showArch = !showArch; $("arch").setAttribute("aria-pressed", showArch); draw(); };
-async function tick() {
-  try { data = await load(); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
-  draw();
+async function tick(force) {  // force: redraw even if nothing changed, so a switch that failed flips back
+  let same = false;
+  try {
+    const r = await fetch("/api/workspaces", { cache: "no-store" });
+    if (!r.ok) throw 0;
+    const text = await r.text();
+    same = text === dataText;
+    if (!same) { data = JSON.parse(text); dataText = text; }
+    $("load-note").hidden = true;
+  } catch { $("load-note").hidden = false; }
+  if (!same || force) draw();
   if (tab === "tasks") loadTasks().then(() => { $("task-err").hidden = true; }).catch(() => {});
   if (tab === "plans" || tab === "routines") loadWork();  // throttled to once a minute
 }
