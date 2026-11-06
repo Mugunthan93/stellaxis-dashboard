@@ -281,12 +281,16 @@ stdin = sys.stdin.read() if kind == "relay" else None
 open(d + "/calls.jsonl", "a").write(json.dumps({"kind": kind, "argv": a, "cwd": os.getcwd(), "stdin": stdin,
                                                   "tool_search": os.environ.get("ENABLE_TOOL_SEARCH")}) + "\n")
 b = beh[kind]
-if kind == "relay":  # stream-json: calls x SendMessage (send or the stdin), then a result row unless result is null
-    rows = [{"type": "system"}] + [{"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "ok"}, {"type": "tool_use", "name": "SendMessage",
-                                          "input": {"message": b.get("send", stdin)}}]}}] * b.get("calls", 1)
-    if b.get("result", "DELIVERED") is not None:
-        rows.append({"type": "result", "result": b.get("result", "DELIVERED")})
+if kind == "relay":  # stream-json: calls x (SendMessage tool_use + tool_result), then a final result row
+    rows = [{"type": "system"}]
+    for n in range(b.get("calls", 1)):
+        rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}, {
+            "type": "tool_use", "id": "toolu_%d" % n, "name": "SendMessage", "input": {"message": b.get("send", stdin)}}]}})
+        if b.get("tool", True) is not None:
+            tr = b.get("tool") or {"success": True, "message": "sent"}
+            rows.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": b.get("tool_id", "toolu_%d" % n),
+                                                                  "content": [{"type": "text", "text": json.dumps(tr)}]}]}})
+    rows.append({"type": "result", "result": b.get("result", "DELIVERED")})
     sys.stdout.write("junk\n" + "\n".join(json.dumps(x) for x in rows) + "\n")
 sys.stdout.write(b.get("out", ""))
 sys.stderr.write(b.get("err", ""))
@@ -440,7 +444,7 @@ class ActionApiTest(unittest.TestCase):
             return real(args, **kw)
         with mock.patch("workspaces.subprocess.run", side_effect=slow_relay):
             self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
-        self.behave(relay={"code": 1})
+        self.behave(relay={"code": 1, "tool": None})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
 
     def test_foreign_origin_is_403(self):
@@ -497,12 +501,17 @@ class ActionApiTest(unittest.TestCase):
     def test_relay_wrong_text_two_calls_or_no_result_are_502(self):
         self.listed()
         for beh, word in (({"send": "something else"}, "different text"), ({"calls": 2}, "2 SendMessage"),
-                          ({"result": None}, "did not confirm"),
-                          ({"result": "boom"}, "boom")):
+                          ({"tool": None}, "did not confirm"), ({"tool_id": "toolu_other"}, "did not confirm"),
+                          ({"tool": {"success": False, "message": "Failed to send: ENOENT"}}, "ENOENT")):
             self.behave(relay=beh)
             code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
             self.assertEqual(code, 502, beh)
             self.assertIn(word, body["error"], beh)
+
+    def test_relay_success_ignores_final_result_text(self):
+        self.listed()
+        self.behave(relay={"result": "Thanks, the other session replied something else"})
+        self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"}), (200, {"via": "relay"}))
 
     def test_relay_trailing_whitespace_difference_is_fine(self):
         self.listed()
@@ -531,7 +540,7 @@ class ActionApiTest(unittest.TestCase):
 
     def test_relay_failure_reaches_the_page(self):
         self.listed()
-        self.behave(relay={"result": "connect ECONNREFUSED /tmp/s.sock"})
+        self.behave(relay={"tool": {"success": False, "message": "connect ECONNREFUSED /tmp/s.sock"}})
         code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
         self.assertEqual(code, 502)
         self.assertIn("ECONNREFUSED", body["error"])

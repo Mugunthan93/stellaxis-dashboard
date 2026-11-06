@@ -230,29 +230,40 @@ def relay(socket: str, body: str, cfg: dict) -> None:
                            env={**os.environ, "ENABLE_TOOL_SEARCH": "false"})
     except (OSError, subprocess.SubprocessError) as e:
         raise ApiError(502, f"relay failed: {e}")
-    sent, result = [], None
+    sent, results, final = [], {}, None  # sent: (tool_use id, text); results: tool_use_id > parsed tool result
     for line in r.stdout.splitlines():
         try:
             d = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(d, dict):
-            continue
-        if d.get("type") == "result" and isinstance(d.get("result"), str):
-            result = d["result"].strip()
-        elif d.get("type") == "assistant":
-            parts = (d.get("message") or {}).get("content") if isinstance(d.get("message"), dict) else None
-            for c in parts if isinstance(parts, list) else []:
-                if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "SendMessage":
-                    m = (c.get("input") or {}).get("message") if isinstance(c.get("input"), dict) else None
-                    sent.append(m if isinstance(m, str) else "")
-    if len(sent) == 1 and sent[0].rstrip() != body.rstrip():
-        raise ApiError(502, "relay sent a different text than the one you wrote, so nothing was delivered")
+        msg = d.get("message") if isinstance(d, dict) else None
+        parts = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(d, dict) and d.get("type") == "result" and isinstance(d.get("result"), str):
+            final = d["result"].strip()
+        for c in parts if isinstance(parts, list) else []:
+            if not isinstance(c, dict):
+                continue
+            if d["type"] == "assistant" and c.get("type") == "tool_use" and c.get("name") == "SendMessage":
+                m = c["input"].get("message") if isinstance(c.get("input"), dict) else None
+                sent.append((c.get("id"), m if isinstance(m, str) else ""))
+            elif d["type"] == "user" and c.get("type") == "tool_result":
+                t = c.get("content")
+                if isinstance(t, list):
+                    t = "".join(x.get("text", "") for x in t if isinstance(x, dict) and isinstance(x.get("text"), str))
+                try:
+                    res = json.loads(t) if isinstance(t, str) else None
+                except ValueError:
+                    res = None
+                results[c.get("tool_use_id")] = res if isinstance(res, dict) else {}
     if len(sent) != 1:
-        raise ApiError(502, f"relay made {len(sent)} SendMessage calls instead of 1" +
-                       (f": {result}" if result else ""))
-    if r.returncode or result != "DELIVERED":
-        raise ApiError(502, result or r.stderr.strip() or "relay did not confirm delivery")
+        raise ApiError(502, f"relay made {len(sent)} SendMessage calls instead of 1" + (f": {final}" if final else ""))
+    if sent[0][1].rstrip() != body.rstrip():
+        raise ApiError(502, "relay sent a different text than the one you wrote, so nothing was delivered")
+    res = results.get(sent[0][0])
+    if not res:
+        raise ApiError(502, "relay did not confirm delivery" + (f": {final}" if final else ""))
+    if res.get("success") is not True:
+        raise ApiError(502, str(res.get("message") or final or "relay did not confirm delivery"))
 
 
 def message(session_id: str, prompt: str, cfg: dict) -> dict:
