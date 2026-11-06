@@ -61,7 +61,8 @@ Closed sessions use `--bg --resume` instead.
 - "Delivered" means it reached the session's inbox, not that it was read.
 - 4 of 22 local sessions listed no socket, and those can't be messaged. Offline and cloud sessions are
   out of reach too.
-- Messaging a busy session was not tested.
+- A message to a busy session isn't lost: in the real test it arrived while the session was working
+  and was answered.
 
 **How approvals work:** a message can't approve anything, so approvals use Claude Code's own
 `PermissionRequest` hook. When a session needs permission, the hook sends the request to Stellaxis and

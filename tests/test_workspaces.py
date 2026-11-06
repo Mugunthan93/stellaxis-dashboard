@@ -497,7 +497,7 @@ class ActionApiTest(unittest.TestCase):
     def test_relay_wrong_text_two_calls_or_no_result_are_502(self):
         self.listed()
         for beh, word in (({"send": "something else"}, "different text"), ({"calls": 2}, "2 SendMessage"),
-                          ({"result": None}, "0 SendMessage" if False else "did not confirm"),
+                          ({"result": None}, "did not confirm"),
                           ({"result": "boom"}, "boom")):
             self.behave(relay=beh)
             code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
