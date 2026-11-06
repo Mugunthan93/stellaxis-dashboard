@@ -122,6 +122,7 @@ class Service(unittest.TestCase):
         self.assertIn('id="refresh"', self.req("/overview").body)
         self.assertIn('id="refresh"', self.req("/index.html").body)
         self.assertEqual(self.req("/workspace?id=x").status, 200)
+        self.assertIn('id="new-session"', self.req("/workspace?id=x").body)
         self.assertIn('href="/overview"', self.req("/").body)
 
     def test_own_host_works_with_headers(self):

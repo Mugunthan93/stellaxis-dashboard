@@ -50,6 +50,10 @@ a { color: var(--accent); }
 .rows .t { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 .rows .m { color: var(--muted); font-size: 0.82rem; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 12px; }
+.btn { display: inline-block; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; color: var(--ink); text-decoration: none; }
+.btn:hover { border-color: var(--accent); }
+.btn.small { padding: 2px 10px; font-size: 0.82rem; }
+@media (pointer: coarse) { .btn { min-height: 44px; } }
 .card { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
 .card:hover { border-color: var(--accent); }
 .card b { font-family: var(--display); font-size: 1.05rem; overflow-wrap: anywhere; }
@@ -92,6 +96,7 @@ const STATUS = { waiting: ["warn", "Waiting for you"], running: ["good", "Runnin
 const pill = st => STATUS[st] ? `<span class="pill ${STATUS[st][0]}">${STATUS[st][1]}</span>` : "";
 const $ = id => document.getElementById(id);
 async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
+const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
 const wsLink = w => "workspace?id=" + encodeURIComponent(w.id);
 function render(d) {
   const sess = [], bad = [];
@@ -105,7 +110,7 @@ function render(d) {
   }
   $("live-note").hidden = d.live_ok !== false;
   const row = ({ s, w, b }) => `<li><span class="t"><a href="${wsLink(w)}">${esc(label(s))}</a></span>`
-    + `<span class="m">${esc(w.name)} · ${esc(b.name)}</span><span class="m">${esc(ago(s.last_ts))}</span>${pill(s.status)}</li>`;
+    + `<span class="m">${esc(w.name)} · ${esc(b.name)}</span><span class="m">${esc(ago(s.last_ts))}</span>${pill(s.status)}<a class="btn small" href="${openUrl(s)}">Open</a></li>`;
   const needs = sess.filter(x => x.s.status === "waiting"), run = sess.filter(x => x.s.status === "running");
   $("needs-you").hidden = !needs.length; $("needs-list").innerHTML = needs.map(row).join("");
   $("running").hidden = !run.length; $("running-list").innerHTML = run.map(row).join("");

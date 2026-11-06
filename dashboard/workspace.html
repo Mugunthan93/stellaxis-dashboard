@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Workspace: repo > branch > session rows from /api/workspaces. Only the Sessions tab exists so far. */
+/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Only the Sessions tab exists so far. */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
   --accent: #2c55c9; --accent-soft: #dfe6f8;
@@ -64,6 +64,21 @@ a { color: var(--accent); }
 .repo > div { padding: 10px; display: grid; gap: 8px; }
 .branch > summary { font-weight: 500; }
 .branch .rows { border-radius: 0 0 8px 8px; border-width: 1px 0 0; }
+.btn { display: inline-block; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; color: var(--ink); text-decoration: none; }
+.btn:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+.btn.small { padding: 2px 10px; font-size: 0.82rem; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+@media (pointer: coarse) { .btn { min-height: 44px; } }
+.inp { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; width: 100%; min-width: 0; font: inherit; color: inherit; }
+textarea.inp { resize: vertical; }
+.field { display: grid; gap: 4px; }
+.field > label { font-weight: 600; font-size: 0.88rem; }
+.hint { font-size: 0.78rem; color: var(--muted); margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.msgbox { flex: 1 1 100%; display: grid; gap: 6px; padding: 6px 0 4px; }
+.reply { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sunk); border-radius: 8px; padding: 8px 10px; max-height: 240px; overflow: auto; }
+.bad { color: var(--crit); font-size: 0.86rem; }
 </style>
 <div class="wrap">
   <header><h1 id="title">Workspace</h1></header>
@@ -79,6 +94,18 @@ a { color: var(--accent); }
     </div>
     <div class="chips"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
     <div id="tree"></div>
+  </section>
+  <section class="panel" id="new-session" hidden>
+    <div class="panel-head"><h2>New session</h2></div>
+    <div class="field"><label for="ns-folder">Folder</label><select class="inp" id="ns-folder"></select>
+      <p class="hint">It starts on whatever branch this folder has checked out.</p></div>
+    <div class="field"><label for="ns-prompt">Prompt</label><textarea class="inp" id="ns-prompt" rows="3"></textarea></div>
+    <div class="actions">
+      <button class="btn primary" id="ns-bg" type="button">Start in background</button>
+      <a class="btn" id="ns-app" aria-disabled="true">Open in Claude app</a>
+    </div>
+    <p class="hint">Open in Claude app fills in your prompt but doesn't send it; press Enter there. A background session won't show in the Claude app until it is imported.</p>
+    <div id="ns-out" role="status"></div>
   </section>
 </div>
 <script>
@@ -98,7 +125,31 @@ async function load() { const r = await fetch("/api/workspaces", { cache: "no-st
 const id = new URLSearchParams(location.search).get("id");
 let data = null, showArch = false;
 const shut = new Set();  // keys of sections the user closed; everything else is open, and this survives polls
+const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
+const msg = {};  // per session id: { open, draft, busy, error, sent, reply, timer }; survives polls
+const msgBox = s => {
+  const m = msg[s.id];
+  if (!m || !m.open) return "";
+  return `<div class="msgbox"><textarea class="inp" rows="3" data-id="${esc(s.id)}" aria-label="Message to this session" ${m.busy ? "disabled" : ""}>${esc(m.draft || "")}</textarea>`
+    + `<p class="hint">This arrives as a message from another session. If the session is waiting for an approval, open it to give the approval.</p>`
+    + `<div class="actions"><button class="btn small" type="button" data-act="send" data-id="${esc(s.id)}" ${m.busy ? "disabled" : ""}>Send</button>`
+    + `<button class="btn small" type="button" data-act="close" data-id="${esc(s.id)}">Close</button>`
+    + (m.sent ? `<span class="pill good">Delivered</span>` : "") + (m.busy ? `<span class="m">Sending…</span>` : "") + `</div>`
+    + (m.error ? `<div class="bad" role="alert">${esc(m.error)}</div>` : "")
+    + (m.sent && !m.reply ? `<div class="m">${m.timer ? "Waiting for a reply…" : "No reply yet. Open the session to see it."}</div>` : "")
+    + (m.reply ? `<div class="reply">${esc(m.reply)}</div>` : "") + `</div>`;
+};
+function keepDrafts() {  // read typed text back before a redraw replaces the boxes
+  for (const t of $("tree").querySelectorAll("textarea[data-id]")) if (msg[t.dataset.id]) msg[t.dataset.id].draft = t.value;
+}
 function draw() {
+  keepDrafts();
+  const f = document.activeElement, fid = f && f.matches && f.matches("textarea[data-id]") && $("tree").contains(f) ? [f.dataset.id, f.selectionStart, f.selectionEnd] : null;
+  drawTree();
+  if (fid) { const t = $("tree").querySelector(`textarea[data-id="${CSS.escape(fid[0])}"]`); if (t) { t.focus(); t.setSelectionRange(fid[1], fid[2]); } }
+  drawForm();
+}
+function drawTree() {
   const w = data && data.workspaces.find(x => x.id === id);
   $("live-note").hidden = !data || data.live_ok !== false;
   if (!w) { $("tree").innerHTML = `<div class="empty">${data ? "No such workspace." : "Loading…"}</div>`; return; }
@@ -112,11 +163,87 @@ function draw() {
         const bk = k + "|" + b.name;
         return `<details class="branch" data-k="${esc(bk)}" ${shut.has(bk) ? "" : "open"}><summary>${esc(b.name)} <span class="m muted">${b.rows.length}</span></summary><ul class="rows">`
           + b.rows.map(s => `<li><span class="t">${esc(label(s))}</span><span class="m">${esc(ago(s.first_ts))}</span>`
-            + (s.archived ? `<span class="pill">Archived</span>` : "") + pill(s.status) + `<span class="m num">${money(s.cost)}</span></li>`).join("")
+            + (s.archived ? `<span class="pill">Archived</span>` : "") + pill(s.status) + `<span class="m num">${money(s.cost)}</span>`
+            + `<a class="btn small" href="${openUrl(s)}">Open</a>`
+            + (s.status === null ? "" : `<button class="btn small" type="button" data-act="msg" data-id="${esc(s.id)}">Message</button>`)
+            + msgBox(s) + `</li>`).join("")
           + `</ul></details>`;
       }).join("") + `</div></details>`;
   }).join("") : `<div class="empty">No sessions here yet.</div>`;
 }
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.error || "Request failed (" + r.status + ")"), { copy: j.copy_id });
+  return j;
+}
+const getReply = async sid => { const r = await fetch("/api/sessions/" + encodeURIComponent(sid) + "/reply", { cache: "no-store" }); return r.ok ? r.json() : null; };
+const newer = (ts, base) => !!ts && (base == null || Date.parse(ts) > Date.parse(base) || (isNaN(Date.parse(ts)) && ts !== base));
+async function send(sid) {
+  const m = msg[sid], text = (m.draft || "").trim();
+  if (!text || m.busy) return;
+  m.busy = true; m.error = ""; m.sent = false; m.reply = ""; clearInterval(m.timer); m.timer = null; draw();
+  const base = (await getReply(sid).catch(() => null) || {}).ts ?? null;
+  try {
+    await post("/api/sessions/" + encodeURIComponent(sid) + "/message", { prompt: text });
+    m.sent = true; m.draft = "";
+  } catch (e) {
+    m.error = e.message + (e.copy ? " A copy was started as " + e.copy + "." : "");
+  }
+  m.busy = false;
+  if (m.sent) {
+    const end = Date.now() + 120000;
+    m.timer = setInterval(async () => {
+      const r = await getReply(sid).catch(() => null);
+      if (r && newer(r.ts, base)) { m.reply = r.text || ""; clearInterval(m.timer); m.timer = null; }
+      else if (Date.now() > end) { clearInterval(m.timer); m.timer = null; }
+      else return;
+      draw();
+    }, 3000);
+  }
+  draw();
+}
+$("tree").addEventListener("click", e => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const sid = b.dataset.id, m = msg[sid] || (msg[sid] = {});
+  if (b.dataset.act === "msg") { m.open = !m.open; draw(); if (m.open) { const t = $("tree").querySelector(`textarea[data-id="${CSS.escape(sid)}"]`); if (t) t.focus(); } }
+  else if (b.dataset.act === "close") { m.open = false; clearInterval(m.timer); m.timer = null; draw(); }
+  else if (b.dataset.act === "send") { keepDrafts(); send(sid); }
+});
+$("tree").addEventListener("input", e => { const t = e.target; if (t.dataset && t.dataset.id && msg[t.dataset.id]) msg[t.dataset.id].draft = t.value; });
+// New session form: only the option list is rebuilt on a poll; the prompt and result are never touched.
+let opts = "";
+function drawForm() {
+  const w = data && data.workspaces.find(x => x.id === id), rs = w ? w.repos.filter(r => r.exists && r.abs) : [];
+  $("new-session").hidden = !rs.length;
+  const key = rs.map(r => r.abs).join("\n");
+  if (key !== opts) {
+    const cur = $("ns-folder").value; opts = key;
+    $("ns-folder").innerHTML = rs.map(r => `<option value="${esc(r.abs)}">${esc(r.path)}</option>`).join("");
+    if (rs.some(r => r.abs === cur)) $("ns-folder").value = cur;
+  }
+  appLink();
+}
+function appLink() {
+  const f = $("ns-folder").value, q = $("ns-prompt").value.trim(), a = $("ns-app");
+  if (f && q) { a.href = "claude://code/new?folder=" + encodeURIComponent(f) + "&q=" + encodeURIComponent(q); a.removeAttribute("aria-disabled"); }
+  else { a.removeAttribute("href"); a.setAttribute("aria-disabled", "true"); }
+}
+$("ns-prompt").addEventListener("input", appLink);
+$("ns-folder").addEventListener("change", appLink);
+$("ns-app").addEventListener("click", e => { if (!$("ns-app").href) e.preventDefault(); });
+$("ns-bg").onclick = async () => {
+  const folder = $("ns-folder").value, prompt = $("ns-prompt").value.trim(), out = $("ns-out");
+  if (!folder || !prompt) { out.innerHTML = `<span class="bad">Pick a folder and write a prompt first.</span>`; return; }
+  $("ns-bg").disabled = true; out.textContent = "Starting…";
+  try {
+    const j = await post("/api/sessions/new", { workspace: id, folder, prompt });
+    out.innerHTML = `Started session <b class="mono">${esc(j.id)}</b>. View it with <code class="mono">claude attach ${esc(j.id)}</code>. It won't appear in the Claude app until it is imported.`;
+    $("ns-prompt").value = ""; appLink();
+  } catch (e) { out.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  $("ns-bg").disabled = false;
+};
 $("tree").addEventListener("toggle", e => {
   const k = e.target.dataset && e.target.dataset.k;
   if (k) e.target.open ? shut.delete(k) : shut.add(k);

@@ -62,6 +62,10 @@ class IndexTest(unittest.TestCase):
         self.assertEqual((s["title"], s["app_id"]), ("T", "local_1"))
         self.assertIn("app-b", [b["name"] for b in i["workspaces"][0]["repos"][0]["branches"]])
 
+    def test_repo_has_absolute_path(self):
+        self.assertEqual(W.build_index(SESSIONS, PROJECTS, {}, CFG)["workspaces"][0]["repos"][0]["abs"],
+                         str(W._norm("~/code/x")))
+
     def test_cost_30d_counts_recent_sessions_only(self):
         now = "2026-11-06T00:00:00Z"
         i = W.build_index(SESSIONS + [{**SESSIONS[0], "id": "ancient", "last_ts": "2026-08-01T00:00:00Z", "cost": 50}],

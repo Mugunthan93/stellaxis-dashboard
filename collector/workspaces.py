@@ -116,7 +116,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
                 bl.append({"name": name, "sessions": rows})
             bl.sort(key=lambda b: max(r["last_ts"] or "" for r in b["sessions"]), reverse=True)
             ab = _norm(repo)
-            repos.append({"path": repo, "exists": ab.exists(), "state": states[str(ab)], "branches": bl})
+            repos.append({"path": repo, "abs": str(ab), "exists": ab.exists(), "state": states[str(ab)], "branches": bl})
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
     return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
