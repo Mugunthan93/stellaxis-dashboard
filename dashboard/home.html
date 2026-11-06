@@ -54,6 +54,10 @@ a { color: var(--accent); }
 .btn:hover { border-color: var(--accent); }
 .btn.small { display: inline-flex; align-items: center; padding: 2px 10px; font-size: 0.82rem; line-height: 1.4; white-space: nowrap; }
 @media (pointer: coarse) { .btn { min-height: 44px; } }
+.ask { flex: 1 1 100%; display: grid; gap: 6px; }
+.ask .cmd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sunk); border-radius: 8px; padding: 8px 10px; font-size: 0.84rem; }
+.ask .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bad { color: var(--crit); font-size: 0.86rem; }
 .card { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
 .card:hover { border-color: var(--accent); }
 .card b { font-family: var(--display); font-size: 1.05rem; overflow-wrap: anywhere; }
@@ -67,6 +71,8 @@ a { color: var(--accent); }
   <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
   <section class="panel" id="needs-you" hidden>
     <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval.</p></div>
+    <div class="bad" id="ap-err" role="alert" hidden></div>
+    <ul class="rows" id="ap-list"></ul>
     <ul class="rows" id="needs-list"></ul>
   </section>
   <section class="panel" id="running" hidden>
@@ -98,6 +104,41 @@ const $ = id => document.getElementById(id);
 async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
 const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
 const wsLink = w => "workspace?id=" + encodeURIComponent(w.id);
+let titles = {}, appr = [], apKey = "", armed = 0;
+// Approvals: the command is shown escaped and in full. Buttons ignore clicks for a moment after the list changes,
+// so a click aimed at one request can't land on another that just took its place.
+function drawAppr(force) {
+  const key = JSON.stringify(appr.map(a => [a.id, a.summary, titles[a.session_id] || ""]));
+  $("needs-you").hidden = !appr.length && $("needs-list").hidden;
+  $("ap-list").hidden = !appr.length;
+  if (key === apKey && !force) return;
+  if (key !== apKey) armed = Date.now() + 800;
+  apKey = key;
+  $("ap-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || a.session_id.slice(0, 8))}</span><span class="m">${esc(ago(a.at))}</span>`
+    + `<div class="ask"><span class="m">This session asks to run <b>${esc(a.tool)}</b>:</span><pre class="cmd mono">${esc(a.summary)}</pre>`
+    + `<div class="actions"><button class="btn small" type="button" data-allow="1" data-id="${esc(a.id)}">Allow</button>`
+    + `<button class="btn small" type="button" data-allow="0" data-id="${esc(a.id)}">Deny</button></div></div></li>`).join("");
+}
+async function tickAppr() {
+  try {
+    const r = await fetch("/api/approvals", { cache: "no-store" });
+    if (!r.ok) throw 0;
+    appr = await r.json();
+  } catch { return; }
+  drawAppr(false);
+}
+$("ap-list").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-id]");
+  if (!b || Date.now() < armed) return;
+  for (const x of $("ap-list").querySelectorAll("button")) x.disabled = true;
+  const err = $("ap-err"); err.hidden = true;
+  try {
+    const r = await fetch("/api/approvals/" + encodeURIComponent(b.dataset.id), { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allow: b.dataset.allow === "1" }) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); err.textContent = j.error || "Request failed (" + r.status + ")"; err.hidden = false; }
+  } catch { err.textContent = "Couldn't reach Stellaxis."; err.hidden = false; }
+  await tickAppr(); drawAppr(true);
+});
 function render(d) {
   const sess = [], bad = [];
   for (const w of d.workspaces) for (const r of w.repos) {
@@ -112,7 +153,9 @@ function render(d) {
   const row = ({ s, w, b }) => `<li><span class="t"><a href="${wsLink(w)}">${esc(label(s))}</a></span>`
     + `<span class="m">${esc(w.name)} · ${esc(b.name)}</span><span class="m">${esc(ago(s.last_ts))}</span>${pill(s.status)}<a class="btn small" href="${openUrl(s)}">Open</a></li>`;
   const needs = sess.filter(x => x.s.status === "waiting"), run = sess.filter(x => x.s.status === "running");
-  $("needs-you").hidden = !needs.length; $("needs-list").innerHTML = needs.map(row).join("");
+  titles = {}; for (const x of sess) titles[x.s.id] = label(x.s) + " · " + x.w.name;
+  $("needs-list").hidden = !needs.length; $("needs-list").innerHTML = needs.map(row).join("");
+  drawAppr(true);
   $("running").hidden = !run.length; $("running-list").innerHTML = run.map(row).join("");
   $("unbacked").hidden = !bad.length;
   $("unbacked-list").innerHTML = bad.map(({ w, r, why }) => `<li><span class="t mono">${esc(r.path)}</span>`
@@ -127,8 +170,9 @@ function render(d) {
 async function tick() {
   try { render(await load()); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
 }
-tick();
+tick(); tickAppr();
 setInterval(() => { if (!document.hidden) tick(); }, 10000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+setInterval(() => { if (!document.hidden) tickAppr(); }, 3000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); tickAppr(); } });
 })();
 </script>

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -595,6 +596,183 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(self.get(f"/api/sessions/{UID}/reply"), (200, {"text": "new", "ts": "t2"}))
         self.assertEqual(self.get("/api/sessions/11111111-2222-3333-4444-000000000000/reply")[0], 404)
         self.assertEqual(self.get("/api/sessions/zzz/reply")[0], 400)
+
+    # --- approvals from the page ---
+    HOOK = str(Path(__file__).resolve().parent.parent / "collector" / "approval_hook.py")
+
+    def hook(self, raw, wait="1"):
+        env = {**os.environ, "STELLAXIS_HOME": str(self.dir / "stx"), "STELLAXIS_APPROVAL_WAIT": wait}
+        pr = subprocess.Popen([sys.executable, "-I", self.HOOK], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env)
+        pr.stdin.write(raw if isinstance(raw, str) else json.dumps(raw))
+        pr.stdin.close()
+        return pr
+
+    def req(self, **kw):
+        return {"session_id": UID, "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": {"command": "ls /tmp"}, **kw}
+
+    def switch_on(self, uid=UID):
+        self.assertEqual(self.post(f"/api/approvals/session/{uid}", {"on": True})[0], 200)
+
+    def wait_pending(self):
+        end = time.time() + 5
+        while time.time() < end:
+            p = W.pending()
+            if p:
+                return p
+            time.sleep(0.05)
+        self.fail("no pending request")
+
+    def finish(self, pr):
+        out = pr.stdout.read()
+        return out, pr.wait(10)
+
+    def run_hook(self, payload, decide=None):
+        pr = self.hook(payload, wait="10" if decide is not None else "1")
+        if decide is not None:
+            W.decide(self.wait_pending()[0]["id"], decide)
+        return self.finish(pr)
+
+    def reqs(self):
+        d = self.dir / "stx" / "approvals"
+        return list(d.glob("*.req")) if d.exists() else []
+
+    def mkreq(self, rid):
+        d = self.dir / "stx" / "approvals"
+        d.mkdir(exist_ok=True)
+        (d / (rid + ".req")).write_text(json.dumps({"id": rid, "session_id": UID, "tool": "Bash", "summary": "x", "at": "t"}))
+        return d
+
+    def test_hook_does_nothing_when_off(self):
+        t = time.time()
+        self.assertEqual(self.run_hook(self.req()), ("", 0))
+        self.assertLess(time.time() - t, 0.9)
+        self.assertEqual(self.reqs(), [])
+
+    def test_allow_and_deny_print_the_decision(self):
+        self.switch_on()
+        out, rc = self.run_hook(self.req(), decide=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                                                  "decision": {"behavior": "allow"}}})
+        out, rc = self.run_hook(self.req(), decide=False)
+        self.assertEqual(json.loads(out), {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
+            "behavior": "deny", "message": "Denied from the Stellaxis page."}}})
+        self.assertEqual(W.pending(), [])  # the hook cleans up after itself
+
+    def test_timeout_falls_back_to_the_normal_prompt(self):
+        self.switch_on()
+        self.assertEqual(self.run_hook(self.req()), ("", 0))
+        self.assertEqual(self.reqs(), [])
+
+    def test_bad_hook_input_is_silent(self):
+        self.switch_on()
+        bad = ["{not json", "[]", "null", "", json.dumps(self.req(hook_event_name="PreToolUse")),
+               json.dumps(self.req(session_id="../../etc/x")), json.dumps(self.req(session_id=UID + "\n")),
+               json.dumps(self.req(session_id=None)), json.dumps(self.req(tool_input="x")),
+               json.dumps(self.req(tool_name=5))]
+        for raw in bad:
+            self.assertEqual(self.finish(self.hook(raw)), ("", 0), raw)
+        self.assertEqual(self.reqs(), [])
+
+    def test_only_an_exact_answer_allows(self):
+        self.switch_on()
+        pr = self.hook(self.req(), wait="2")
+        rid = self.wait_pending()[0]["id"]
+        (self.dir / "stx" / "approvals" / (rid + ".ans")).write_text("allow\n")  # not exactly allow
+        self.assertEqual(self.finish(pr), ("", 0))
+
+    def test_pending_shows_the_full_command_and_modes(self):
+        self.switch_on()
+        cmd = "echo " + "a" * 3000 + "\nrm -rf <b>x</b>"
+        pr = self.hook(self.req(tool_input={"command": cmd}), wait="3")
+        p = self.wait_pending()[0]
+        self.assertEqual((p["session_id"], p["tool"], p["summary"]), (UID, "Bash", cmd))
+        self.assertEqual(set(p), {"id", "session_id", "tool", "summary", "at"})
+        d = self.dir / "stx" / "approvals"
+        self.assertEqual(oct(d.stat().st_mode & 0o777), "0o700")
+        self.assertEqual(oct((d / (p["id"] + ".req")).stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct((d / "on").stat().st_mode & 0o777), "0o700")
+        self.assertEqual(oct((d / "on" / UID).stat().st_mode & 0o777), "0o600")
+        W.decide(p["id"], False)
+        self.finish(pr)
+
+    def test_other_tools_get_compact_json_capped(self):
+        self.switch_on()
+        pr = self.hook(self.req(tool_name="Write", tool_input={"file_path": "/a", "content": "x" * 5000}), wait="3")
+        p = self.wait_pending()[0]
+        self.assertEqual(p["tool"], "Write")
+        self.assertTrue(p["summary"].startswith('{"file_path":"/a","content":"xxx'))
+        self.assertIn("truncated", p["summary"])
+        self.assertLess(len(p["summary"]), 2100)
+        pr.kill()
+        pr.wait()
+
+    def test_pending_ignores_and_removes_old_requests(self):
+        rid = "a" * 32
+        d = self.mkreq(rid)
+        self.assertEqual(len(W.pending()), 1)
+        old = time.time() - 131
+        os.utime(d / (rid + ".req"), (old, old))
+        self.assertEqual(W.pending(), [])
+        self.assertFalse((d / (rid + ".req")).exists())
+        with self.assertRaises(W.ApiError) as c:
+            W.decide(rid, True)  # an expired request can't be answered either
+        self.assertEqual(c.exception.status, 404)
+
+    def test_decide_rejects_unknown_and_path_like_ids(self):
+        self.mkreq("d" * 32)
+        for bad in ("../x", "..%2Fx", "a" * 32, "ZZ", "a" * 31):
+            code, _ = self.post("/api/approvals/" + bad, {"allow": True})
+            self.assertEqual(code, 404, bad)
+        with self.assertRaises(W.ApiError) as c:
+            W.decide("../x", True)
+        self.assertEqual(c.exception.status, 404)
+        self.assertEqual(list((self.dir / "stx" / "approvals").glob("*.ans")), [])
+
+    def test_decide_twice_is_409_and_answer_is_exact(self):
+        rid = "b" * 32
+        d = self.mkreq(rid)
+        self.assertEqual(self.post("/api/approvals/" + rid, {"allow": "yes"})[0], 400)
+        self.assertEqual(self.post("/api/approvals/" + rid, {})[0], 400)
+        self.assertEqual(self.post("/api/approvals/" + rid, {"allow": True})[0], 200)
+        self.assertEqual((d / (rid + ".ans")).read_text(), "allow")
+        self.assertEqual(oct((d / (rid + ".ans")).stat().st_mode & 0o777), "0o600")
+        self.assertEqual(self.post("/api/approvals/" + rid, {"allow": False})[0], 409)
+        self.assertEqual((d / (rid + ".ans")).read_text(), "allow")
+        self.assertEqual(self.get("/api/approvals"), (200, []))  # decided requests are not listed
+
+    def test_foreign_host_cannot_decide(self):
+        rid = "c" * 32
+        d = self.mkreq(rid)
+        for h in ({"Host": "evil.example"}, {"Origin": "http://evil.example"}):
+            self.assertEqual(self.post("/api/approvals/" + rid, {"allow": True}, headers=h)[0], 403)
+            self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": True}, headers=h)[0], 403)
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("GET", "/api/approvals", headers={"Host": "evil.example"})
+        self.assertEqual(c.getresponse().status, 403)
+        self.assertFalse((d / (rid + ".ans")).exists())
+        self.assertFalse((d / "on" / UID).exists())
+
+    def test_post_needs_json_content_type(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", f"/api/approvals/session/{UID}", '{"on": true}', {"Content-Type": "text/plain"})
+        self.assertEqual(c.getresponse().status, 415)
+        self.assertFalse((self.dir / "stx" / "approvals" / "on" / UID).exists())
+
+    def test_switch_creates_and_removes_and_shows_in_rows(self):
+        self.assertEqual(self.post("/api/approvals/session/zzz", {"on": True})[0], 400)
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": 1})[0], 400)
+        row = lambda: self.get("/api/workspaces")[1]["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        self.assertIs(row()["approve"], False)
+        self.switch_on()
+        self.assertIs(row()["approve"], True)
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
+        self.assertIs(row()["approve"], False)
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
 
 
 if __name__ == "__main__":

@@ -325,9 +325,116 @@ def _new_session(body: dict, cfg: dict) -> dict:
     return start(str(_norm(folder)), prompt, cfg)
 
 
+# --- approvals: collector/approval_hook.py writes <id>.req and waits for <id>.ans; on/<session uuid> switches it on ---
+APPROVAL_TTL = 130  # seconds; a request older than this is dead (the hook gives up after 120)
+APPROVAL_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _appr_dir(create: bool = False) -> Path:
+    d = _home() / "approvals"
+    if create:
+        for p in (d, d / "on"):
+            p.mkdir(mode=0o700, parents=True, exist_ok=True)
+            p.chmod(0o700)
+    return d
+
+
+def pending() -> list[dict]:
+    """Open approval requests, oldest first: {"id", "session_id", "tool", "summary", "at"}.
+    Requests older than APPROVAL_TTL, and unreadable or malformed ones, are ignored; old ones are removed."""
+    d, out, now = _appr_dir(), [], time.time()
+    for f in d.glob("*.req"):
+        try:
+            if now - f.stat().st_mtime > APPROVAL_TTL:
+                f.unlink(missing_ok=True)
+                f.with_suffix(".ans").unlink(missing_ok=True)
+                continue
+            r = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not (isinstance(r, dict) and r.get("id") == f.stem and APPROVAL_ID_RE.fullmatch(f.stem)
+                and isinstance(r.get("session_id"), str) and UUID_RE.fullmatch(r["session_id"])
+                and all(isinstance(r.get(k), str) for k in ("tool", "summary", "at"))):
+            continue
+        if f.with_suffix(".ans").exists():
+            continue  # already answered; the hook is about to pick it up
+        out.append({k: r[k] for k in ("id", "session_id", "tool", "summary", "at")} | {"_m": f.stat().st_mtime})
+    out.sort(key=lambda r: r.pop("_m"))
+    return out
+
+
+def decide(id: str, allow: bool) -> None:
+    """Write the answer for a request: ApiError 404 if there is no live request, 409 if already answered."""
+    if not isinstance(id, str) or not APPROVAL_ID_RE.fullmatch(id):
+        raise ApiError(404, "no such request")
+    d = _appr_dir()
+    try:
+        if time.time() - (d / (id + ".req")).stat().st_mtime > APPROVAL_TTL:
+            raise OSError
+    except OSError:
+        raise ApiError(404, "no such request (it may have timed out)")
+    tmp = d / (id + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("allow" if allow else "deny")
+        os.link(tmp, d / (id + ".ans"))  # atomic and never replaces: the first answer wins
+    except FileExistsError:
+        raise ApiError(409, "this request was already answered")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def set_approve(session_id: str, on: bool) -> None:
+    f = _appr_dir(create=True) / "on" / session_id
+    if on:
+        os.close(os.open(f, os.O_WRONLY | os.O_CREAT, 0o600))
+        f.chmod(0o600)
+    else:
+        f.unlink(missing_ok=True)
+
+
+def _bool(body: dict, key: str) -> bool:
+    if not isinstance(body.get(key), bool):
+        raise ApiError(400, f"send {{\"{key}\": true or false}}")
+    return body[key]
+
+
+def _approvals(handler, method: str, path: str) -> bool:
+    """GET /api/approvals, POST /api/approvals/session/<uuid> {"on"}, POST /api/approvals/<id> {"allow"}."""
+    m = re.fullmatch(r"/api/approvals/(?:session/)?(.+)", path)
+    sess = path.startswith("/api/approvals/session/")
+    if not (path == "/api/approvals" and method == "GET" or m and method == "POST"):
+        return False
+    try:
+        if not settings_api.host_ok(handler):
+            raise ApiError(403, "only same-origin localhost requests are answered")
+        if method == "GET":
+            out = pending()
+        else:
+            if sess and not UUID_RE.fullmatch(m.group(1)):
+                raise ApiError(400, "session id must be a uuid")
+            if not sess and not APPROVAL_ID_RE.fullmatch(m.group(1)):
+                raise ApiError(404, "no such request")
+            body = settings_api.read_body(handler)
+            if sess:
+                set_approve(m.group(1), _bool(body, "on"))
+            else:
+                decide(m.group(1), _bool(body, "allow"))
+            out = {}
+        settings_api._send(handler, 200, out)
+    except ApiError as e:
+        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+    except OSError as e:
+        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+    return True
+
+
 def handle(handler, method: str, cfg: dict) -> bool:
-    """Serve /api/workspaces and /api/sessions/*. False when the path is not ours."""
+    """Serve /api/workspaces, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
     path = handler.path.split("?")[0]
+    if path.startswith("/api/approvals") and _approvals(handler, method, path):
+        return True
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
     if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
@@ -357,6 +464,7 @@ def handle(handler, method: str, cfg: dict) -> bool:
 def _list(handler, cfg: dict) -> bool:
     """GET /api/workspaces: the index plus live status per session."""
     idx = _index()
+    on = _appr_dir() / "on"
     rows = live(_bin(cfg))
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
     for w in idx.get("workspaces", []):
@@ -364,6 +472,7 @@ def _list(handler, cfg: dict) -> bool:
             for b in repo.get("branches", []):
                 for s in b.get("sessions", []):
                     s["status"] = None if rows is None else status_of(by_id.get(s["id"]))
+                    s["approve"] = bool(UUID_RE.fullmatch(str(s["id"])) and (on / s["id"]).is_file())
     idx["live_ok"] = rows is not None
     settings_api._send(handler, 200, idx)
     return True
