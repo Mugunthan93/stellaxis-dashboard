@@ -420,14 +420,44 @@ def set_approve(session_id: str, on: bool) -> None:
         f.unlink(missing_ok=True)
 
 
+def approve_ready() -> bool:
+    """True when Claude's user settings have a PermissionRequest hook that runs approval_hook.py."""
+    try:
+        hooks = json.loads((_claude_dir() / "settings.json").read_text()).get("hooks", {}).get("PermissionRequest", [])
+        return any("approval_hook.py" in str(h.get("command")) for g in hooks for h in g.get("hooks", []))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _can_approve(session_id: str, cfg: dict) -> None:
+    if not approve_ready():
+        raise ApiError(409, "the approval hook isn't set up in Claude's settings.json")
+    if not any(isinstance(r, dict) and r.get("sessionId") == session_id for r in live(_bin(cfg)) or []):
+        raise ApiError(409, "this session isn't open, so it can't ask for approval")
+
+
+def clear_stale(rows: list | None) -> None:
+    """Switch off every session not in `rows` (from live); None means we can't tell, so nothing changes."""
+    if rows is None:
+        return
+    alive = {r.get("sessionId") for r in rows if isinstance(r, dict)}
+    for f in (_appr_dir() / "on").glob("*"):
+        if UUID_RE.fullmatch(f.name) and f.name not in alive:
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _bool(body: dict, key: str) -> bool:
     if not isinstance(body.get(key), bool):
         raise ApiError(400, f"send {{\"{key}\": true or false}}")
     return body[key]
 
 
-def _approvals(handler, method: str, path: str) -> bool:
-    """GET /api/approvals, POST /api/approvals/session/<uuid> {"on"}, POST /api/approvals/<id> {"allow"}."""
+def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
+    """GET /api/approvals, POST /api/approvals/session/<uuid> {"on"}, POST /api/approvals/<id> {"allow"}.
+    Switching on needs the hook and a live session; switching off always works."""
     m = re.fullmatch(r"/api/approvals/(?:session/)?(.+)", path)
     sess = path.startswith("/api/approvals/session/")
     if not (path == "/api/approvals" and method == "GET" or m and method == "POST"):
@@ -444,7 +474,10 @@ def _approvals(handler, method: str, path: str) -> bool:
                 raise ApiError(404, "no such request")
             body = settings_api.read_body(handler)
             if sess:
-                set_approve(m.group(1), _bool(body, "on"))
+                on = _bool(body, "on")
+                if on:
+                    _can_approve(m.group(1), cfg)
+                set_approve(m.group(1), on)
             else:
                 decide(m.group(1), _bool(body, "allow"))
             out = {}
@@ -776,7 +809,7 @@ def _test_run(handler, ws: str, cfg: dict) -> bool:
 def handle(handler, method: str, cfg: dict) -> bool:
     """Serve /api/workspaces, /api/workspaces/<id>/tasks and /work, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
     path = handler.path.split("?")[0]
-    if path.startswith("/api/approvals") and _approvals(handler, method, path):
+    if path.startswith("/api/approvals") and _approvals(handler, method, path, cfg):
         return True
     t = re.fullmatch(r"/api/workspaces/(.+)/tasks", path)
     if t and method in ("GET", "POST"):
@@ -818,6 +851,7 @@ def _list(handler, cfg: dict) -> bool:
     idx = _index()
     on = _appr_dir() / "on"
     rows = live(_bin(cfg))
+    clear_stale(rows)
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
     conf = {c.get("id"): c for c in cfg.get("workspaces") or [] if isinstance(c, dict)}
     for w in idx.get("workspaces", []):
@@ -828,5 +862,6 @@ def _list(handler, cfg: dict) -> bool:
                     s["status"] = None if rows is None else status_of(by_id.get(s["id"]))
                     s["approve"] = bool(UUID_RE.fullmatch(str(s["id"])) and (on / s["id"]).is_file())
     idx["live_ok"] = rows is not None
+    idx["approve_ready"] = approve_ready()
     settings_api._send(handler, 200, idx)
     return True

@@ -677,7 +677,13 @@ class ActionApiTest(unittest.TestCase):
         return {"session_id": UID, "hook_event_name": "PermissionRequest", "tool_name": "Bash",
                 "tool_input": {"command": "ls /tmp"}, **kw}
 
+    def hook_set_up(self):
+        (self.dir / "claude" / "settings.json").write_text(json.dumps({"hooks": {"PermissionRequest": [
+            {"matcher": "*", "hooks": [{"type": "command", "command": "python3 /x/approval_hook.py"}]}]}}))
+
     def switch_on(self, uid=UID):
+        self.hook_set_up()
+        self.behave(agents={"out": json.dumps([{"sessionId": uid, "status": "idle"}])})
         self.assertEqual(self.post(f"/api/approvals/session/{uid}", {"on": True})[0], 200)
 
     def wait_pending(self):
@@ -922,6 +928,49 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
         self.assertIs(row()["approve"], False)
         self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
+
+    def test_approve_ready_needs_the_hook_in_settings(self):
+        ready = lambda: self.get("/api/workspaces")[1]["approve_ready"]
+        self.assertIs(ready(), False)
+        f = self.dir / "claude" / "settings.json"
+        for bad in ("{", "[]", '{"hooks": 1}', '{"hooks": {"PermissionRequest": [1]}}',
+                    '{"hooks": {"PermissionRequest": [{"hooks": [{"command": "other.py"}]}]}}',
+                    '{"hooks": {"PreToolUse": [{"hooks": [{"command": "approval_hook.py"}]}]}}'):
+            f.write_text(bad)
+            self.assertIs(ready(), False, bad)
+        self.hook_set_up()
+        self.assertIs(ready(), True)
+
+    def test_switching_on_needs_the_hook_and_a_live_session(self):
+        on = self.dir / "stx" / "approvals" / "on" / UID
+        self.behave(agents={"out": json.dumps([{"sessionId": UID, "status": "idle"}])})
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": True})[0], 409)
+        self.hook_set_up()
+        self.behave(agents={"out": "[]"})
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": True})[0], 409)
+        self.behave(agents={"out": "not json"})
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": True})[0], 409)
+        self.assertFalse(on.exists())
+
+    def test_switching_off_always_works(self):
+        self.switch_on()
+        (self.dir / "claude" / "settings.json").unlink()
+        self.behave(agents={"out": "not json"})
+        self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
+        self.assertFalse((self.dir / "stx" / "approvals" / "on" / UID).exists())
+
+    def test_stale_switch_is_cleared_only_when_the_live_list_is_known(self):
+        self.switch_on()
+        on = self.dir / "stx" / "approvals" / "on"
+        (on / "keep-me").write_text("")
+        self.behave(agents={"out": "not json"})
+        self.assertEqual(self.get("/api/workspaces")[0], 200)
+        self.assertTrue((on / UID).exists())
+        self.behave(agents={"out": "[]"})
+        row = self.get("/api/workspaces")[1]["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        self.assertIs(row["approve"], False)
+        self.assertFalse((on / UID).exists())
+        self.assertTrue((on / "keep-me").exists())
 
     # --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md ---
     def tasks(self):

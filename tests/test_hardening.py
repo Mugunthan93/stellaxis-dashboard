@@ -215,11 +215,23 @@ class IndexFailure(unittest.TestCase):
         snap = {"generated_at": "g", "meta": {"elapsed_ms": 1}, "sessions": [], "projects": []}
         with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "STX_HOME", Path(t)), \
                 mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
+                mock.patch.object(C.workspaces, "live", return_value=None), \
                 mock.patch.object(C.workspaces, "build_index", side_effect=ValueError("boom")):
             C.collect({"x": 1})
             st = json.loads(Path(t, "status.json").read_text())
         self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
         self.assertIn("index_error", (REPO / "dashboard" / "shell.html").read_text())
+
+
+    def test_collection_clears_stale_switches(self):
+        snap = {"sessions": [], "projects": []}
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "STX_HOME", Path(t)), \
+                mock.patch.object(C.workspaces, "live", return_value=[]) as live, \
+                mock.patch.object(C.workspaces, "clear_stale") as clear, \
+                mock.patch.object(C.workspaces, "app_records", return_value={}):
+            self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
+        live.assert_called_once_with("/no/claude")
+        clear.assert_called_once_with([])
 
 
 class Probes(unittest.TestCase):

@@ -274,6 +274,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   if (tab === "tasks") loadTasks().catch(() => { $("task-err").textContent = "Couldn't load tasks."; $("task-err").hidden = false; });
   if (tab === "plans" || tab === "routines" || tab === "tests") { drawWork(); loadWork(); }
 });
+const showSwitch = s => s.approve || (data.approve_ready && ["open", "running", "waiting"].includes(s.status));  // on stays visible so it can be turned off
 function drawTree() {
   const w = data && data.workspaces.find(x => x.id === id);
   $("live-note").hidden = !data || data.live_ok !== false;
@@ -291,7 +292,7 @@ function drawTree() {
             + (s.archived ? `<span class="pill">Archived</span>` : "") + pill(s.status) + `<span class="m num">${money(s.cost)}</span>`
             + `<a class="btn small" href="${openUrl(s)}">Open</a>`
             + (s.status === null ? "" : `<button class="btn small" type="button" data-act="msg" data-id="${esc(s.id)}">Message</button>`)
-            + `<label class="sw"><input type="checkbox" role="switch" data-act="approve" data-id="${esc(s.id)}" ${s.approve ? "checked" : ""}> Approve from page</label>`
+            + (showSwitch(s) ? `<label class="sw"><input type="checkbox" role="switch" data-act="approve" data-id="${esc(s.id)}" ${s.approve ? "checked" : ""}> Approve from page</label>` : "")
             + msgBox(s) + `</li>`).join("")
           + `</ul></details>`;
       }).join("") + `</div></details>`;

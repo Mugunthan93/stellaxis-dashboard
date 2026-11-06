@@ -1267,6 +1267,7 @@ def write_index(cfg: dict, snap: dict) -> str | None:
     sessions = cfg.pop("_sessions_all", None)
     try:
         import workspaces
+        workspaces.clear_stale(workspaces.live(workspaces._bin(cfg)))
         write_json(STX_HOME / "workspaces.json", workspaces.build_index(
             sessions if sessions is not None else snap["sessions"], snap["projects"],
             workspaces.app_records(workspaces.app_base()), cfg))
