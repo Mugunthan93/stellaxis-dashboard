@@ -1302,7 +1302,7 @@ def collect(cfg=None, probe=False) -> dict:
 
 # ---------------------------------------------------------------- serve
 
-PAGES = {"/": "index.html", "/index.html": "index.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
+PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/workspace": "workspace.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
          "/settings": "settings.html", "/settings.html": "settings.html"}
 # Reel Brain's dashboard (built by reels/build_dashboard.py): /reels/ shows it inside the shell, /reels/raw is the page
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))

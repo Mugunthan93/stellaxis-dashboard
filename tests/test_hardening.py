@@ -110,12 +110,19 @@ class Service(unittest.TestCase):
         c.putheader("Host", host or f"127.0.0.1:{self.port}")
         c.endheaders()
         r = c.getresponse()
-        r.read()
+        r.body = r.read().decode("utf-8", "replace")
         return r
 
     def test_rebinding_host_is_refused_everywhere(self):
         for path in ("/snapshot.json", "/api/status", "/reels/raw", "/", "/api/refresh"):
             self.assertEqual(self.req(path, "evil.example").status, 403, path)
+
+    def test_pages_are_routed(self):
+        self.assertIn('id="needs-you"', self.req("/").body)
+        self.assertIn('id="refresh"', self.req("/overview").body)
+        self.assertIn('id="refresh"', self.req("/index.html").body)
+        self.assertEqual(self.req("/workspace?id=x").status, 200)
+        self.assertIn('href="/overview"', self.req("/").body)
 
     def test_own_host_works_with_headers(self):
         r = self.req("/snapshot.json")

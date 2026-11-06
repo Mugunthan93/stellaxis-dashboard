@@ -1,0 +1,137 @@
+<title>Stellaxis Workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Workspace: repo > branch > session rows from /api/workspaces. Only the Sessions tab exists so far. */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
+  --accent: #2c55c9; --accent-soft: #dfe6f8;
+  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 60px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.55rem; }
+h2 { font-size: 1.12rem; }
+.mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+.notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); background: var(--surface); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.panel-head p { margin: 0; color: var(--muted); font-size: 0.86rem; max-width: 70ch; }
+.pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; font-family: var(--body); }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.crit { background: var(--crit-soft); color: var(--crit); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { border: 0; background: none; padding: 8px 12px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs button:disabled { cursor: not-allowed; opacity: 0.5; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 0.82rem; }
+.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.rows li { background: var(--surface); padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.rows li:hover { background: var(--sunk); }
+.rows .t { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.rows .m { color: var(--muted); font-size: 0.82rem; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 12px; }
+.card { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
+.card:hover { border-color: var(--accent); }
+.card b { font-family: var(--display); font-size: 1.05rem; overflow-wrap: anywhere; }
+.card span { color: var(--muted); font-size: 0.84rem; }
+@media (pointer: coarse) { .tabs button, .chip { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.repo, .branch { border: 1px solid var(--line); border-radius: 8px; }
+.repo > summary, .branch > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.repo > summary { background: var(--sunk); font-weight: 600; overflow-wrap: anywhere; }
+.repo > div { padding: 10px; display: grid; gap: 8px; }
+.branch > summary { font-weight: 500; }
+.branch .rows { border-radius: 0 0 8px 8px; border-width: 1px 0 0; }
+</style>
+<div class="wrap">
+  <header><h1 id="title">Workspace</h1></header>
+  <div class="notice" id="live-note" hidden>Live status is unavailable, so session status can't be shown.</div>
+  <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
+  <section class="panel">
+    <div class="tabs" role="tablist" aria-label="Workspace views">
+      <button type="button" role="tab" aria-selected="true">Sessions</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Branches</button>
+      <button type="button" role="tab" aria-selected="false" disabled>Repos</button>
+    </div>
+    <div class="chips"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
+    <div id="tree"></div>
+  </section>
+</div>
+<script>
+(() => {
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = n => "$" + (n || 0).toFixed(2);
+const ago = iso => {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 129600 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago";
+};
+const label = s => s.title || s.id.slice(0, 8);
+const STATUS = { waiting: ["warn", "Waiting for you"], running: ["good", "Running"], open: ["acc", "Open"], closed: ["", "Closed"] };
+const pill = st => STATUS[st] ? `<span class="pill ${STATUS[st][0]}">${STATUS[st][1]}</span>` : "";
+const $ = id => document.getElementById(id);
+async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
+const id = new URLSearchParams(location.search).get("id");
+let data = null, showArch = false;
+const shut = new Set();  // keys of sections the user closed; everything else is open, and this survives polls
+function draw() {
+  const w = data && data.workspaces.find(x => x.id === id);
+  $("live-note").hidden = !data || data.live_ok !== false;
+  if (!w) { $("tree").innerHTML = `<div class="empty">${data ? "No such workspace." : "Loading…"}</div>`; return; }
+  $("title").textContent = w.name;
+  document.title = w.name + " · Stellaxis";
+  const repos = w.repos.map(r => ({ r, bs: r.branches.map(b => ({ name: b.name, rows: b.sessions.filter(s => showArch || !s.archived) })).filter(b => b.rows.length) })).filter(x => x.bs.length);
+  $("tree").innerHTML = repos.length ? repos.map(({ r, bs }) => {
+    const k = "r:" + r.path;
+    return `<details class="repo" data-k="${esc(k)}" ${shut.has(k) ? "" : "open"}><summary><span class="mono">${esc(r.path)}</span>`
+      + (r.exists ? "" : ` <span class="pill crit">missing</span>`) + `</summary><div>` + bs.map(b => {
+        const bk = k + "|" + b.name;
+        return `<details class="branch" data-k="${esc(bk)}" ${shut.has(bk) ? "" : "open"}><summary>${esc(b.name)} <span class="m muted">${b.rows.length}</span></summary><ul class="rows">`
+          + b.rows.map(s => `<li><span class="t">${esc(label(s))}</span><span class="m">${esc(ago(s.first_ts))}</span>`
+            + (s.archived ? `<span class="pill">Archived</span>` : "") + pill(s.status) + `<span class="m num">${money(s.cost)}</span></li>`).join("")
+          + `</ul></details>`;
+      }).join("") + `</div></details>`;
+  }).join("") : `<div class="empty">No sessions here yet.</div>`;
+}
+$("tree").addEventListener("toggle", e => {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (k) e.target.open ? shut.delete(k) : shut.add(k);
+}, true);
+$("arch").onclick = () => { showArch = !showArch; $("arch").setAttribute("aria-pressed", showArch); draw(); };
+async function tick() {
+  try { data = await load(); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
+  draw();
+}
+tick();
+setInterval(() => { if (!document.hidden) tick(); }, 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+})();
+</script>

@@ -65,7 +65,11 @@ session's first turn and is the number pruning should move.
 
 `DESIGN.md` holds the palette, fonts and component rules; read it before changing any page.
 
-`dashboard/index.html` (Overview) and `dashboard/hierarchy.html` are authored as artifact bodies (no
+Routes (`PAGES` in `collect.py`): `/` is `home.html` (what needs you, from `GET /api/workspaces`),
+`/overview` is `index.html`, `/workspace?id=<id>` is `workspace.html`. The sidebar's workspace links are
+built in `shell.html` from the same API; static links still work if it fails.
+
+`dashboard/index.html` (Overview), `home.html`, `workspace.html` and `hierarchy.html` are authored as artifact bodies (no
 `<html>`/`<head>` skeleton). The same file serves both as:
 - the localhost page: `collect.py`'s `Handler` wraps it in a skeleton and serves `snapshot.json`,
   `api/status`, `api/refresh` next to it, and
