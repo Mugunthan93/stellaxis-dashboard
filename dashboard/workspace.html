@@ -3,7 +3,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions, Tasks, Plans and Routines tabs so far. */
+/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions, Tasks, Plans, Routines and Tests tabs. */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
   --accent: #2c55c9; --accent-soft: #dfe6f8;
@@ -94,12 +94,13 @@ textarea.inp { resize: vertical; }
       <button type="button" role="tab" id="tab-tasks" data-tab="tasks" aria-selected="false">Tasks</button>
       <button type="button" role="tab" id="tab-plans" data-tab="plans" aria-selected="false">Plans</button>
       <button type="button" role="tab" id="tab-routines" data-tab="routines" aria-selected="false">Routines</button>
-      <button type="button" role="tab" aria-selected="false" disabled>Tests</button>
+      <button type="button" role="tab" id="tab-tests" data-tab="tests" aria-selected="false">Tests</button>
     </div>
     <div class="chips" id="arch-row"><button class="chip" id="arch" type="button" aria-pressed="false">Show archived</button></div>
     <div id="tree"></div>
     <div id="plans" hidden></div>
     <div id="routines" hidden></div>
+    <div id="tests" hidden></div>
     <div id="tasks" hidden>
       <form class="actions" id="task-form">
         <input class="inp" id="task-text" maxlength="500" aria-label="New task" placeholder="Add a task" autocomplete="off" style="flex:1 1 240px; width:auto">
@@ -168,10 +169,10 @@ function draw() {
   drawTabs();
 }
 function drawTabs() {  // one view shows at a time
-  for (const n of ["sessions", "tasks", "plans", "routines"]) $("tab-" + n).setAttribute("aria-selected", tab === n);
+  for (const n of ["sessions", "tasks", "plans", "routines", "tests"]) $("tab-" + n).setAttribute("aria-selected", tab === n);
   const s = tab === "sessions";
   $("arch-row").hidden = !s; $("tree").hidden = !s; $("tasks").hidden = tab !== "tasks";
-  $("plans").hidden = tab !== "plans"; $("routines").hidden = tab !== "routines";
+  $("plans").hidden = tab !== "plans"; $("routines").hidden = tab !== "routines"; $("tests").hidden = tab !== "tests";
   if (!s) $("new-session").hidden = true;
 }
 let work = null, workAt = 0, workBusy = false;  // /work scans the disk, so it is fetched at most once a minute (or when forced)
@@ -189,7 +190,32 @@ function drawWork() {
   $("routines").innerHTML = `<p class="hint">Run history isn't available here.</p>` + (work.routines.length
     ? `<ul class="rows">` + work.routines.map(r => `<li><span class="t mono">${esc(r.name)}</span><span class="m">${esc(r.description)}</span></li>`).join("") + `</ul>`
     : `<div class="empty">No routines for this workspace.</div>`);
+  drawTests();
 }
+let testErr = "";
+function drawTests() {
+  const rs = work ? work.tests : null;
+  if (!rs) { $("tests").innerHTML = `<div class="empty">Loading…</div>`; return; }
+  const folders = (data && data.workspaces.find(x => x.id === id) || { repos: [] }).repos.map(x => x.path);
+  const shown = new Set(rs.map(t => t.repo));
+  const state = t => t.running ? `<span class="pill acc">Running</span>` : t.ok === true ? `<span class="pill good">Passed</span>` : t.ok === false ? `<span class="pill crit">Failed</span>` : "";
+  $("tests").innerHTML = (testErr ? `<div class="bad" role="alert">${esc(testErr)}</div>` : "")
+    + (rs.length ? `<ul class="rows">` + rs.map(t => `<li><span class="t mono">${esc(t.repo)}</span><span class="m">${esc(when(t.finished))}</span>${state(t)}`
+      + `<button class="btn small" type="button" data-run="${esc(t.repo)}" ${t.running ? "disabled" : ""}>Run tests</button>`
+      + (t.tail ? `<div class="reply mono" style="flex-basis:100%">${esc(t.tail)}</div>` : "") + `</li>`).join("") + `</ul>` : "")
+    + (folders.filter(f => !shown.has(f)).length ? `<h3>Repos</h3><ul class="rows">` + folders.filter(f => !shown.has(f)).map(f => `<li><span class="t mono">${esc(f)}</span><span class="m">No test command set</span></li>`).join("") + `</ul>` : "");
+  clearTimeout(testTimer);
+  if (rs.some(t => t.running)) testTimer = setTimeout(() => { if (tab === "tests") loadWork(true); }, 2000);
+}
+let testTimer = 0;
+$("tests").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-run]");
+  if (!b) return;
+  b.disabled = true; testErr = "";
+  try { await post("/api/workspaces/" + encodeURIComponent(id) + "/tests/run", { repo: b.dataset.run }); } catch (x) { testErr = x.message; }
+  await loadWork(true);
+  drawTests();
+});
 async function loadWork(force) {
   if (workBusy || (!force && Date.now() - workAt < 60000)) return;
   workBusy = true;
@@ -197,7 +223,7 @@ async function loadWork(force) {
     const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/work", { cache: "no-store" });
     if (!r.ok) throw 0;
     work = await r.json(); workAt = Date.now(); drawWork();
-  } catch { if (!work) $("plans").innerHTML = $("routines").innerHTML = `<div class="empty">Couldn't load this view.</div>`; }
+  } catch { if (!work) $("plans").innerHTML = $("routines").innerHTML = $("tests").innerHTML = `<div class="empty">Couldn't load this view.</div>`; }
   finally { workBusy = false; }
 }
 let seq = 0, shownRows, adding = false;  // seq: only the newest list request may set taskRows
@@ -243,7 +269,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   if (!b || b.dataset.tab === tab) return;
   tab = b.dataset.tab; draw();
   if (tab === "tasks") loadTasks().catch(() => { $("task-err").textContent = "Couldn't load tasks."; $("task-err").hidden = false; });
-  if (tab === "plans" || tab === "routines") { drawWork(); loadWork(); }
+  if (tab === "plans" || tab === "routines" || tab === "tests") { drawWork(); loadWork(); }
 });
 function drawTree() {
   const w = data && data.workspaces.find(x => x.id === id);

@@ -1017,6 +1017,97 @@ class ActionApiTest(unittest.TestCase):
         c.request("GET", "/api/workspaces/w/work", headers={"Host": "evil.example"})
         self.assertEqual(c.getresponse().status, 403)
 
+    # --- test runs ---
+    def cfg_tests(self, argv, repo=None):
+        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo], "tests": {repo or self.repo: argv}}]
+        return self.cfg["workspaces"][0]
+
+    def wait_done(self, ws):
+        for _ in range(100):
+            r = W.test_results(ws)[0]
+            if not r["running"]:
+                return r
+            time.sleep(0.1)
+        self.fail("test run did not finish")
+
+    def py(self, code):
+        return [sys.executable, "-c", code]
+
+    def test_passing_and_failing_runs_are_recorded(self):
+        ws = self.cfg_tests(self.py("print('hello')"))
+        self.assertEqual(W.test_results(ws)[0]["ok"], None)
+        self.assertIn("started", W.run_tests(self.repo, ws))
+        r = self.wait_done(ws)
+        self.assertEqual((r["ok"], r["tail"]), (True, "hello"))
+        self.assertTrue(r["finished"].endswith("Z"))
+        ws = self.cfg_tests(self.py("import sys; print('out', flush=True); print('err', file=sys.stderr); sys.exit(1)"))
+        W.run_tests(self.repo, ws)
+        r = self.wait_done(ws)
+        self.assertEqual(r["ok"], False)
+        self.assertEqual(r["tail"].splitlines(), ["out", "err"])
+
+    def test_tail_keeps_last_40_lines(self):
+        ws = self.cfg_tests(self.py("print(*range(100), sep='\\n')"))
+        W.run_tests(self.repo, ws)
+        lines = self.wait_done(ws)["tail"].splitlines()
+        self.assertEqual((len(lines), lines[0], lines[-1]), (40, "60", "99"))
+
+    def test_repo_not_in_config_is_403_and_request_cannot_set_command(self):
+        ws = self.cfg_tests(self.py("pass"))
+        with self.assertRaises(W.ApiError) as c:
+            W.run_tests(str(self.dir / "other"), ws)
+        self.assertEqual(c.exception.status, 403)
+        code, _ = self.post("/api/workspaces/w/tests/run", {"repo": str(self.dir / "other"), "argv": ["true"]})
+        self.assertEqual(code, 403)
+        self.assertEqual(self.post("/api/workspaces/nope/tests/run", {"repo": self.repo})[0], 404)
+        self.assertEqual(self.post("/api/workspaces/w/tests/run", {"repo": 5})[0], 400)
+
+    def test_second_run_while_running_is_409(self):
+        ws = self.cfg_tests(self.py("import time; time.sleep(1)"))
+        W.run_tests(self.repo, ws)
+        self.assertTrue(W.test_results(ws)[0]["running"])
+        with self.assertRaises(W.ApiError) as c:
+            W.run_tests(self.repo, ws)
+        self.assertEqual(c.exception.status, 409)
+        self.wait_done(ws)
+        W.run_tests(self.repo, ws)  # free again
+        self.wait_done(ws)
+
+    def test_timeout_records_failure(self):
+        ws = self.cfg_tests(self.py("import time; print('slow'); time.sleep(30)"))
+        with mock.patch.object(W, "TEST_TIMEOUT", 1):
+            W.run_tests(self.repo, ws)
+            r = self.wait_done(ws)
+        self.assertEqual(r["ok"], False)
+        self.assertIn("timed out", r["tail"])
+
+    def test_missing_command_records_failure_and_tilde_repo_matches(self):
+        ws = self.cfg_tests(["/nonexistent/cmd"])
+        W.run_tests(self.repo, ws)
+        self.assertEqual(self.wait_done(ws)["ok"], False)
+        home = str(Path.home())
+        if self.repo.startswith(home):
+            ws = self.cfg_tests(self.py("pass"), "~" + self.repo[len(home):])
+            W.run_tests(self.repo, ws)
+            self.assertTrue(self.wait_done(ws)["ok"])
+
+    def test_run_route_work_and_failed_run_on_home_index(self):
+        self.cfg_tests(self.py("import sys; print('<b>x</b>'); sys.exit(2)"))
+        self.assertEqual(self.get("/api/workspaces/w/work")[1]["tests"][0]["ok"], None)
+        code, d = self.post("/api/workspaces/w/tests/run", {"repo": self.repo})
+        self.assertEqual(code, 200)
+        self.assertIn("started", d)
+        ws = self.cfg["workspaces"][0]
+        self.wait_done(ws)
+        t = self.get("/api/workspaces/w/work")[1]["tests"][0]
+        self.assertEqual((t["repo"], t["ok"], t["tail"]), (self.repo, False, "<b>x</b>"))
+        w = self.get("/api/workspaces")[1]["workspaces"][0]
+        self.assertEqual([f["repo"] for f in w["tests_failed"]], [self.repo])
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", "/api/workspaces/w/tests/run", '{"repo": "x"}', {"Content-Type": "text/plain"})
+        self.assertEqual(c.getresponse().status, 415)
+
 
 if __name__ == "__main__":
     unittest.main()

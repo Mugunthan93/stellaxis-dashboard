@@ -5,6 +5,7 @@ is the path itself or a parent of it (whole path components, so ph-admin-old is 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -592,7 +593,7 @@ def routines(ws: dict, cfg: dict) -> list[dict]:
 
 
 def _work(handler, ws: str, cfg: dict) -> bool:
-    """GET /api/workspaces/<id>/work: {"plans", "routines"}; <id> must be a configured workspace or `other`."""
+    """GET /api/workspaces/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured workspace or `other`."""
     try:
         if not settings_api.host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
@@ -601,7 +602,104 @@ def _work(handler, ws: str, cfg: dict) -> bool:
             raise ApiError(404, "unknown workspace")
         entry = next((e for e in _index().get("workspaces", []) if e.get("id") == ws), {})
         repos = [r["abs"] for r in entry.get("repos", []) if isinstance(r.get("abs"), str) and _norm(r["abs"]).is_dir()]
-        settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg)})
+        settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
+    except ApiError as e:
+        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+    except OSError as e:
+        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+    return True
+
+
+# --- test runs: the argv list configured for a repo runs in a thread; the last result is a file per repo ---
+TEST_TIMEOUT = 900  # seconds
+TEST_TAIL = 40
+_RUNNING: dict[str, float] = {}  # result file name -> start time; in memory, so a restart never leaves a run "running"
+_RUN_LOCK = threading.Lock()
+
+
+def _test_file(repo: str) -> Path:
+    return _home() / "test-results" / (hashlib.sha1(str(_norm(repo)).encode()).hexdigest()[:16] + ".json")
+
+
+def _test_argv(repo: str, ws: dict) -> list[str] | None:
+    """The configured command for this repo (keys compared after expanduser/normpath), or None."""
+    for k, v in (ws.get("tests") or {}).items():
+        if isinstance(k, str) and _norm(k) == _norm(repo) and isinstance(v, list) and v and all(isinstance(a, str) for a in v):
+            return v
+    return None
+
+
+def _run_one(argv: list[str], repo: str, f: Path) -> None:
+    try:
+        r = subprocess.run(argv, cwd=str(_norm(repo)), shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=TEST_TIMEOUT)
+        ok, out = r.returncode == 0, r.stdout
+    except subprocess.TimeoutExpired as e:
+        ok, out = False, (e.stdout or b"") + f"\ntimed out after {TEST_TIMEOUT} seconds".encode()
+    except OSError as e:
+        ok, out = False, f"could not run: {e}".encode()
+    tail = "\n".join(out.decode("utf-8", errors="replace").splitlines()[-TEST_TAIL:])
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=f.parent, suffix=".tmp")
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"repo": repo, "ok": ok, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "tail": tail}, fh)
+        os.replace(tmp, f)
+    except OSError:
+        pass
+    finally:
+        with _RUN_LOCK:
+            _RUNNING.pop(f.name, None)
+
+
+def run_tests(repo: str, ws: dict) -> dict:
+    """Start the configured test command for `repo` (a workspace dict with "tests"). 403 if not configured, 409 if running."""
+    argv = _test_argv(repo, ws)
+    if argv is None:
+        raise ApiError(403, "no test command is configured for this repo")
+    f = _test_file(repo)
+    with _RUN_LOCK:
+        if f.name in _RUNNING:
+            raise ApiError(409, "tests are already running for this repo")
+        _RUNNING[f.name] = time.time()
+    try:
+        threading.Thread(target=_run_one, args=(argv, repo, f), daemon=True).start()
+    except RuntimeError:
+        with _RUN_LOCK:
+            _RUNNING.pop(f.name, None)
+        raise ApiError(500, "could not start the test run")
+    return {"started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+def test_results(ws: dict) -> list[dict]:
+    """One row per configured repo: {"repo", "running", "ok" (None before any run), "finished", "tail"}."""
+    out = []
+    for repo in (ws.get("tests") or {}):
+        if _test_argv(repo, ws) is None:
+            continue
+        f = _test_file(repo)
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            d = {}
+        with _RUN_LOCK:
+            running = f.name in _RUNNING
+        out.append({"repo": repo, "running": running, "ok": d.get("ok"), "finished": d.get("finished"), "tail": d.get("tail", "")})
+    return out
+
+
+def _test_run(handler, ws: str, cfg: dict) -> bool:
+    """POST /api/workspaces/<id>/tests/run {"repo"}: the command comes from config only."""
+    try:
+        if not settings_api.host_ok(handler):
+            raise ApiError(403, "only same-origin localhost requests are answered")
+        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
+        if not w:
+            raise ApiError(404, "unknown workspace")
+        repo = settings_api.read_body(handler).get("repo")
+        if not isinstance(repo, str) or not repo or "\0" in repo:
+            raise ApiError(400, "repo must be a path")
+        settings_api._send(handler, 200, run_tests(repo, w))
     except ApiError as e:
         settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
@@ -620,6 +718,9 @@ def handle(handler, method: str, cfg: dict) -> bool:
     k = re.fullmatch(r"/api/workspaces/(.+)/work", path)
     if k and method == "GET":
         return _work(handler, k.group(1), cfg)
+    r = re.fullmatch(r"/api/workspaces/(.+)/tests/run", path)
+    if r and method == "POST":
+        return _test_run(handler, r.group(1), cfg)
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
     if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
@@ -652,7 +753,9 @@ def _list(handler, cfg: dict) -> bool:
     on = _appr_dir() / "on"
     rows = live(_bin(cfg))
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
+    conf = {c.get("id"): c for c in cfg.get("workspaces") or [] if isinstance(c, dict)}
     for w in idx.get("workspaces", []):
+        w["tests_failed"] = [{"repo": t["repo"], "finished": t["finished"]} for t in test_results(conf.get(w.get("id")) or {}) if t["ok"] is False]
         for repo in w.get("repos", []):
             for b in repo.get("branches", []):
                 for s in b.get("sessions", []):

@@ -70,10 +70,11 @@ a { color: var(--accent); }
   <div class="notice" id="live-note" hidden>Live status is unavailable, so waiting and running sessions can't be shown.</div>
   <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
   <section class="panel" id="needs-you" hidden>
-    <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval.</p></div>
+    <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval, and failed test runs.</p></div>
     <div class="bad" id="ap-err" role="alert" hidden></div>
     <ul class="rows" id="ap-list"></ul>
     <ul class="rows" id="needs-list" hidden></ul>
+    <ul class="rows" id="test-list" hidden></ul>
   </section>
   <section class="panel" id="running" hidden>
     <div class="panel-head"><h2>Running</h2><p>Sessions working right now.</p></div>
@@ -109,7 +110,7 @@ let titles = {}, appr = [], apKey = "", armed = 0;
 // so a click aimed at one request can't land on another that just took its place.
 function drawAppr(force) {
   const key = JSON.stringify(appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]));
-  $("needs-you").hidden = !appr.length && $("needs-list").hidden;
+  $("needs-you").hidden = !appr.length && $("needs-list").hidden && $("test-list").hidden;
   $("ap-list").hidden = !appr.length;
   if (key === apKey && !force) return;
   if (key !== apKey) armed = Date.now() + 800;
@@ -157,6 +158,10 @@ function render(d) {
   const needs = sess.filter(x => x.s.status === "waiting"), run = sess.filter(x => x.s.status === "running");
   titles = {}; for (const x of sess) titles[x.s.id] = label(x.s) + " · " + x.w.name;
   $("needs-list").hidden = !needs.length; $("needs-list").innerHTML = needs.map(row).join("");
+  const failed = d.workspaces.flatMap(w => (w.tests_failed || []).map(t => ({ w, t })));
+  $("test-list").hidden = !failed.length;
+  $("test-list").innerHTML = failed.map(({ w, t }) => `<li><span class="t"><a href="${wsLink(w)}">Tests failed</a></span><span class="m mono">${esc(t.repo)}</span>`
+    + `<span class="m">${esc(w.name)} · ${esc(ago(t.finished))}</span><span class="pill crit">Failed</span></li>`).join("");
   drawAppr(true);
   $("running").hidden = !run.length; $("running-list").innerHTML = run.map(row).join("");
   $("unbacked").hidden = !bad.length;
