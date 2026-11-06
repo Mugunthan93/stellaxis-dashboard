@@ -269,5 +269,217 @@ class RepoStateTest(unittest.TestCase):
         self.assertEqual(idx["workspaces"][-1]["repos"][0]["state"], {"remote": False, "ahead": 0, "dirty": 0})
 
 
+UID = "11111111-2222-3333-4444-555555555555"
+FAKE = r'''#!/usr/bin/env python3
+import json, os, sys
+d = os.path.dirname(os.path.abspath(__file__))
+beh = json.load(open(d + "/behaviour.json"))
+a = sys.argv[1:]
+kind = "agents" if a[:1] == ["agents"] else "relay" if "-p" in a else "bg"
+open(d + "/calls.jsonl", "a").write(json.dumps({"kind": kind, "argv": a, "cwd": os.getcwd(),
+                                                  "stdin": sys.stdin.read() if kind == "relay" else None}) + "\n")
+b = beh[kind]
+sys.stdout.write(b.get("out", ""))
+sys.stderr.write(b.get("err", ""))
+sys.exit(b.get("code", 0))
+'''
+
+
+class ActionApiTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+        cls.old = {k: os.environ.get(k) for k in ("STELLAXIS_HOME", "CLAUDE_CONFIG_DIR")}
+        cls.srv_cfg = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if not W.handle(self, "GET", cls.srv_cfg):
+                    self.send_error(404)
+
+            def do_POST(self):
+                if not W.handle(self, "POST", cls.srv_cfg):
+                    self.send_error(404)
+
+        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        for k, v in cls.old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.repo = str(self.dir / "repo")
+        os.mkdir(self.repo)
+        os.environ["STELLAXIS_HOME"] = str(self.dir / "stx")
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.dir / "claude")
+        (self.dir / "stx").mkdir()
+        (self.dir / "claude" / "sessions").mkdir(parents=True)
+        (self.dir / "claude" / "projects" / "p").mkdir(parents=True)
+        self.bin = self.dir / "bin" / "claude"
+        self.bin.parent.mkdir()
+        self.bin.write_text(FAKE)
+        self.bin.chmod(0o755)
+        self.cfg = {"claude_bin": str(self.bin)}
+        self.__class__.srv_cfg = self.cfg
+        self.behave(agents={"out": "[]"}, bg={"out": "backgrounded · abcd1234\n"}, relay={"out": '{"result":"DELIVERED"}'})
+        self.index(sessions=[{"id": UID, "path": self.repo}])
+
+    def behave(self, **kw):
+        p = self.dir / "bin" / "behaviour.json"
+        cur = json.loads(p.read_text()) if p.exists() else {}
+        cur.update(kw)
+        p.write_text(json.dumps(cur))
+
+    def index(self, sessions=()):
+        (self.dir / "stx" / "workspaces.json").write_text(json.dumps({"workspaces": [
+            {"id": "w", "name": "W", "repos": [{"path": self.repo, "exists": True, "branches": [
+                {"name": "b", "sessions": list(sessions)}]}]}]}))
+
+    def calls(self, kind=None):
+        p = self.dir / "bin" / "calls.jsonl"
+        rows = [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+        return [r for r in rows if r["kind"] != "agents" and (kind is None or r["kind"] == kind)]
+
+    def fake_args(self):
+        return self.calls("bg")[-1]["argv"]
+
+    def post(self, path, body, headers=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", path, json.dumps(body), {"Content-Type": "application/json", **(headers or {})})
+        r = c.getresponse()
+        return r.status, json.loads(r.read() or b"{}")
+
+    def get(self, path):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("GET", path)
+        r = c.getresponse()
+        return r.status, json.loads(r.read() or b"{}")
+
+    def listed(self, socket=True):
+        self.behave(agents={"out": json.dumps([{"sessionId": UID, "status": "idle"}])})
+        if socket:
+            (self.dir / "claude" / "sessions" / "123.json").write_text(
+                json.dumps({"sessionId": UID, "messagingSocketPath": "/tmp/s.sock"}))
+
+    def test_prompt_is_one_literal_argument(self):
+        p = '--dangerously-skip-permissions "x"\n$(rm)'
+        W.start(self.repo, p, self.cfg)
+        self.assertEqual(self.fake_args()[-2:], ["--", p])
+        self.assertEqual(self.fake_args()[:3], ["--bg", "--name", p[:40]])
+        self.assertEqual(self.calls("bg")[-1]["cwd"], os.path.realpath(self.repo))
+
+    def test_start_returns_id_from_output(self):
+        self.assertEqual(W.start(self.repo, "hi", self.cfg), {"id": "abcd1234"})
+
+    def test_new_session_endpoint_and_prompt_limits(self):
+        self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi  \n"}),
+                         (200, {"id": "abcd1234"}))
+        self.assertEqual(self.fake_args()[-1], "hi")
+        for bad in ("", "   ", "x" * 4001, 5):
+            self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": bad})[0], 400)
+        self.assertEqual(len(self.calls("bg")), 1)
+
+    def test_new_session_refuses_folder_outside_workspace(self):
+        other = self.dir / "other"
+        other.mkdir()
+        code, _ = self.post("/api/sessions/new", {"workspace": "w", "folder": str(other), "prompt": "hi"})
+        self.assertEqual(code, 403)
+        self.assertEqual(self.post("/api/sessions/new", {"workspace": "nope", "folder": self.repo, "prompt": "hi"})[0], 404)
+        self.assertEqual(self.calls(), [])
+
+    def test_cli_refusal_reaches_the_page(self):
+        self.behave(bg={"err": "Workspace not trusted\n", "code": 1})
+        code, body = self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"})
+        self.assertEqual(code, 422)
+        self.assertIn("Workspace not trusted", body["error"])
+
+    def test_listed_session_uses_relay_never_resume(self):
+        self.listed()
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "hello there\n"})
+        self.assertEqual((code, body), (200, {"via": "relay"}))
+        self.assertEqual(self.calls("bg"), [])
+        r = self.calls("relay")[0]
+        self.assertEqual(r["stdin"], "hello there")
+        self.assertNotIn("hello there", " ".join(r["argv"]))
+        self.assertIn("uds:/tmp/s.sock", " ".join(r["argv"]))
+
+    def test_relay_arguments_allow_only_two_tools(self):
+        self.listed()
+        self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+        a = self.calls("relay")[0]["argv"]
+        self.assertEqual(a[a.index("--tools") + 1], "ToolSearch,SendMessage")
+        self.assertEqual(a[a.index("--allowedTools") + 1], "ToolSearch,SendMessage")
+        self.assertNotIn("--dangerously-skip-permissions", a)
+
+    def test_listed_session_without_socket_is_refused(self):
+        self.listed(socket=False)
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+        self.assertEqual(code, 409)
+        self.assertIn("open", body["error"])
+        self.assertEqual(self.calls(), [])
+
+    def test_unlisted_session_uses_resume(self):
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "go on"})
+        self.assertEqual((code, body), (200, {"via": "resume"}))
+        c = self.calls("bg")[0]
+        self.assertEqual(c["argv"], ["--bg", "--resume", UID, "--", "go on"])
+        self.assertEqual(c["cwd"], os.path.realpath(self.repo))
+        self.assertEqual(self.calls("relay"), [])
+
+    def test_message_refused_when_live_list_unavailable(self):
+        self.behave(agents={"out": "garbage"})
+        self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 503)
+        self.assertEqual(self.calls(), [])
+
+    def test_relay_failure_reaches_the_page(self):
+        self.listed()
+        self.behave(relay={"out": '{"result":"connect ECONNREFUSED /tmp/s.sock"}'})
+        code, body = self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})
+        self.assertEqual(code, 502)
+        self.assertIn("ECONNREFUSED", body["error"])
+
+    def test_message_rejects_non_uuid_id_and_bad_prompt(self):
+        self.assertEqual(self.post("/api/sessions/not-a-uuid/message", {"prompt": "x"})[0], 400)
+        self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": " "})[0], 400)
+        self.assertEqual(self.calls(), [])
+
+    def test_foreign_host_and_non_json_are_refused(self):
+        body = {"workspace": "w", "folder": self.repo, "prompt": "hi"}
+        self.assertEqual(self.post("/api/sessions/new", body, headers={"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.post("/api/sessions/new", body, headers={"Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(self.calls(), [])
+
+    def test_socket_of_tolerates_bad_files(self):
+        d = self.dir / "claude" / "sessions"
+        (d / "a.json").write_text("{not json")
+        (d / "b.json").write_text("[1]")
+        (d / "c.json").write_text(json.dumps({"sessionId": UID, "messagingSocketPath": "/s"}))
+        self.assertEqual(W.socket_of(UID, d), "/s")
+        self.assertIsNone(W.socket_of("other", d))
+
+    def test_last_reply_is_newest_assistant_text_from_tail(self):
+        def rec(t, text, ts):
+            return json.dumps({"type": t, "timestamp": ts, "message": {"content": [{"type": "text", "text": text}]}})
+        f = self.dir / "claude" / "projects" / "p" / f"{UID}.jsonl"
+        f.write_text("\n".join([rec("assistant", "old" + "x" * 600000, "t1"), rec("assistant", "new", "t2"),
+                                rec("user", "q", "t3")]) + "\n")
+        self.assertEqual(self.get(f"/api/sessions/{UID}/reply"), (200, {"text": "new", "ts": "t2"}))
+        self.assertEqual(self.get("/api/sessions/11111111-2222-3333-4444-000000000000/reply")[0], 404)
+        self.assertEqual(self.get("/api/sessions/zzz/reply")[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

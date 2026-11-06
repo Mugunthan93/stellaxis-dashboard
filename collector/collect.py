@@ -1402,7 +1402,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if not settings_api.host_ok(self):
             return self.send_error(403)
-        if not settings_api.handle(self, "POST"):
+        if not settings_api.handle(self, "POST") and not workspaces.handle(self, "POST", load_config()):
             self.send_error(404)
 
 

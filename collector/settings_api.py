@@ -297,6 +297,22 @@ def _send(handler, status: int, obj):
     handler.wfile.write(body)
 
 
+def read_body(handler) -> dict:
+    """The JSON object a POST sent; ApiError for a wrong content type, a big body or bad JSON."""
+    if "application/json" not in handler.headers.get("Content-Type", ""):
+        raise ApiError(415, "send application/json")
+    n = int(handler.headers.get("Content-Length") or 0)
+    if n > MAX_BODY:
+        raise ApiError(413, "request too large")
+    try:
+        body = json.loads(handler.rfile.read(n) or b"{}")
+    except ValueError as e:
+        raise ApiError(400, f"request body is not JSON: {e}")
+    if not isinstance(body, dict):
+        raise ApiError(400, "request body must be an object")
+    return body
+
+
 def handle(handler, method: str) -> bool:
     """Serve /api/settings*. Returns False when the path is not ours."""
     from urllib.parse import parse_qs, urlsplit
@@ -311,17 +327,7 @@ def handle(handler, method: str) -> bool:
             _send(handler, 200, load(q.get("scope", "user"), q.get("project")))
             return True
         if method == "POST" and u.path in ("/api/settings/preview", "/api/settings/save"):
-            if "application/json" not in handler.headers.get("Content-Type", ""):
-                raise ApiError(415, "send application/json")
-            n = int(handler.headers.get("Content-Length") or 0)
-            if n > MAX_BODY:
-                raise ApiError(413, "request too large")
-            try:
-                body = json.loads(handler.rfile.read(n) or b"{}")
-            except ValueError as e:
-                raise ApiError(400, f"request body is not JSON: {e}")
-            if not isinstance(body, dict):
-                raise ApiError(400, "request body must be an object")
+            body = read_body(handler)
             _send(handler, 200, (preview if u.path.endswith("preview") else save)(body))
             return True
         raise ApiError(404, "no such settings endpoint")
