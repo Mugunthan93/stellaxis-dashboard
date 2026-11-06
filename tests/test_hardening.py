@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -209,6 +210,88 @@ class Service(unittest.TestCase):
             with C._lock:
                 self.assertEqual(self.req("/api/refresh").status, 202)
             run.assert_not_called()
+
+
+class RouteMatrix(unittest.TestCase):
+    """Every page and API route through the real Handler: it answers on our own Host, and is refused on any other."""
+    LIVE, DONE = "22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"
+    REQ = "a" * 32
+
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        root = Path(t.name)
+        stx, claude, reels, repo = root / "stx", root / "claude", root / "reels", root / "repo"
+        for d in (stx / "approvals" / "on", claude / "projects" / "p", claude / "sessions", reels / "images", repo):
+            d.mkdir(parents=True)
+        for patch in (mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(stx), "CLAUDE_CONFIG_DIR": str(claude)}),
+                      mock.patch.object(C, "STX_HOME", stx), mock.patch.object(C, "REELS_HOME", reels),
+                      mock.patch.object(C.settings_api, "STX_HOME", stx), mock.patch.object(C.settings_api, "CLAUDE_DIR", claude),
+                      mock.patch.object(C, "collect")):
+            patch.start()
+            self.addCleanup(patch.stop)
+        (reels / "dashboard.html").write_text("<p>x</p>")
+        (reels / "images" / "a.jpg").write_bytes(b"x")
+        fake = root / "claude-bin"
+        fake.write_text('#!/bin/sh\n[ "$1" = agents ] && echo \'[{"sessionId": "%s", "status": "idle"}]\' && exit 0\n'
+                        'echo "backgrounded \u00b7 44444444-4444-4444-4444-444444444444"\n' % self.LIVE)
+        fake.chmod(0o755)
+        self.repo = str(repo)
+        (stx / "config.json").write_text(json.dumps({"claude_bin": str(fake), "workspaces": [
+            {"id": "w", "name": "W", "folders": [self.repo], "tests": {self.repo: ["/usr/bin/true"]}}]}))
+        (stx / "workspaces.json").write_text(json.dumps({"workspaces": [{"id": "w", "name": "W", "repos": [
+            {"path": self.repo, "abs": self.repo, "exists": True, "state": {}, "branches": [{"name": "main", "sessions": [
+                {"id": self.LIVE, "path": self.repo}, {"id": self.DONE, "path": self.repo}]}]}]}]}))
+        (claude / "settings.json").write_text(json.dumps({"hooks": {"PermissionRequest": [{"hooks": [{"command": "approval_hook.py"}]}]}}))
+        (claude / "projects" / "p" / f"{self.DONE}.jsonl").write_text(json.dumps(
+            {"type": "assistant", "timestamp": "t", "message": {"content": [{"type": "text", "text": "yo"}]}}) + "\n")
+        (stx / "approvals" / f"{self.REQ}.req").write_text(json.dumps(
+            {"id": self.REQ, "session_id": self.LIVE, "tool": "Bash", "summary": "ls", "at": "t", "extra": {}, "cwd": ""}))
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def routes(self):
+        return [("GET", p, None, code) for p, code in (
+            ("/", 200), ("/overview", 200), ("/index.html", 200), ("/workspace?id=w", 200), ("/hierarchy", 200), ("/hierarchy.html", 200),
+            ("/settings", 200), ("/settings.html", 200), ("/home.html", 200), ("/workspace.html", 200), ("/reels", 301), ("/reels/", 200),
+            ("/reels/raw", 200), ("/reels/images/a.jpg", 200), ("/snapshot.json", 200), ("/api/snapshot", 200), ("/api/status", 200),
+            ("/api/refresh", 202), ("/api/settings", 200), ("/api/workspaces", 200), ("/api/approvals", 200),
+            ("/api/workspaces/w/tasks", 200), ("/api/workspaces/other/tasks", 200), ("/api/workspaces/w/work", 200),
+            (f"/api/sessions/{self.DONE}/reply", 200))] + [
+            ("POST", f"/api/approvals/session/{self.LIVE}", {"on": True}, 200), ("POST", f"/api/approvals/{self.REQ}", {"allow": False}, 200),
+            ("POST", "/api/workspaces/w/tasks", {"add": "x"}, 200), ("POST", "/api/workspaces/w/tests/run", {"repo": self.repo}, 200),
+            ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200),
+            ("POST", f"/api/sessions/{self.DONE}/message", {"prompt": "hi"}, 200),
+            ("POST", "/api/settings/preview", {}, 422), ("POST", "/api/settings/save", {}, 422)]
+
+    def req(self, method, path, body, **headers):
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=20)
+        self.addCleanup(c.close)
+        c.putrequest(method, path, skip_host=True)
+        c.putheader("Host", headers.get("host") or f"127.0.0.1:{self.srv.server_address[1]}")
+        if headers.get("origin"):
+            c.putheader("Origin", headers["origin"])
+        raw = None if body is None else json.dumps(body).encode()
+        if raw is not None:
+            c.putheader("Content-Type", "application/json")
+            c.putheader("Content-Length", str(len(raw)))
+        c.endheaders(raw)
+        r = c.getresponse()
+        r.read()
+        return r.status
+
+    def test_every_route_answers_our_host_and_refuses_any_other(self):
+        for method, path, body, code in self.routes():
+            self.assertEqual(self.req(method, path, body), code, path)
+        for _ in range(100):  # the test run writes under this temp home, so it has to end before cleanup
+            if not C.workspaces._RUNNING:
+                break
+            time.sleep(0.05)
+        for method, path, body, _ in self.routes():
+            self.assertEqual(self.req(method, path, body, host="evil.example"), 403, path)
+            self.assertEqual(self.req(method, path, body, origin="http://evil.example"), 403, path)
 
 
 class Install(unittest.TestCase):
