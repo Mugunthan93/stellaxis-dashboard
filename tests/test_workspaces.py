@@ -14,6 +14,48 @@ import workspaces as W  # noqa: E402
 
 WS = [{"id": "ph", "name": "PartHub", "folders": ["~/code/ph-admin", "~/code/ph-admin-ui"]}]
 
+PROJECTS = [{"path": "~/code/x", "abs": "/nonexistent/code/x", "worktree_of": None},
+            {"path": "~/code/x/.claude/worktrees/w", "abs": "/nonexistent/code/x/.claude/worktrees/w",
+             "worktree_of": "~/code/x"}]
+SESSIONS = [
+    {"id": "old", "project": "~/code/x", "branch": "main", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 1.0},
+    {"id": "new", "project": "~/code/x", "branch": "main", "first_ts": "2026-11-03T00:00:00Z", "last_ts": "2026-11-03T01:00:00Z", "cost": 2.0},
+    {"id": "wt", "project": "~/code/x/.claude/worktrees/w", "branch": "feat", "first_ts": "2026-11-05T00:00:00Z", "last_ts": "2026-11-05T01:00:00Z", "cost": 3.0},
+]
+GONE = [{"id": "gone", "project": "~/code/x/deleted", "branch": None, "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 0.5}]
+CFG = {"workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x"]}]}
+
+
+class IndexTest(unittest.TestCase):
+    def test_groups_repo_branch_newest_first(self):
+        i = W.build_index(SESSIONS, PROJECTS, {}, CFG)
+        r = i["workspaces"][0]["repos"][0]
+        self.assertEqual([b["name"] for b in r["branches"]], ["feat", "main"])
+        self.assertEqual([s["id"] for s in r["branches"][1]["sessions"]], ["new", "old"])
+
+    def test_worktree_session_joins_parent_repo(self):
+        self.assertEqual(len(W.build_index(SESSIONS, PROJECTS, {}, CFG)["workspaces"][0]["repos"]), 1)
+
+    def test_session_in_deleted_folder_stays_listed(self):
+        r = W.build_index(GONE, PROJECTS, {}, CFG)["workspaces"][0]["repos"][0]
+        self.assertFalse(r["exists"])
+        self.assertEqual(r["branches"][0]["name"], "(no branch)")
+        self.assertEqual(r["branches"][0]["sessions"][0]["id"], "gone")
+
+    def test_app_title_is_joined_and_other_is_last(self):
+        i = W.build_index(SESSIONS, PROJECTS, {"new": {"title": "T", "app_id": "local_1", "branch": "app-b"}}, CFG)
+        self.assertEqual(i["workspaces"][-1]["id"], "other")
+        self.assertEqual(i["workspaces"][-1]["name"], "Other")
+        s = next(s for b in i["workspaces"][0]["repos"][0]["branches"] for s in b["sessions"] if s["id"] == "new")
+        self.assertEqual((s["title"], s["app_id"]), ("T", "local_1"))
+        self.assertIn("app-b", [b["name"] for b in i["workspaces"][0]["repos"][0]["branches"]])
+
+    def test_cost_30d_counts_recent_sessions_only(self):
+        now = "2026-11-06T00:00:00Z"
+        i = W.build_index(SESSIONS + [{**SESSIONS[0], "id": "ancient", "last_ts": "2026-08-01T00:00:00Z", "cost": 50}],
+                          PROJECTS, {}, CFG, now=now)
+        self.assertEqual(i["workspaces"][0]["cost_30d"], 6.0)
+
 
 class AssignTest(unittest.TestCase):
     def test_worktree_belongs_to_its_repo(self):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -38,3 +39,42 @@ def app_records(base: Path) -> dict[str, dict]:
                                   "source_branch": d.get("sourceBranch"), "created_ms": d.get("createdAt"),
                                   "archived": bool(d.get("isArchived"))}
     return out
+
+
+def app_base() -> Path:
+    return Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+
+
+def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str | None = None) -> dict:
+    """Every session grouped workspace > repo > branch, sessions newest first; `now` (ISO) is for tests."""
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
+    cut = (now_dt - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    wss = list(cfg.get("workspaces") or [])
+    by_path = {p["path"]: p for p in projects}
+    tree: dict = {}  # workspace id > repo path > branch > [session]
+    cost = {}
+    for s in sessions:
+        proj = by_path.get(s["project"]) or {}
+        repo = proj.get("worktree_of") or s["project"]
+        a = app.get(s["id"]) or {}
+        wid = assign(repo, wss)
+        row = {"id": s["id"], "title": a.get("title") or "", "first_ts": s.get("first_ts"), "last_ts": s.get("last_ts"),
+               "cost": s.get("cost") or 0, "app_id": a.get("app_id"), "archived": bool(a.get("archived")),
+               "path": proj.get("abs") or s["project"]}
+        branch = a.get("branch") or s.get("branch") or "(no branch)"
+        tree.setdefault(wid, {}).setdefault(repo, {}).setdefault(branch, []).append(row)
+        if (s.get("last_ts") or "")[:19] >= cut:
+            cost[wid] = cost.get(wid, 0) + row["cost"]
+    out = []
+    for w in [*wss, {"id": "other", "name": "Other"}]:
+        repos = []
+        for repo, branches in tree.get(w["id"], {}).items():
+            bl = []
+            for name, rows in branches.items():
+                rows.sort(key=lambda r: r["first_ts"] or "", reverse=True)
+                bl.append({"name": name, "sessions": rows})
+            bl.sort(key=lambda b: max(r["last_ts"] or "" for r in b["sessions"]), reverse=True)
+            repos.append({"path": repo, "exists": _norm(repo).exists(), "state": {}, "branches": bl})
+        out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
+                    "repos": repos})
+    return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}

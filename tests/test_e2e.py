@@ -164,6 +164,24 @@ class E2E(unittest.TestCase):
         self.assertEqual(p["worktree_of"], "~/code/mesell")
         self.assertFalse(any("worktrees" in i["id"] for i in self.snap["items"]))
 
+    def test_workspace_index_holds_every_session(self):
+        def ids():
+            idx = json.loads((self.home / ".stellaxis" / "workspaces.json").read_text())
+            return {s["id"] for w in idx["workspaces"] for r in w["repos"] for b in r["branches"] for s in b["sessions"]}
+        n = len(self.snap["sessions"])
+        self.assertGreater(n, 1)
+        self.assertEqual(ids(), {s["id"] for s in self.snap["sessions"]})
+        cfgp = self.home / ".stellaxis" / "config.json"
+        cfg = json.loads(cfgp.read_text())
+        cfgp.write_text(json.dumps({**cfg, "max_sessions": 1}))
+        try:
+            self.run_py(COLLECT, "run")
+            self.assertEqual(len(json.loads((self.home / ".stellaxis" / "snapshot.json").read_text())["sessions"]), 1)
+            self.assertEqual(len(ids()), n)
+        finally:
+            cfgp.write_text(json.dumps(cfg))
+            self.run_py(COLLECT, "run")
+
     def test_status_file(self):
         st = json.loads((self.home / ".stellaxis" / "status.json").read_text())
         self.assertEqual(st["phase"], "idle")

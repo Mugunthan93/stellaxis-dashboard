@@ -973,6 +973,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             "_hourly": s["hourly"], "_ctx": ctx,
         })
     sess_list.sort(key=lambda x: x["last_ts"] or "", reverse=True)
+    cfg["_sessions_all"] = sess_list  # uncapped, for the workspace index
 
     # --- synthesize items seen only in measured context (built-ins, claude.ai connectors)
     by_kind_name = collections.defaultdict(list)
@@ -1259,6 +1260,18 @@ def load_history(limit=2000) -> list:
 _lock = threading.Lock()
 
 
+def write_index(cfg: dict, snap: dict):
+    """workspaces.json: every session (not just the capped snapshot ones); never fails a collection."""
+    sessions = cfg.pop("_sessions_all", None)
+    try:
+        import workspaces
+        write_json(STX_HOME / "workspaces.json", workspaces.build_index(
+            sessions if sessions is not None else snap["sessions"], snap["projects"],
+            workspaces.app_records(workspaces.app_base()), cfg))
+    except Exception as e:  # noqa: BLE001
+        status("workspace index failed", error=str(e))
+
+
 def collect(cfg=None, probe=False) -> dict:
     with _lock:
         cfg = cfg or load_config()
@@ -1280,6 +1293,7 @@ def collect(cfg=None, probe=False) -> dict:
         append_history(snap)
         snap["history"] = load_history()
         write_json(STX_HOME / "snapshot.json", snap)
+        write_index(cfg, snap)
         status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"])
         return snap
 
