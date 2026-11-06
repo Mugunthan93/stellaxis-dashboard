@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import settings_api
 
 
 def _norm(p: str) -> Path:
@@ -78,3 +81,43 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
     return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
+
+
+def live(claude_bin: str, timeout: float = 5) -> list[dict] | None:
+    """Rows of `claude agents --json`; None when the CLI is missing, slow, fails or prints something else."""
+    try:
+        r = subprocess.run([os.path.expanduser(claude_bin), "agents", "--json"], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+        rows = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return rows if isinstance(rows, list) else None
+
+
+def status_of(row: dict | None) -> str:
+    if row is None:
+        return "closed"
+    if row.get("state") == "blocked" or row.get("status") == "waiting":
+        return "waiting"
+    return "running" if row.get("status") == "busy" else "open"
+
+
+def handle(handler, method: str, cfg: dict) -> bool:
+    """Serve GET /api/workspaces: the index plus live status per session. False when the path is not ours."""
+    if method != "GET" or handler.path.split("?")[0] != "/api/workspaces":
+        return False
+    home = Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
+    try:
+        idx = json.loads((home / "workspaces.json").read_text())
+    except (OSError, ValueError):
+        idx = {"workspaces": []}
+    rows = live(cfg.get("claude_bin") or "~/.local/bin/claude")
+    by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
+    for w in idx.get("workspaces", []):
+        for repo in w.get("repos", []):
+            for b in repo.get("branches", []):
+                for s in b.get("sessions", []):
+                    s["status"] = None if rows is None else status_of(by_id.get(s["id"]))
+    idx["live_ok"] = rows is not None
+    settings_api._send(handler, 200, idx)
+    return True

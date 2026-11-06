@@ -29,6 +29,7 @@ import zlib
 from pathlib import Path
 
 import settings_api
+import workspaces
 
 VERSION = "0.2.2"
 HOME = Path.home()
@@ -1293,6 +1294,7 @@ def collect(cfg=None, probe=False) -> dict:
         append_history(snap)
         snap["history"] = load_history()
         write_json(STX_HOME / "snapshot.json", snap)
+        status("indexing workspaces")
         write_index(cfg, snap)
         status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"])
         return snap
@@ -1335,6 +1337,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not settings_api.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
             return self.send_error(403)
         if settings_api.handle(self, "GET"):
+            return
+        if workspaces.handle(self, "GET", load_config()):
             return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot"):
             body = (STX_HOME / "snapshot.json").read_bytes() if (STX_HOME / "snapshot.json").exists() else b"{}"

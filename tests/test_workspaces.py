@@ -97,5 +97,88 @@ class AppRecordsTest(unittest.TestCase):
         self.assertEqual(W.app_records(self.base / "nope"), {})
 
 
+class LiveTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def fake(self, output: str) -> str:
+        f = Path(self.tmp.name) / "claude"
+        f.write_text("#!/bin/sh\ncat <<'EOF'\n" + output + "\nEOF\n")
+        f.chmod(0o755)
+        return str(f)
+
+    def test_live_reads_fake_cli(self):
+        self.assertEqual(W.live(self.fake('[{"sessionId":"a","status":"busy"}]'))[0]["sessionId"], "a")
+
+    def test_live_is_none_when_binary_missing_or_output_bad(self):
+        self.assertIsNone(W.live("/no/such/claude"))
+        self.assertIsNone(W.live(self.fake("not json")))
+        self.assertIsNone(W.live(self.fake('{"not":"a list"}')))
+
+    def test_status_rules(self):
+        self.assertEqual(W.status_of({"state": "blocked"}), "waiting")
+        self.assertEqual(W.status_of({"status": "waiting"}), "waiting")
+        self.assertEqual(W.status_of({"status": "busy"}), "running")
+        self.assertEqual(W.status_of({"status": "idle", "state": "working"}), "open")
+        self.assertEqual(W.status_of(None), "closed")
+
+
+class ReadApiTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.home = Path(cls.tmp.name)
+        cls.old = os.environ.get("STELLAXIS_HOME")
+        os.environ["STELLAXIS_HOME"] = str(cls.home)
+        cls.cfg = {"claude_bin": "/no/such/claude"}
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if not W.handle(self, "GET", cls.cfg):
+                    self.send_error(404)
+
+        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        if cls.old is None:
+            os.environ.pop("STELLAXIS_HOME", None)
+        else:
+            os.environ["STELLAXIS_HOME"] = cls.old
+        cls.tmp.cleanup()
+
+    def get(self, path):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("GET", path)
+        r = c.getresponse()
+        raw = r.read()
+        return r.status, (json.loads(raw) if r.status == 200 else None)
+
+    def test_missing_index_is_empty_list(self):
+        (self.home / "workspaces.json").unlink(missing_ok=True)
+        code, body = self.get("/api/workspaces")
+        self.assertEqual((code, body["workspaces"], body["live_ok"]), (200, [], False))
+
+    def test_binary_missing_gives_null_status(self):
+        (self.home / "workspaces.json").write_text(json.dumps({"workspaces": [{"id": "x", "repos": [
+            {"path": "p", "branches": [{"name": "b", "sessions": [{"id": "s1"}]}]}]}]}))
+        code, body = self.get("/api/workspaces")
+        s = body["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        self.assertEqual((code, body["live_ok"], s["status"]), (200, False, None))
+
+    def test_other_paths_are_not_ours(self):
+        self.assertEqual(self.get("/api/other")[0], 404)
+
+
 if __name__ == "__main__":
     unittest.main()
