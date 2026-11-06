@@ -39,7 +39,7 @@ documents, and telling other repos' sessions to update the task list.
 | Live status | Yes | `claude agents --json` took 0.13s and listed 23 sessions with status. It works with no PATH when called by absolute path, which launchd needs. |
 | Start a session from the server | Yes | `claude --bg --name <n>` started a session and printed its id. It refuses untrusted folders: `ph-portals` and `ph-admin` must be opened once in Claude first. |
 | Message a finished session | Yes | `claude -p --resume <uuid>` kept the context of a throwaway session. |
-| Message a running session | Yes, through a relay | `--bg --resume` starts a copy and `-p --resume` is refused, so neither works. A short headless Claude that calls the built-in `SendMessage` does: an idle session woke and replied, and a desktop app session received the message. About $0.005 and 12s per message. |
+| Message a running session | Yes, through a relay | `--bg --resume` starts a copy and `-p --resume` is refused, so neither works. A short headless Claude that calls the built-in `SendMessage` does: an idle session woke and replied, and a desktop app session received the message. About $0.002 and 12s per message. |
 | See started sessions in the app | Yes, by link | A `--bg` session has no app record, but `claude://resume?session=<uuid>` imported a closed test session into the app. |
 | Open or prefill from a link | Yes | `claude://code/continue?session=<app_id>` opened that app session. `claude://code/new?folder=&q=` created no session, so `q` doesn't send at once. |
 | Plans | Partly | Only `parthub` has `docs/plans` (5 files). |
@@ -48,10 +48,12 @@ documents, and telling other repos' sessions to update the task list.
 | Routines | Partly | Four tasks in `~/.claude/scheduled-tasks` give name and description. Schedules and run history were not found on disk. |
 
 **How Message works:** each live session lists a socket in `~/.claude/sessions/<pid>.json`
-(`messagingSocketPath`). The server looks it up and runs one headless Claude with only `ToolSearch` and
-`SendMessage`, which delivers the text to `uds:<socket>`. The text goes in on stdin as data, and a
-message that tried to instruct the relay was still delivered intact, apart from a trailing newline.
-Closed sessions use `--bg --resume` instead.
+(`messagingSocketPath`). The server looks it up and runs one headless Claude with only `SendMessage`,
+which delivers the text to `uds:<socket>`. The text goes in on stdin as data, and a message that tried
+to instruct the relay was still delivered intact. Tool search stays off, because its extra turn once
+made the relay send the wrong text. "Delivered" is shown only when the recorded tool call matches the
+text and recipient exactly and the tool reports success. About $0.002 per message. Closed sessions use
+`--bg --resume` instead.
 
 **Limits of Message:**
 - It reaches the session as a message from another Claude session, not from you. The session treats it
