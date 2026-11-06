@@ -673,7 +673,7 @@ class ActionApiTest(unittest.TestCase):
                json.dumps(self.req(session_id=None)), json.dumps(self.req(tool_input="x")),
                json.dumps(self.req(tool_name=5))]
         for raw in bad:
-            self.assertEqual(self.finish(self.hook(raw)), ("", 0), raw)
+            self.silent(raw)
         self.assertEqual(self.reqs(), [])
 
     def test_only_an_exact_answer_allows(self):
@@ -698,8 +698,16 @@ class ActionApiTest(unittest.TestCase):
         W.decide(p["id"], False)
         self.finish(pr)
 
-    def silent(self, payload, wait="1"):
-        self.assertEqual(self.finish(self.hook(payload, wait=wait)), ("", 0), payload)
+    def silent(self, payload):
+        """The hook must decline at once: with a 30s wait, a hook that wrote a request would still be waiting."""
+        pr = self.hook(payload, wait="30")
+        try:
+            out = pr.stdout.read() if pr.wait(3) == 0 else None
+        except subprocess.TimeoutExpired:
+            pr.kill()
+            pr.wait()
+            self.fail("hook waited for an answer instead of declining: %r" % (payload,))
+        self.assertEqual(out, "", payload)
         self.assertEqual(self.reqs(), [])
 
     def test_other_tools_get_compact_json(self):
@@ -733,10 +741,15 @@ class ActionApiTest(unittest.TestCase):
 
     def test_hidden_characters_are_silent(self):
         self.switch_on()
-        for bad in ("a\x1b[2Jb", "a\rb", "a\x00b", "a\u202eb", "a\u200bb", "a\u2066b", "a\ufeffb", "a\x85b"):
+        for bad in ("a\x1b[2Jb", "a\rb", "a\x00b", "a\u202eb", "a\u200bb", "a\u2066b", "a\ufeffb", "a\x85b",
+                    "a\u2060b", "a\u00adb", "a\U000e0041b", "a\u2028b", "a\u2029b"):
             self.silent(self.req(tool_input={"command": bad}))
             self.silent(self.req(tool_input={"command": "ls", "env": bad}))
+            self.silent(self.req(tool_input={"command": "ls", "env": {"k": ["x", bad]}}))
+            self.silent(self.req(tool_input={"command": "ls", "description": bad}))
             self.silent(self.req(tool_name="Write", tool_input={"content": bad}))
+            self.silent(self.req(tool_name="Write", tool_input={bad: "x"}))
+            self.silent(self.req(tool_name="Write", tool_input={"a": {"b": [bad]}}))
             self.silent(self.req(cwd=bad))
         pr = self.hook(self.req(tool_input={"command": "a\n\tb"}), wait="3")  # newline and tab are fine
         self.assertEqual(self.wait_pending()[0]["summary"], "a\n\tb")

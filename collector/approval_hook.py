@@ -10,13 +10,13 @@ import re
 import stat
 import sys
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 CAP = 2000
 SKIP_TOOLS = ("AskUserQuestion", "ExitPlanMode")  # their prompts are questions or plans, not a command to judge here
-HIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
 def summary_of(tool, inp):
@@ -31,9 +31,26 @@ def summary_of(tool, inp):
     return (s, {}) if len(s) <= CAP else None  # too long to show whole: the normal prompt handles it
 
 
+def hidden(ch):
+    """Characters that could make shown text differ from what runs: controls (but not newline or tab),
+    Unicode format characters (zero-width, bidi, soft hyphen, word joiner, tags, BOM) and line/paragraph separators."""
+    return (unicodedata.category(ch) in ("Cc", "Cf") and ch not in "\n\t") or ch in "\u2028\u2029"
+
+
 def plain(*vals):
-    """True when none of the values has control, bidi or zero-width characters (newline and tab are fine)."""
-    return not any(HIDDEN.search(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)) for v in vals)
+    """True when no string or key anywhere in the values (walked raw, before any JSON encoding) is hidden."""
+    stack = list(vals)
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            if any(hidden(ch) for ch in v):
+                return False
+        elif isinstance(v, dict):
+            stack.extend(v.keys())
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple)):
+            stack.extend(v)
+    return True
 
 
 def decision(behavior):
@@ -52,7 +69,7 @@ def run():
         return None
     cwd = req.get("cwd") if isinstance(req.get("cwd"), str) else ""
     shown = None if tool in SKIP_TOOLS else summary_of(tool, inp)
-    if shown is None or not plain(shown[0], shown[1], cwd, tool):
+    if shown is None or not plain(inp, cwd, tool):
         return None
     home = Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
     try:
