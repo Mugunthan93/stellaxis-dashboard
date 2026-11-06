@@ -25,10 +25,20 @@ def _norm(p: str) -> Path:
     return Path(os.path.normpath(os.path.expanduser(p)))
 
 
+def _entries(wss) -> list[dict]:
+    """The usable config workspaces: a config entry with no id is skipped."""
+    return [w for w in wss if isinstance(w, dict) and isinstance(w.get("id"), str) and w["id"]] if isinstance(wss, list) else []
+
+
+def _folders(w: dict) -> list[str]:
+    fs = w.get("folders")
+    return [f for f in fs if isinstance(f, str)] if isinstance(fs, list) else []
+
+
 def assign(path: str, workspaces: list[dict]) -> str:
     p = _norm(path)
-    for w in workspaces:
-        for f in w.get("folders", []):
+    for w in _entries(workspaces):
+        for f in _folders(w):
             root = _norm(f)
             if p == root or root in p.parents:
                 return w["id"]
@@ -38,16 +48,21 @@ def assign(path: str, workspaces: list[dict]) -> str:
 def app_records(base: Path) -> dict[str, dict]:
     """Desktop app session records under base, keyed by cliSessionId; unreadable or id-less files are skipped."""
     out = {}
-    for f in Path(base).rglob("*.json"):
-        try:
-            d = json.loads(f.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(d, dict) or not d.get("cliSessionId"):
-            continue
-        out[d["cliSessionId"]] = {"app_id": d.get("sessionId"), "title": d.get("title"), "branch": d.get("branch"),
-                                  "source_branch": d.get("sourceBranch"), "created_ms": d.get("createdAt"),
-                                  "archived": bool(d.get("isArchived"))}
+    try:
+        for f in Path(base).rglob("*.json"):
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(d, dict) or not d.get("cliSessionId") or not isinstance(d["cliSessionId"], str):
+                continue
+            branch = d.get("branch")
+            out[d["cliSessionId"]] = {"app_id": d.get("sessionId"), "title": d.get("title"),
+                                      "branch": branch if isinstance(branch, str) else None,
+                                      "source_branch": d.get("sourceBranch"), "created_ms": d.get("createdAt"),
+                                      "archived": bool(d.get("isArchived"))}
+    except OSError:  # a folder macOS won't let us read: keep what was found
+        pass
     return out
 
 
@@ -66,12 +81,11 @@ def repo_state(path: str) -> dict:
     try:
         lines = git("status", "--porcelain=v1", "-b").splitlines()
         remote = bool(git("remote").strip())
+        # every local branch, not just the current one: a branch that was never pushed has no upstream to compare with
+        ahead = int(git("rev-list", "--count", "--branches", "--not", "--remotes")) if remote else 0
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         return {"error": str(e)}
-    head = lines[0] if lines else ""
-    m = re.search(r"\[ahead (\d+)", head)
-    return {"remote": remote, "ahead": int(m.group(1)) if m else 0,
-            "dirty": sum(1 for l in lines if not l.startswith("##"))}
+    return {"remote": remote, "ahead": ahead, "dirty": sum(1 for l in lines if not l.startswith("##"))}
 
 
 _STATE_CACHE: dict[str, tuple[float, dict]] = {}  # path > (time computed, repo_state); errors are cached too
@@ -93,7 +107,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
     """Every session grouped workspace > repo > branch, sessions newest first; `now` (ISO) is for tests."""
     now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
     cut = (now_dt - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
-    wss = list(cfg.get("workspaces") or [])
+    wss = _entries(cfg.get("workspaces"))
     by_path = {p["path"]: p for p in projects}
     tree: dict = {}  # workspace id > repo path > branch > [session]
     cost = {}
@@ -109,6 +123,11 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
         tree.setdefault(wid, {}).setdefault(repo, {}).setdefault(branch, []).append(row)
         if (s.get("last_ts") or "")[:19] >= cut:
             cost[wid] = cost.get(wid, 0) + row["cost"]
+    for w in wss:  # a configured folder with no sessions is a repo with no branches, so it can still be reached
+        for f in _folders(w):
+            root, repos = _norm(f), tree.setdefault(assign(f, wss), {})
+            if root.is_dir() and not any(root == _norm(r) or root in _norm(r).parents for r in repos):
+                repos[f] = {}
     states = repo_states([str(_norm(r)) for repos in tree.values() for r in repos])
     out = []
     for w in [*wss, {"id": "other", "name": "Other"}]:
@@ -613,6 +632,7 @@ def _work(handler, ws: str, cfg: dict) -> bool:
 
 # --- test runs: the argv list configured for a repo runs in a thread; the last result is a file per repo ---
 TEST_TIMEOUT = 900  # seconds
+TEST_DRAIN = 5  # seconds to collect output after the kill; a process that left the group can hold the pipe open
 TEST_TAIL = 40
 _RUNNING: dict[str, float] = {}  # result file name -> start time; in memory, so a restart never leaves a run "running"
 _RUN_LOCK = threading.Lock()
@@ -643,7 +663,12 @@ def _exec(argv: list[str], repo: str) -> tuple[bool, bytes]:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             proc.kill()
-        out, _ = proc.communicate()
+        try:
+            out, _ = proc.communicate(timeout=TEST_DRAIN)
+        except subprocess.TimeoutExpired as e:
+            out = e.output or b""
+            proc.stdout.close()
+            proc.wait()
         return False, out + f"\ntimed out after {TEST_TIMEOUT} seconds".encode()
     except BaseException:
         try:

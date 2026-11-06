@@ -280,11 +280,11 @@ function drawTree() {
   if (!w) { $("tree").innerHTML = `<div class="empty">${data ? "No such workspace." : "Loading…"}</div>`; return; }
   $("title").textContent = w.name;
   document.title = w.name + " · Stellaxis";
-  const repos = w.repos.map(r => ({ r, bs: r.branches.map(b => ({ name: b.name, rows: b.sessions.filter(s => showArch || !s.archived) })).filter(b => b.rows.length) })).filter(x => x.bs.length);
+  const repos = w.repos.map(r => ({ r, bs: r.branches.map(b => ({ name: b.name, rows: b.sessions.filter(s => showArch || !s.archived) })).filter(b => b.rows.length) })).filter(x => x.bs.length || !x.r.branches.length);
   $("tree").innerHTML = repos.length ? repos.map(({ r, bs }) => {
     const k = "r:" + r.path;
     return `<details class="repo" data-k="${esc(k)}" ${shut.has(k) ? "" : "open"}><summary><span class="mono">${esc(r.path)}</span>`
-      + (r.exists ? "" : ` <span class="pill crit">missing</span>`) + `</summary><div>` + bs.map(b => {
+      + (r.exists ? "" : ` <span class="pill crit">missing</span>`) + `</summary><div>` + (bs.length ? "" : `<p class="hint">No sessions yet.</p>`) + bs.map(b => {
         const bk = k + "|" + b.name;
         return `<details class="branch" data-k="${esc(bk)}" ${shut.has(bk) ? "" : "open"}><summary>${esc(b.name)} <span class="m muted">${b.rows.length}</span></summary><ul class="rows">`
           + b.rows.map(s => `<li><span class="t">${esc(label(s))}</span><span class="m">${esc(ago(s.first_ts))}</span>`

@@ -210,6 +210,18 @@ class Service(unittest.TestCase):
             run.assert_not_called()
 
 
+class IndexFailure(unittest.TestCase):
+    def test_index_error_stays_on_the_idle_status(self):
+        snap = {"generated_at": "g", "meta": {"elapsed_ms": 1}, "sessions": [], "projects": []}
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "STX_HOME", Path(t)), \
+                mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
+                mock.patch.object(C.workspaces, "build_index", side_effect=ValueError("boom")):
+            C.collect({"x": 1})
+            st = json.loads(Path(t, "status.json").read_text())
+        self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
+        self.assertIn("index_error", (REPO / "dashboard" / "shell.html").read_text())
+
+
 class Probes(unittest.TestCase):
     def test_project_mcp_files_are_never_spawned(self):
         items = [{"kind": "mcp", "name": "e", "scope": "project", "_conf": {"command": "evil"}, "conf_hash": "a"},

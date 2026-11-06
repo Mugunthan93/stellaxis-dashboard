@@ -1262,8 +1262,8 @@ def load_history(limit=2000) -> list:
 _lock = threading.Lock()
 
 
-def write_index(cfg: dict, snap: dict):
-    """workspaces.json: every session (not just the capped snapshot ones); never fails a collection."""
+def write_index(cfg: dict, snap: dict) -> str | None:
+    """workspaces.json: every session (not just the capped snapshot ones); never fails a collection, returns the error."""
     sessions = cfg.pop("_sessions_all", None)
     try:
         import workspaces
@@ -1271,7 +1271,8 @@ def write_index(cfg: dict, snap: dict):
             sessions if sessions is not None else snap["sessions"], snap["projects"],
             workspaces.app_records(workspaces.app_base()), cfg))
     except Exception as e:  # noqa: BLE001
-        status("workspace index failed", error=str(e))
+        return f"{type(e).__name__}: {e}"
+    return None
 
 
 def collect(cfg=None, probe=False) -> dict:
@@ -1296,8 +1297,8 @@ def collect(cfg=None, probe=False) -> dict:
         snap["history"] = load_history()
         write_json(STX_HOME / "snapshot.json", snap)
         status("indexing workspaces")
-        write_index(cfg, snap)
-        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"])
+        err = write_index(cfg, snap)
+        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err)
         return snap
 
 

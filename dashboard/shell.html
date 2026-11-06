@@ -136,8 +136,9 @@
     try {
       const st = await (await fetch("/api/status", { cache: "no-store" })).json();
       const busy = st.phase && st.phase !== "idle";
-      box.dataset.state = busy ? "busy" : "ok";
-      text.textContent = busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
+      const failed = !busy && st.index_error;
+      box.dataset.state = failed ? "down" : busy ? "busy" : "ok";
+      text.textContent = failed ? "Workspace index failed: " + String(st.index_error).slice(0, 120) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
     } catch {
       box.dataset.state = "down";
       text.textContent = "Collector unreachable";

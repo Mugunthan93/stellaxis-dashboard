@@ -74,6 +74,36 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(i["workspaces"][0]["cost_30d"], 6.0)
 
 
+    def test_configured_folder_with_no_sessions_is_a_repo_with_no_branches(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x", t, t + "/gone"]}]}
+            repos = W.build_index(SESSIONS, PROJECTS, {}, cfg)["workspaces"][0]["repos"]
+            self.assertEqual([r["path"] for r in repos], ["~/code/x", t])
+            self.assertEqual((repos[1]["abs"], repos[1]["exists"], repos[1]["branches"]), (str(W._norm(t)), True, []))
+
+    def test_folder_is_not_seeded_when_it_has_sessions_under_it_or_another_spelling(self):
+        with tempfile.TemporaryDirectory() as t:
+            r = t + "/repo"
+            os.mkdir(r)
+            sess = [{"id": "a", "project": r, "branch": "b", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 1}]
+            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": [t, r + "/"]}]}
+            self.assertEqual([x["path"] for x in W.build_index(sess, [], {}, cfg)["workspaces"][0]["repos"]], [r])
+
+    def test_folder_in_two_workspaces_shows_in_the_first(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg = {"workspaces": [{"id": "x", "folders": [t]}, {"id": "y", "folders": [t]}]}
+            wss = W.build_index([], [], {}, cfg)["workspaces"]
+            self.assertEqual([len(w["repos"]) for w in wss], [1, 0, 0])
+
+    def test_config_entry_with_no_id_is_skipped(self):
+        bad = [{"name": "noid", "folders": ["~/code/x"]}, "text", {"id": ["x"]}, {"id": "x", "name": "X", "folders": ["~/code/x"]}]
+        self.assertEqual(W.assign("~/code/x", bad), "x")
+        i = W.build_index(SESSIONS, PROJECTS, {}, {"workspaces": bad})
+        self.assertEqual([w["id"] for w in i["workspaces"]], ["x", "other"])
+        self.assertEqual([w["id"] for w in W.build_index([], [], {}, {"workspaces": "x"})["workspaces"]], ["other"])
+        self.assertEqual(W.build_index([], [], {}, {"workspaces": [{"id": "x", "folders": "~/code/x"}]})["workspaces"][0]["repos"], [])
+
+
 class AssignTest(unittest.TestCase):
     def test_worktree_belongs_to_its_repo(self):
         self.assertEqual(W.assign("~/code/ph-admin/.claude/worktrees/x", WS), "ph")
@@ -112,6 +142,22 @@ class AppRecordsTest(unittest.TestCase):
 
     def test_missing_folder_is_empty(self):
         self.assertEqual(W.app_records(self.base / "nope"), {})
+
+    def test_unhashable_id_and_branch_do_not_break_the_index(self):
+        self.write("a.json", {"cliSessionId": ["x"]})
+        self.write("b.json", {"cliSessionId": "ok", "branch": ["x"]})
+        rec = W.app_records(self.base)
+        self.assertEqual(list(rec), ["ok"])
+        s = {"id": "ok", "project": "~/code/x", "branch": "main", "first_ts": "t", "last_ts": "t", "cost": 0}
+        self.assertEqual(W.build_index([s], [], rec, {})["workspaces"][-1]["repos"][0]["branches"][0]["name"], "main")
+
+    def test_unreadable_folder_keeps_what_was_found(self):
+        def walk(_, __):
+            (self.base / "a.json").write_text(json.dumps({"cliSessionId": "ok"}))
+            yield self.base / "a.json"
+            raise PermissionError("no")
+        with mock.patch.object(Path, "rglob", walk):
+            self.assertEqual(list(W.app_records(self.base)), ["ok"])
 
 
 class LiveTest(unittest.TestCase):
@@ -260,6 +306,25 @@ class RepoStateTest(unittest.TestCase):
         self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 0, "dirty": 0})
         self.commit(clone, "g")
         self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 1, "dirty": 0})
+
+    def test_new_local_branch_with_no_upstream_counts(self):
+        src = self.repo("src")
+        self.commit(src, "f")
+        clone = Path(self.tmp.name) / "clone"
+        self.git(self.tmp.name, "clone", "-q", str(src), str(clone))
+        self.git(clone, "config", "user.name", "t")
+        self.git(clone, "config", "user.email", "t@example.com")
+        self.git(clone, "switch", "-q", "-c", "feature")
+        self.commit(clone, "g")
+        self.commit(clone, "h")
+        self.git(clone, "switch", "-q", "main")  # not even the current branch
+        self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 2, "dirty": 0})
+
+    def test_clone_of_an_empty_repo_is_not_an_error(self):
+        src = self.repo("src")
+        clone = Path(self.tmp.name) / "clone"
+        self.git(self.tmp.name, "clone", "-q", str(src), str(clone))
+        self.assertEqual(W.repo_state(str(clone)), {"remote": True, "ahead": 0, "dirty": 0})
 
     def test_missing_folder_is_error(self):
         self.assertIn("error", W.repo_state(str(Path(self.tmp.name) / "nope")))
@@ -1079,6 +1144,17 @@ class ActionApiTest(unittest.TestCase):
             W.run_tests(self.repo, ws)
             r = self.wait_done(ws)
         self.assertEqual(r["ok"], False)
+        self.assertIn("timed out", r["tail"])
+
+    def test_process_that_left_the_group_cannot_hold_the_run_open(self):
+        code = ("import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'], "
+                "start_new_session=True); print('slow', flush=True); time.sleep(30)")
+        ws = self.cfg_tests(self.py(code))
+        with mock.patch.object(W, "TEST_TIMEOUT", 1), mock.patch.object(W, "TEST_DRAIN", 0.2):
+            W.run_tests(self.repo, ws)
+            r = self.wait_done(ws)
+        self.assertEqual(r["ok"], False)
+        self.assertIn("slow", r["tail"])
         self.assertIn("timed out", r["tail"])
 
     def test_timeout_kills_the_whole_process_group(self):
