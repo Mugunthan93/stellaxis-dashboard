@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -615,6 +616,7 @@ TEST_TIMEOUT = 900  # seconds
 TEST_TAIL = 40
 _RUNNING: dict[str, float] = {}  # result file name -> start time; in memory, so a restart never leaves a run "running"
 _RUN_LOCK = threading.Lock()
+_LAST: dict[str, dict] = {}  # results that could not be written to disk
 
 
 def _test_file(repo: str) -> Path:
@@ -629,25 +631,63 @@ def _test_argv(repo: str, ws: dict) -> list[str] | None:
     return None
 
 
+def _exec(argv: list[str], repo: str) -> tuple[bool, bytes]:
+    """Run argv in its own process group; on timeout the whole group is killed."""
+    proc = subprocess.Popen(argv, cwd=str(_norm(repo)), shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=TEST_TIMEOUT)
+        return proc.returncode == 0, out
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        out, _ = proc.communicate()
+        return False, out + f"\ntimed out after {TEST_TIMEOUT} seconds".encode()
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.wait()
+        raise
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def _run_one(argv: list[str], repo: str, f: Path) -> None:
+    tmp = None
     try:
-        r = subprocess.run(argv, cwd=str(_norm(repo)), shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, timeout=TEST_TIMEOUT)
-        ok, out = r.returncode == 0, r.stdout
-    except subprocess.TimeoutExpired as e:
-        ok, out = False, (e.stdout or b"") + f"\ntimed out after {TEST_TIMEOUT} seconds".encode()
-    except OSError as e:
-        ok, out = False, f"could not run: {e}".encode()
-    tail = "\n".join(out.decode("utf-8", errors="replace").splitlines()[-TEST_TAIL:])
-    try:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=f.parent, suffix=".tmp")
-        with os.fdopen(fd, "w") as fh:
-            json.dump({"repo": repo, "ok": ok, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "tail": tail}, fh)
-        os.replace(tmp, f)
-    except OSError:
-        pass
+        try:
+            ok, out = _exec(argv, repo)
+        except Exception as e:  # a NUL in argv, a missing command, anything else
+            ok, out = False, f"could not run: {e}".encode()
+        tail = "\n".join(out.decode("utf-8", errors="replace").splitlines()[-TEST_TAIL:])
+        res = {"repo": repo, "ok": ok, "finished": _now(), "tail": tail}
+        try:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=f.parent, suffix=".tmp")
+            with os.fdopen(fd, "w") as fh:
+                json.dump(res, fh)
+            os.replace(tmp, f)
+            tmp = None
+            with _RUN_LOCK:
+                _LAST.pop(f.name, None)
+        except Exception:  # can't write: keep it in memory so the page shows this run, not an older one
+            with _RUN_LOCK:
+                _LAST[f.name] = res
+    except BaseException:
+        with _RUN_LOCK:
+            _LAST[f.name] = {"repo": repo, "ok": False, "finished": _now(), "tail": "test run crashed"}
     finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         with _RUN_LOCK:
             _RUNNING.pop(f.name, None)
 
@@ -678,12 +718,13 @@ def test_results(ws: dict) -> list[dict]:
         if _test_argv(repo, ws) is None:
             continue
         f = _test_file(repo)
-        try:
-            d = json.loads(f.read_text())
-        except (OSError, ValueError):
-            d = {}
         with _RUN_LOCK:
-            running = f.name in _RUNNING
+            running, d = f.name in _RUNNING, _LAST.get(f.name)
+        if d is None:
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, ValueError):
+                d = {}
         out.append({"repo": repo, "running": running, "ok": d.get("ok"), "finished": d.get("finished"), "tail": d.get("tail", "")})
     return out
 

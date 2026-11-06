@@ -1081,6 +1081,49 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(r["ok"], False)
         self.assertIn("timed out", r["tail"])
 
+    def test_timeout_kills_the_whole_process_group(self):
+        pidf = self.dir / "child.pid"
+        code = ("import subprocess, sys, time; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                f"open({str(pidf)!r}, 'w').write(str(c.pid)); time.sleep(60)")
+        ws = self.cfg_tests(self.py(code))
+        with mock.patch.object(W, "TEST_TIMEOUT", 1.5):
+            W.run_tests(self.repo, ws)
+            r = self.wait_done(ws)
+        self.assertEqual(r["ok"], False)
+        pid = int(pidf.read_text())
+        for _ in range(30):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("child outlived the timeout")
+
+    def test_odd_argv_records_failure_and_never_sticks_running(self):
+        ws = self.cfg_tests(["a\0b"])
+        W.run_tests(self.repo, ws)
+        r = self.wait_done(ws)
+        self.assertEqual(r["ok"], False)
+        self.assertIn("could not run", r["tail"])
+        W.run_tests(self.repo, ws)  # not stuck
+        self.wait_done(ws)
+
+    def test_unwritable_result_stays_in_memory_and_leaves_no_temp(self):
+        ws = self.cfg_tests(self.py("print('first')"))
+        W.run_tests(self.repo, ws)
+        self.assertTrue(self.wait_done(ws)["ok"])
+        ws = self.cfg_tests(self.py("import sys; print('second'); sys.exit(1)"))
+        with mock.patch.object(W.os, "replace", side_effect=OSError("disk full")):
+            W.run_tests(self.repo, ws)
+            r = self.wait_done(ws)
+        self.assertEqual((r["ok"], r["tail"]), (False, "second"))
+        self.assertEqual([p.name for p in W._test_file(self.repo).parent.glob("*.tmp")], [])
+        ws = self.cfg_tests(self.py("print('third')"))  # a good write supersedes memory
+        W.run_tests(self.repo, ws)
+        self.assertEqual(self.wait_done(ws)["tail"], "third")
+
     def test_missing_command_records_failure_and_tilde_repo_matches(self):
         ws = self.cfg_tests(["/nonexistent/cmd"])
         W.run_tests(self.repo, ws)

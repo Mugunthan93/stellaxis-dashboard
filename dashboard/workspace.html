@@ -204,8 +204,7 @@ function drawTests() {
       + `<button class="btn small" type="button" data-run="${esc(t.repo)}" ${t.running ? "disabled" : ""}>Run tests</button>`
       + (t.tail ? `<div class="reply mono" style="flex-basis:100%">${esc(t.tail)}</div>` : "") + `</li>`).join("") + `</ul>` : "")
     + (folders.filter(f => !shown.has(f)).length ? `<h3>Repos</h3><ul class="rows">` + folders.filter(f => !shown.has(f)).map(f => `<li><span class="t mono">${esc(f)}</span><span class="m">No test command set</span></li>`).join("") + `</ul>` : "");
-  clearTimeout(testTimer);
-  if (rs.some(t => t.running)) testTimer = setTimeout(() => { if (tab === "tests") loadWork(true); }, 2000);
+  rearm();
 }
 let testTimer = 0;
 $("tests").addEventListener("click", async e => {
@@ -217,14 +216,18 @@ $("tests").addEventListener("click", async e => {
   drawTests();
 });
 async function loadWork(force) {
-  if (workBusy || (!force && Date.now() - workAt < 60000)) return;
+  if (workBusy || (!force && Date.now() - workAt < 60000)) return rearm();
   workBusy = true;
   try {
     const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/work", { cache: "no-store" });
     if (!r.ok) throw 0;
     work = await r.json(); workAt = Date.now(); drawWork();
   } catch { if (!work) $("plans").innerHTML = $("routines").innerHTML = $("tests").innerHTML = `<div class="empty">Couldn't load this view.</div>`; }
-  finally { workBusy = false; }
+  finally { workBusy = false; rearm(); }
+}
+function rearm() {  // while a test run is active, keep polling even if a fetch failed or was skipped
+  clearTimeout(testTimer);
+  if (tab === "tests" && work && work.tests.some(t => t.running)) testTimer = setTimeout(() => loadWork(true), 2000);
 }
 let seq = 0, shownRows, adding = false;  // seq: only the newest list request may set taskRows
 function drawTasks() {  // only the list is redrawn, and only when it changed, so typing and keyboard focus survive a poll
