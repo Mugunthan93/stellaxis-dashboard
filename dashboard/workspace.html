@@ -67,7 +67,7 @@ a { color: var(--accent); }
 .btn { display: inline-block; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; color: var(--ink); text-decoration: none; }
 .btn:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--accent); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
-.btn.small { padding: 2px 10px; font-size: 0.82rem; }
+.btn.small { display: inline-flex; align-items: center; padding: 2px 10px; font-size: 0.82rem; line-height: 1.4; white-space: nowrap; }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 @media (pointer: coarse) { .btn { min-height: 44px; } }
 .inp { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 10px; width: 100%; min-width: 0; font: inherit; color: inherit; }
@@ -140,7 +140,10 @@ const msgBox = s => {
     + (m.reply ? `<div class="reply">${esc(m.reply)}</div>` : "") + `</div>`;
 };
 function keepDrafts() {  // read typed text back before a redraw replaces the boxes
-  for (const t of $("tree").querySelectorAll("textarea[data-id]")) if (msg[t.dataset.id]) msg[t.dataset.id].draft = t.value;
+  for (const t of $("tree").querySelectorAll("textarea[data-id]")) {
+    const m = msg[t.dataset.id];
+    if (m && !m.busy && !m.sent) m.draft = t.value;  // a sent box was cleared; typing after that is kept by the input handler
+  }
 }
 function draw() {
   keepDrafts();
@@ -182,8 +185,8 @@ const newer = (ts, base) => !!ts && (base == null || Date.parse(ts) > Date.parse
 async function send(sid) {
   const m = msg[sid], text = (m.draft || "").trim();
   if (!text || m.busy) return;
-  m.busy = true; m.error = ""; m.sent = false; m.reply = ""; clearInterval(m.timer); m.timer = null; draw();
-  const base = (await getReply(sid).catch(() => null) || {}).ts ?? null;
+  m.busy = true; m.error = ""; m.sent = false; m.reply = ""; clearTimeout(m.timer); m.timer = null; draw();
+  const first = await getReply(sid).catch(() => null), base = first ? first.ts ?? null : undefined;  // undefined: can't tell old from new
   try {
     await post("/api/sessions/" + encodeURIComponent(sid) + "/message", { prompt: text });
     m.sent = true; m.draft = "";
@@ -191,15 +194,17 @@ async function send(sid) {
     m.error = e.message + (e.copy ? " A copy was started as " + e.copy + "." : "");
   }
   m.busy = false;
-  if (m.sent) {
+  if (m.sent && base !== undefined) {
     const end = Date.now() + 120000;
-    m.timer = setInterval(async () => {
+    const poll = async () => {  // chained, so /reply calls never overlap
       const r = await getReply(sid).catch(() => null);
-      if (r && newer(r.ts, base)) { m.reply = r.text || ""; clearInterval(m.timer); m.timer = null; }
-      else if (Date.now() > end) { clearInterval(m.timer); m.timer = null; }
-      else return;
+      if (m.timer !== me) return;  // closed or re-sent meanwhile
+      if (r && newer(r.ts, base)) { m.reply = r.text || ""; m.timer = null; }
+      else if (Date.now() > end) m.timer = null;
+      else { m.timer = me = setTimeout(poll, 3000); return; }
       draw();
-    }, 3000);
+    };
+    let me = m.timer = setTimeout(poll, 3000);
   }
   draw();
 }
@@ -208,7 +213,7 @@ $("tree").addEventListener("click", e => {
   if (!b) return;
   const sid = b.dataset.id, m = msg[sid] || (msg[sid] = {});
   if (b.dataset.act === "msg") { m.open = !m.open; draw(); if (m.open) { const t = $("tree").querySelector(`textarea[data-id="${CSS.escape(sid)}"]`); if (t) t.focus(); } }
-  else if (b.dataset.act === "close") { m.open = false; clearInterval(m.timer); m.timer = null; draw(); }
+  else if (b.dataset.act === "close") { m.open = false; clearTimeout(m.timer); m.timer = null; draw(); }
   else if (b.dataset.act === "send") { keepDrafts(); send(sid); }
 });
 $("tree").addEventListener("input", e => { const t = e.target; if (t.dataset && t.dataset.id && msg[t.dataset.id]) msg[t.dataset.id].draft = t.value; });
