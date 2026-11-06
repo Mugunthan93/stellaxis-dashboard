@@ -79,10 +79,12 @@ the denial.
   setting, so it needs the owner's yes.
 - While the hook waits, the app's own prompt doesn't appear. So it stays off per session unless you
   switch on "Approve from page", and if the wait times out the normal prompt appears.
-- **A session could approve its own request.** `Bash(curl:*)` and `Bash(nc:*)` are always allowed, and
-  the approval endpoint is on localhost, so a session could call it without you. Sessions run as the
-  same Mac user, so no secret file stops this. The fix is removing those two rules, so `curl` to that
-  endpoint needs approval from you.
+- **A session can still approve its own request.** Page approval is a convenience, not a security
+  boundary. Sessions run as the same Mac user, and your always-allow rules include `Write`, `Edit`,
+  `Bash(cp:*)`, `Bash(tee:*)`, `Bash(npm:*)` and others. So a session (or a subagent working while the
+  session waits) could write the answer file or call the approval endpoint, and removing `curl` and
+  `nc` doesn't close that. A session that tries it is acting against your instructions, but the design
+  doesn't prevent it. A deny rule on `~/.stellaxis/approvals` narrows the gap, not fully.
 
 **Not tested on purpose:** resuming a real session from the command line while it is open in the app.
 
