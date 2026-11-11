@@ -25,7 +25,7 @@ def setup_reader(ctx) -> None:
     if "collector" not in ctx.inputs or "files" not in ctx.memo:   # round one failed: its error is the one to show
         return
     col, files, rows = ctx.inputs["collector"], ctx.memo["files"], ctx.memo["sessions"]
-    items, projects, meta = setup.inventory(ctx, {st["cwd"] for st in files.values() if st.get("cwd")})
+    items, projects, meta = setup.inventory(ctx, ctx.read("project_management", "repos"))
     probes = (setup.run_probes(items, ctx.cfg, ctx.cache, ctx.status, col["version"]) if col.get("probe")
               else ctx.cache.get("probes", {}))
     snap = snapshot.build(ctx, rows, len(files), items, projects, meta, probes, ctx.memo["t0"])
@@ -34,17 +34,9 @@ def setup_reader(ctx) -> None:
     snapshot.append_history(ctx.home, snap)
     snap["history"] = snapshot.load_history(ctx.home)
     write_json(ctx.home / "snapshot.json", snap)
-    ctx.memo["folders"] = snap["projects"]
     records.save_items(ctx, snap["items"])
 
 
-def _pass(ctx) -> list:
-    """This pass's session rows and the folders of its snapshot, until Project management reads them itself."""
-    memo = ctx.memo
-    if "sessions" in memo and "folders" in memo:
-        return [{"sessions": memo["sessions"], "folders": memo["folders"]}]
-    return []
-
-
 COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader], lines=usage.LINES,
-                      records=records.RECORDS, offers={"sessions": records.sessions, "items": records.items, "pass": _pass})
+                      records=records.RECORDS, reads=[("project_management", "repos")],
+                      offers={"sessions": records.sessions, "items": records.items})

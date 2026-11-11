@@ -62,7 +62,11 @@ def save_items(ctx, items: list) -> None:
 
 
 def sessions(ctx, hours: bool = False) -> list:
-    """[{"id", "project", "first_ts", "last_ts", "branch", "cost"}] from the store, with "hours": {hour: cost} when asked."""
+    """[{"id", "project", "first_ts", "last_ts", "branch", "cost"}]: this pass's rows while a pass holds them, else the
+    store's; with "hours": {hour: cost} when asked, always from the store."""
+    rows = ctx.memo.get("sessions")
+    if rows is not None and not hours:
+        return [{k: r[k] for k in ("id", "project", "first_ts", "last_ts", "branch", "cost")} for r in rows]
     with closing(ctx.db()) as db:
         out = []
         for r in db.execute("SELECT * FROM claude_management_sessions ORDER BY last_ts DESC, id"):

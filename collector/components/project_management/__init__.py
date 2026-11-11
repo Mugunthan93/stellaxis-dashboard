@@ -3,38 +3,49 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from core import transcripts
 from core.component import Component
 from core.server import ApiError, host_ok, read_body, send_json
 from core.undo import pre
 from core.util import short_path, write_json
 
-from . import centre, old_names
+from . import centre, old_names, records, repos
 
 
-def _round_one(ctx) -> None:
-    """Nothing yet: the index needs what Claude management writes in round one."""
+def repos_reader(ctx) -> None:
+    """Round one: the repos of this Mac and the sessions of the transcripts, kept for round two; the repos also in the store."""
+    if "collector" not in ctx.inputs:
+        return
+    with centre.at(ctx):
+        files = ctx.transcripts()
+        found = repos.discover(ctx, {st["cwd"] for st in files.values() if st.get("cwd")})
+        ctx.memo.update(repos=found, sessions=transcripts.sessions(files))
+        records.save_repos(ctx, found)
 
 
 def index_reader(ctx) -> None:
-    """The project index, and beside it the same index under the old names; a pass that is neither a collection nor
-    given sessions leaves them alone. The sessions and folders come from the inputs when given, else from Claude management;
-    when it gave nothing (it failed or is gone) the last good index stays."""
-    if "sessions" not in ctx.inputs and "collector" not in ctx.inputs:
+    """Round two: the project index, and beside it the same index under the old names. The cost of each session comes
+    from Claude management (0 when it gives none). When round one failed, the last good index stays."""
+    if "collector" not in ctx.inputs or "sessions" not in ctx.memo or "repos" not in ctx.memo:
         return
-    ctx.status("indexing projects")
-    if "sessions" in ctx.inputs:
-        sessions, folders = ctx.inputs["sessions"], ctx.inputs["folders"]
-    else:
-        got = ctx.read("claude_management", "pass")
-        if not got:
-            return
-        sessions, folders = got[0]["sessions"], got[0]["folders"]
     with centre.at(ctx):
+        ctx.status("indexing projects")
         cfg = old_names.config(ctx.cfg)
         centre.clear_stale(centre.live(centre._bin(cfg)))
-        index = centre.build_index(sessions, folders, centre.app_records(centre.app_base()), cfg)
-        write_json(centre._home() / centre.INDEX_FILE, index)
-        write_json(centre._home() / old_names.INDEX_FILE, old_names.answer(index))
+        costs = {r["id"]: r["cost"] for r in ctx.read("claude_management", "sessions")}
+        rows = sorted(({"id": s["id"], "project": short_path(s["cwd"]) if s["cwd"] else "(unknown)", "first_ts": s["first_ts"],
+                        "last_ts": s["last_ts"], "cost": costs.get(s["id"]) or 0, "branch": s["branch"]}
+                       for s in ctx.memo["sessions"].values()), key=lambda r: r["last_ts"] or "", reverse=True)
+        index = centre.build_index(rows, ctx.memo["repos"], centre.app_records(centre.app_base()), cfg)
+        records.save_index(ctx, index, {r["id"]: i for i, r in enumerate(rows)})
+        write_json(ctx.home / centre.INDEX_FILE, records.index(ctx, costs) or index)
+        write_json(ctx.home / old_names.INDEX_FILE, old_names.answer(index))
+
+
+def _repos(ctx) -> list:
+    """The repos found: this pass's while a pass holds them, else the store's."""
+    memo = ctx.memo
+    return memo["repos"] if "repos" in memo else records.repos(ctx)
 
 
 def _user_config(f: Path) -> dict | None:
@@ -155,7 +166,8 @@ def _approvals(ctx) -> list:
 
 centre.index_fallback = old_names.index
 
-COMPONENT = Component(name="project_management", readers=[_round_one, index_reader], handle=handle,
-                      reads=[("claude_management", "pass")],
+COMPONENT = Component(name="project_management", readers=[repos_reader, index_reader], handle=handle,
+                      records=records.RECORDS, reads=[("claude_management", "sessions")],
                       actions={"new_names": new_names}, undo={"project_management.old_config_keys": _old_config_keys},
-                      offers={"index": _index, "projects": _projects, "live": _live, "approvals": _approvals})
+                      offers={"index": _index, "projects": _projects, "live": _live, "approvals": _approvals,
+                              "repos": _repos, "sessions": records.sessions})

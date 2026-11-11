@@ -19,6 +19,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 sys.path.insert(0, str(REPO / "tests"))
+import core.util
 from core import server
 from core.app import Core
 from core.component import import_folder
@@ -33,6 +34,15 @@ W = PM.centre
 O = PM.old_names
 OLD_CFG = {"claude_bin": "/no/claude", "workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x"], "routines": ["r"]}],
            "projects": [{"name": "A card"}]}
+COLLECTOR = {"collector": {"version": "t", "probe": False, "reels": None, "project_notes": []}}
+
+
+def transcript(claude: Path, sid: str, cwd: Path) -> None:
+    """A one-line transcript of the session `sid`, run in `cwd`."""
+    f = claude / "projects" / "p" / f"{sid}.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"type": "user", "sessionId": sid, "cwd": str(cwd), "gitBranch": "main",
+                             "timestamp": "2026-11-01T00:00:00Z"}) + "\n")
 
 
 class NamesTest(unittest.TestCase):
@@ -113,10 +123,11 @@ class ComponentTest(unittest.TestCase):
         return self.call("POST", path, body)
 
     def run_pass(self):
-        row = {"id": "s1", "project": "~/code/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z", "cost": 1, "branch": "main"}
-        stray = {**row, "id": "s2", "project": "~/nowhere/y"}
-        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            return self.core.run_pass(dict(OLD_CFG), {"sessions": [row, stray], "folders": []})
+        transcript(self.home / ".claude", "s1", self.home / "code" / "x")
+        transcript(self.home / ".claude", "s2", self.home / "nowhere" / "y")
+        with mock.patch.object(core.util, "HOME", self.home), mock.patch.object(W, "live", return_value=[]), \
+                mock.patch.object(W, "app_records", return_value={}):
+            return self.core.run_pass({**OLD_CFG, "scan_roots": []}, COLLECTOR)
 
     def test_a_pass_with_an_old_config_writes_both_index_files(self):
         res = self.run_pass()
@@ -192,9 +203,6 @@ class OldRoutes(test_hardening.RouteMatrix):
                 ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200)]
 
 
-ROW = {"id": "s1", "project": "~/code/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z", "cost": 1, "branch": "main"}
-
-
 class RenameTest(unittest.TestCase):
     """The action new_names through the real Handler, on a fake home; prune.py runs as a child process."""
     def setUp(self):
@@ -236,8 +244,10 @@ class RenameTest(unittest.TestCase):
         return self.call("POST", path, body)
 
     def listed(self):
-        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            res = C.the_core().run_pass(C.load_config(), {"sessions": [ROW], "folders": []})
+        transcript(self.home / ".claude", "s1", self.root / "code" / "x")
+        with mock.patch.object(core.util, "HOME", self.root), mock.patch.object(W, "live", return_value=[]), \
+                mock.patch.object(W, "app_records", return_value={}):
+            res = C.the_core().run_pass({**C.load_config(), "scan_roots": []}, COLLECTOR)
         self.assertEqual(res["components"]["project_management"]["errors"], [])
         return [p["id"] for p in self.get("/api/projects")[1]["projects"]]
 

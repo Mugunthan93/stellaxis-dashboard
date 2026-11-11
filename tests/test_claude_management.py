@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO / "collector"))
 sys.path.insert(0, str(REPO / "tests"))
 from core.app import Core
 from core.component import import_folder
+from core.util import short_path
 
 import test_hardening
 
@@ -25,6 +26,7 @@ C = test_hardening.C
 COMPS = REPO / "collector" / "components"
 CENTRE = import_folder(COMPS / "project_management").centre
 CM = import_folder(COMPS / "claude_management")
+PM = import_folder(COMPS / "project_management")
 CFG = {"scan_roots": [], "claude_bin": "/no/claude", "pricing": {"claude-opus-5-5": {"in": 4.0, "out": 20.0, "cache_read": 0.2}}}
 COST = (1000 * 4.0 + 100 * 20.0) / 1e6
 
@@ -61,7 +63,29 @@ class ClaudeManagementTest(unittest.TestCase):
     def test_the_component_loads(self):
         core = Core(self.stx, self.claude, COMPS)
         [c] = [c for c in core.components if c.name == "claude_management"]
-        self.assertEqual((c.error, len(c.readers), c.lines is not None, sorted(c.offers)), (None, 2, True, ["items", "pass", "sessions"]))
+        self.assertEqual((c.error, len(c.readers), c.lines is not None, sorted(c.offers)), (None, 2, True, ["items", "sessions"]))
+        self.assertEqual([tuple(r) for r in c.reads], [("project_management", "repos")])
+
+    def index_ids(self):
+        idx = json.loads((self.stx / "projects.json").read_text())
+        return [s["id"] for p in idx["projects"] for r in p["repos"] for b in r["branches"] for s in b["sessions"]]
+
+    def test_the_items_of_a_repo_come_from_the_repos_project_management_found(self):
+        snap = C.collect(dict(CFG))
+        self.assertIn(f"claude_md:project:{short_path(self.app)}:CLAUDE.md", [it["id"] for it in snap["items"]])
+        self.assertEqual([p["path"] for p in snap["projects"]], [short_path(self.app)])
+
+    def test_without_project_management_only_the_macs_own_items_are_listed(self):
+        [pm] = [c for c in C.the_core().components if c.name == "project_management"]
+        def boom(ctx, **args):
+            raise RuntimeError("gone")
+        with mock.patch.dict(pm.offers, {"repos": boom}):
+            snap = C.collect(dict(CFG))
+        ids = [it["id"] for it in snap["items"]]
+        self.assertIn("skill:user:foo", ids)
+        self.assertFalse([i for i in ids if i.startswith("claude_md:project:")])
+        self.assertEqual([s["id"] for s in snap["sessions"]], ["s1"])
+        self.assertEqual([(p["path"], p["sessions"]) for p in snap["projects"]], [(short_path(self.app), 1)])
 
     def test_a_collection_writes_the_snapshot_and_the_rows(self):
         snap = C.collect(dict(CFG))
@@ -103,9 +127,14 @@ class ClaudeManagementTest(unittest.TestCase):
         (self.stx / "stellaxis.db").mkdir()
         snap = C.collect(dict(CFG))
         self.assertIn("skill:user:foo", [it["id"] for it in snap["items"]])
+        self.assertIn(f"claude_md:project:{short_path(self.app)}:CLAUDE.md", [it["id"] for it in snap["items"]])
         st = self.status()
         self.assertTrue(st["core_error"])
         self.assertIsNone(st["index_error"])
+        idx = json.loads((self.stx / "projects.json").read_text())
+        [s] = idx["projects"][0]["repos"][0]["branches"][0]["sessions"]
+        self.assertEqual((s["id"], s["cost"]), ("s1", snap["sessions"][0]["cost"]))
+        self.assertGreater(s["cost"], 0)
 
     def test_a_pass_that_is_not_a_collection_reads_nothing(self):
         res = C.the_core().run_pass(dict(CFG))
@@ -129,11 +158,17 @@ class ClaudeManagementTest(unittest.TestCase):
 
     def test_a_failed_collection_keeps_the_last_good_index(self):
         C.collect(dict(CFG))
+        other = self.claude / "projects" / "p" / "s2.jsonl"
+        other.write_text(self.transcript.read_text().replace('"s1"', '"s2"').replace('"m1"', '"m9"'))
+        with mock.patch.object(PM.repos, "discover", side_effect=KeyError("k")):
+            snap = C.collect(dict(CFG))
+        self.assertEqual(self.index_ids(), ["s1"])                  # Project management's own round one failed
+        self.assertEqual(self.status()["index_error"], "project_management: KeyError: 'k'")
+        self.assertEqual(sorted(s["id"] for s in snap["sessions"]), ["s1", "s2"])
+        self.assertIn(f"claude_md:project:{short_path(self.app)}:CLAUDE.md", [it["id"] for it in snap["items"]])   # the repos of the last good pass
         with mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
             C.collect(dict(CFG))
-        idx = json.loads((self.stx / "projects.json").read_text())
-        ids = [s["id"] for p in idx["projects"] for r in p["repos"] for b in r["branches"] for s in b["sessions"]]
-        self.assertEqual(ids, ["s1"])
+        self.assertEqual(sorted(self.index_ids()), ["s1", "s2"])    # Claude management's failure does not stop the index
         self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'k'")
 
     def test_a_failed_collection_right_after_a_good_one_returns_no_snapshot(self):
@@ -148,7 +183,7 @@ class ClaudeManagementTest(unittest.TestCase):
         self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'u'")
         with mock.patch("core.transcripts.read", side_effect=OSError("disk")):
             C.collect(dict(CFG))
-        self.assertEqual(self.status()["index_error"], "claude_management: OSError: disk")
+        self.assertEqual(self.status()["index_error"], "claude_management: OSError: disk; project_management: OSError: disk")
 
     def test_a_session_that_grows_is_rewritten_and_an_unchanged_one_is_not(self):
         other = self.claude / "projects" / "p" / "s2.jsonl"

@@ -20,13 +20,14 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
 from core import component, server
+from core.util import short_path
 from core.app import Core
 
 COMPS = REPO / "collector" / "components"
-W = component.import_folder(COMPS / "project_management").centre
+PM = component.import_folder(COMPS / "project_management")
+W = PM.centre
 CFG = {"projects": [], "claude_bin": "/no/claude"}
-ROW = {"id": "s1", "project": "~/nowhere/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z",
-       "cost": 1.5, "branch": "main"}
+COLLECTOR = {"collector": {"version": "t", "probe": False, "reels": None, "project_notes": []}}
 
 
 class ProjectManagementTest(unittest.TestCase):
@@ -37,7 +38,21 @@ class ProjectManagementTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.home / ".claude")})
         env.start()
         self.addCleanup(env.stop)
+        self.app = self.home / "code" / "app"
+        self.app.mkdir(parents=True)
+        t = self.home / ".claude" / "projects" / "p" / "s1.jsonl"
+        t.parent.mkdir(parents=True)
+        t.write_text(json.dumps({"type": "user", "sessionId": "s1", "cwd": str(self.app), "gitBranch": "main",
+                                 "timestamp": "2026-11-01T00:00:00Z", "message": {"role": "user", "content": "hi"}}) + "\n")
         self.core = Core(self.home, self.home / ".claude", COMPS)
+
+    def collect(self, cfg=CFG, core=None, **more):
+        """One collection pass on the fake home, with the CLI and the desktop app's records patched."""
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
+            return (core or self.core).run_pass({**cfg, "scan_roots": []}, COLLECTOR)
+
+    def index(self, home=None):
+        return json.loads(((home or self.home) / "projects.json").read_text())
 
     def get(self, srv, path):
         with closing(http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)) as conn:
@@ -48,6 +63,8 @@ class ProjectManagementTest(unittest.TestCase):
     def test_the_component_loads(self):
         [c] = [c for c in self.core.components if c.name == "project_management"]
         self.assertEqual((c.error, len(c.readers), c.handle is not None), (None, 2, True))
+        self.assertEqual(sorted(c.offers), ["approvals", "index", "live", "projects", "repos", "sessions"])
+        self.assertEqual([tuple(r) for r in c.reads], [("claude_management", "sessions")])
 
     def test_nothing_outside_the_core_imports_the_component(self):
         self.assertFalse((REPO / "collector" / ("work" + "spaces.py")).exists())
@@ -68,13 +85,72 @@ class ProjectManagementTest(unittest.TestCase):
         (self.home / "projects.json").unlink()
         self.assertEqual(self.core.read("project_management", "index", CFG), [])
 
-    def test_a_pass_writes_the_index_from_its_inputs(self):
-        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            res = self.core.run_pass(dict(CFG), {"sessions": [ROW], "folders": []})
-        self.assertEqual(res["components"]["project_management"], {"readers": 2, "errors": []})
-        idx = json.loads((self.home / "projects.json").read_text())
+    def test_a_collection_writes_the_index_from_the_transcripts(self):
+        res = self.collect()
+        self.assertEqual({name: c["errors"] for name, c in res["components"].items()},
+                         {name: [] for name in res["components"]})
+        idx = self.index()
         self.assertEqual([w["id"] for w in idx["projects"]], ["unassigned"])
-        self.assertEqual(idx["projects"][0]["repos"][0]["branches"][0]["sessions"][0]["id"], "s1")
+        [repo] = idx["projects"][0]["repos"]
+        self.assertEqual(repo["path"], short_path(self.app))
+        [branch] = repo["branches"]
+        self.assertEqual((branch["name"], [s["id"] for s in branch["sessions"]]), ("main", ["s1"]))
+
+    def test_the_index_built_from_the_rows_is_the_index_built_in_memory(self):
+        a, b, lone = self.home / "a", self.home / "b", self.home / "lone"
+        for d in (a, b, lone):
+            d.mkdir()
+        cfg = {"projects": [{"id": "pa", "name": "A", "repos": [str(a), str(lone)]}, {"id": "pb", "repos": [str(b)]}]}
+        wt = f"{a}/.claude/worktrees/w1"
+        def s(sid, project, first, last, cost, branch):
+            return {"id": sid, "project": project, "first_ts": first, "last_ts": last, "cost": cost, "branch": branch}
+        sessions = [s("s1", str(a), "2026-11-10T08:00:00Z", "2026-11-10T10:00:00Z", 0.1, "main"),
+                    s("s2", str(a), "2026-11-10T08:00:00Z", "2026-11-10T10:00:00Z", 0.2, "feature"),
+                    s("s3", wt, "2026-11-09T08:00:00Z", "2026-11-09T09:00:00Z", 0.3, "w1"),
+                    s("s4", str(a), "2026-11-10T08:00:00Z", "2026-11-10T10:00:00Z", 0, "main"),
+                    s("s5", str(b), "2026-11-08T08:00:00Z", "2026-11-08T09:00:00Z", 1.005, None),
+                    s("s6", str(b), "2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z", 7.25, "old"),
+                    s("s7", "~/nowhere/x", None, None, 0.7, "main"),
+                    s("s8", "(unknown)", "2026-11-01T00:00:00Z", "2026-11-01T00:00:00Z", 2.5, None)]
+        folders = [{"path": str(a), "abs": str(a), "worktree_of": None}, {"path": wt, "abs": wt, "worktree_of": str(a)},
+                   {"path": str(b), "abs": str(b), "worktree_of": None}]
+        app = {"s2": {"app_id": "app-2", "title": "Archived one", "branch": None, "archived": True},
+               "s5": {"app_id": "app-5", "title": "A title", "branch": "from-app", "archived": False}}
+        index = W.build_index(sessions, folders, app, cfg, now="2026-11-11T12:00:00Z")
+        ctx = self.core.ctx("project_management", {})
+        PM.records.save_index(ctx, index, {r["id"]: i for i, r in enumerate(sessions)})
+        costs = {r["id"]: r["cost"] for r in sessions}
+        self.assertEqual(json.dumps(PM.records.index(ctx, costs)), json.dumps(index))
+        self.assertEqual([[r["path"] for r in p["repos"]] for p in index["projects"]], [[str(a), str(lone)], [str(b)], ["~/nowhere/x", "(unknown)"]])
+
+    def test_the_repos_and_sessions_offers(self):
+        self.collect()
+        [row] = self.core.read("project_management", "repos", CFG)
+        self.assertEqual(row, {"path": short_path(self.app), "abs": str(self.app), "raw": str(self.app), "has_git": False,
+                               "worktree_of": None})
+        self.assertEqual(self.core.read("project_management", "sessions", CFG),
+                         [{"id": "s1", "project": "unassigned", "repo": short_path(self.app), "branch": "main",
+                           "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z"}])
+
+    def test_with_the_store_down_the_index_is_still_written(self):
+        home = self.home / "broken"
+        (home / "stellaxis.db").mkdir(parents=True)
+        core = Core(home, self.home / ".claude", COMPS)
+        self.assertTrue(core.error)
+        res = self.collect(core=core)
+        self.assertEqual(res["components"]["project_management"]["errors"], [])
+        idx = self.index(home)
+        self.assertEqual([s["id"] for p in idx["projects"] for r in p["repos"] for b in r["branches"] for s in b["sessions"]], ["s1"])
+
+    def test_without_claude_management_the_cost_is_zero(self):
+        [cm] = [c for c in self.core.components if c.name == "claude_management"]
+        def boom(ctx, **args):
+            raise RuntimeError("gone")
+        with mock.patch.dict(cm.offers, {"sessions": boom}):
+            res = self.collect()
+        self.assertEqual(res["components"]["project_management"]["errors"], [])
+        [s] = self.index()["projects"][0]["repos"][0]["branches"][0]["sessions"]
+        self.assertEqual((s["id"], s["cost"]), ("s1", 0))
 
     def test_notes_cards_are_found_under_either_key(self):
         card = {"name": "Reel Brain", "summary": "s"}
@@ -83,7 +159,7 @@ class ProjectManagementTest(unittest.TestCase):
         self.assertEqual(C.project_notes({"projects": [{"id": "x", "name": "X", "repos": []}], "project_notes": []}), [])
         self.assertNotIn("work" + "spaces", C.DEFAULT_CONFIG)
 
-    def test_a_pass_without_inputs_leaves_the_index_alone(self):
+    def test_a_pass_that_is_not_a_collection_leaves_the_index_alone(self):
         res = self.core.run_pass(dict(CFG))
         self.assertEqual(res["components"]["project_management"]["errors"], [])
         self.assertFalse((self.home / "projects.json").exists())
@@ -91,8 +167,7 @@ class ProjectManagementTest(unittest.TestCase):
     def test_the_reader_writes_to_the_cores_home_not_the_environments(self):
         elsewhere = self.home / "elsewhere"
         core = Core(elsewhere, self.home / ".claude", COMPS)
-        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            res = core.run_pass(dict(CFG), {"sessions": [ROW], "folders": []})
+        res = self.collect(core=core)
         self.assertEqual(res["components"]["project_management"]["errors"], [])
         self.assertTrue((elsewhere / "projects.json").is_file())
         self.assertFalse((self.home / "projects.json").exists())
@@ -120,21 +195,20 @@ class ProjectManagementTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["projects"], [])
 
     def test_a_pass_reports_a_reader_error_and_a_load_error(self):
-        inputs = {"sessions": [ROW], "folders": []}
-        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            res = self.core.run_pass(dict(CFG), inputs)
+        cfg = {**CFG, "scan_roots": []}
+        res = self.collect()
         self.assertIsNone(C.pass_error(self.core, res))
-        with mock.patch.object(W, "live", side_effect=ValueError("boom")):
-            res = self.core.run_pass(dict(CFG), inputs)
+        with mock.patch.object(W, "live", side_effect=ValueError("boom")), mock.patch.object(W, "app_records", return_value={}):
+            res = self.core.run_pass(cfg, COLLECTOR)
         self.assertEqual(res["components"]["project_management"]["errors"], ["ValueError: boom"])
         self.assertEqual(C.pass_error(self.core, res), "project_management: ValueError: boom")
         [c] = [c for c in self.core.components if c.name == "project_management"]
         with mock.patch.object(c, "error", "ImportError: gone"):
-            res = self.core.run_pass(dict(CFG), inputs)
+            res = self.collect()
             self.assertNotIn("project_management", res["components"])
             self.assertEqual(C.pass_error(self.core, res), "project_management: ImportError: gone")
         core = Core(self.home, self.home / ".claude", self.home / "no-components")
-        self.assertIsNone(C.pass_error(core, core.run_pass(dict(CFG), inputs)))
+        self.assertIsNone(C.pass_error(core, core.run_pass(cfg, COLLECTOR)))
 
 
 class BrokenComponentTest(unittest.TestCase):
