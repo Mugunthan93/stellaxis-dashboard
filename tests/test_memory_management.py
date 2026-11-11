@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -563,7 +564,7 @@ class SettingsTest(unittest.TestCase):
         s = MM.settings({}, self.home / "stx")
         self.assertEqual(s["places"], [])
         self.assertEqual(s["idle"], IDLE)
-        self.assertEqual((s["every"], s["max_seconds"]), (21600, 900))
+        self.assertEqual((s["every"], s["max_seconds"]), (21600, 1800))
 
     def test_defaults_are_off_anywhere_else_inside_the_home_folder(self):
         self.inside()
@@ -588,6 +589,9 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(s["places"][0], {"name": "code", "path": str(self.home / "code"),
                                           "owner": "project_management", "depth": 1, "repos": True})
         self.assertEqual(s["places"][1]["path"], str(self.home / ".claude"))
+        there = MM.settings({}, self.home / ".stellaxis", self.home / "cfg")    # the core says where Claude's folder is
+        self.assertEqual(there["places"][1]["path"], str(self.home / "cfg"))
+        self.assertEqual(s["guarded"], s["guard"].paths)
         self.assertEqual(s["places"][3]["path"], str(self.home / ".stellaxis"))
         self.assertIsNone(s["idle"])
         for p in (self.home / "Documents", self.home / "Library" / "Caches" / "com.apple.Safari", "/Volumes"):
@@ -613,7 +617,7 @@ class SettingsTest(unittest.TestCase):
         out = self.home / "stx"
         for cfg in ({"memory": 5}, {"memory": {"every": "soon", "max_seconds": [], "places": "x", "guarded": 7}}):
             s = MM.settings(cfg, out)
-            self.assertEqual((s["every"], s["max_seconds"], s["places"]), (21600, 900, []))
+            self.assertEqual((s["every"], s["max_seconds"], s["places"]), (21600, 1800, []))
         s = MM.settings({"memory": {"places": [3, {"name": "a"}, {"path": "/x"},
                                                {"name": "ok", "path": str(self.home), "depth": "x"}]}}, out)
         self.assertEqual([(p["name"], p["depth"]) for p in s["places"]], [("ok", 1)])
@@ -652,10 +656,133 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(MM.settings({"memory": {"every": "1s"}}, self.home / "stx")["every"], 60)
 
 
+CHILD_DIR = COMPS / "memory_management"
+# The real child, with a walker that waits until a gate file exists. argv: the component folder, the gate file.
+GATED = """import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import walk
+real = walk.scandir
+def slow(p):
+    while not os.path.exists(sys.argv[2]):
+        time.sleep(0.02)
+    return real(p)
+walk.scandir = slow
+walk.TICK = 0.05
+walk.main()
+"""
+# A process that plays the service: one pass that starts a measurement with a gated child, then it says the child's pid.
+STARTER = """import sys, time
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from core import component
+from core.app import Core
+comps, home = Path(sys.argv[1]) / "components", Path(sys.argv[2])
+MM = component.import_folder(comps / "memory_management")
+MM.CHILD = [sys.executable, sys.argv[4], str(comps / "memory_management"), sys.argv[5]]
+core = Core(home, home / ".claude", comps)
+core.service = True
+core.run_pass({"memory": {"places": [{"name": "t", "path": sys.argv[3]}]}})
+job = MM._JOBS[str(home)]
+while job["pid"] is None:
+    time.sleep(0.01)
+print(job["pid"], flush=True)
+time.sleep(60)
+"""
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def reap(proc):
+    """End a process a test started and close its pipes."""
+    proc.kill()
+    proc.wait()
+    for f in (proc.stdin, proc.stdout, proc.stderr):
+        if f:
+            f.close()
+
+
+def until(test, seconds=10):
+    end = time.monotonic() + seconds
+    while not test() and time.monotonic() < end:
+        time.sleep(0.02)
+    return test()
+
+
+class ChildTest(unittest.TestCase):
+    """The measuring process itself (walk.py run as a script), run the way the component runs it."""
+
+    def setUp(self):
+        self.base = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        put(self.base / "tree" / "f1", 1000)
+        put(self.base / "tree" / "sub" / "f2", 5000)
+        self.places = [place(self.base / "tree")]
+
+    def child(self, python=sys.executable):
+        proc = subprocess.Popen([python, str(CHILD_DIR / "walk.py")], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        self.addCleanup(reap, proc)
+        return proc
+
+    def test_it_measures_what_it_is_told_and_says_the_same_as_the_walker(self):
+        pythons = [sys.executable] + (["/usr/bin/python3"] if os.path.exists("/usr/bin/python3") else [])
+        for python in pythons:
+            with self.subTest(python=python):
+                proc = self.child(python)
+                proc.stdin.write((json.dumps({"places": self.places, "guarded": [], "max_seconds": 30}) + "\n").encode())
+                proc.stdin.flush()
+                said = json.loads(proc.stdout.readline())
+                while "progress" in said:
+                    said = json.loads(proc.stdout.readline())
+                self.assertEqual(said, {"result": run(self.places)})
+                proc.stdin.close()
+                self.assertEqual((proc.wait(10), proc.stderr.read()), (0, b""))
+
+    def test_a_bad_order_is_answered_with_an_error(self):
+        for order in (b"not json\n", b'{"places": 5, "guarded": [], "max_seconds": 5}\n', b"{}\n"):
+            proc = self.child()
+            proc.stdin.write(order)
+            proc.stdin.flush()
+            said = json.loads(proc.stdout.readline())
+            self.assertEqual(list(said), ["error"])
+            self.assertRegex(said["error"], r"^\w+Error: ")
+            proc.stdin.close()
+            self.assertEqual((proc.wait(10), proc.stderr.read()), (0, b""))
+
+    def test_it_ends_when_its_input_closes_before_or_during_a_walk(self):
+        proc = self.child()
+        proc.stdin.close()      # the starter went away before it said anything
+        self.assertEqual((proc.wait(10), proc.stdout.read(), proc.stderr.read()), (0, b"", b""))
+        gated = self.base / "gated.py"
+        gated.write_text(GATED)
+        proc = subprocess.Popen([sys.executable, str(gated), str(CHILD_DIR), str(self.base / "never")],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(reap, proc)
+        proc.stdin.write((json.dumps({"places": self.places, "guarded": [], "max_seconds": 30}) + "\n").encode())
+        proc.stdin.flush()
+        self.assertIn("progress", json.loads(proc.stdout.readline()))      # it is inside the walk now
+        self.assertIsNone(proc.poll())
+        proc.stdin.close()
+        self.assertEqual((proc.wait(10), proc.stderr.read()), (0, b""))
+
+    def test_it_runs_at_low_priority(self):
+        code = ("import os, sys; sys.path.insert(0, sys.argv[1]); import walk; walk.lower(); "
+                "print(os.getpriority(os.PRIO_DARWIN_PROCESS, 0) if hasattr(os, 'PRIO_DARWIN_BG') else os.nice(0))")
+        got = subprocess.run([sys.executable, "-c", code, str(CHILD_DIR)], capture_output=True, text=True)
+        self.assertEqual((got.stdout.strip(), got.stderr), ("1" if hasattr(os, "PRIO_DARWIN_BG") else "10", ""))
+
+
 class ComponentTest(unittest.TestCase):
     def setUp(self):
         base = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        self.base = base
         self.home = base / "stx"
         self.home.mkdir()
         self.tree = base / "tree"
@@ -663,6 +790,7 @@ class ComponentTest(unittest.TestCase):
         put(self.tree / "sub" / "f2", 5000)
         self.cfg = {"memory": {"places": [{"name": "t", "path": str(self.tree)}]}}
         self.core = Core(self.home, self.home / ".claude", COMPS)
+        self.core.service = True     # only the service measures
         self.addCleanup(MM._JOBS.pop, str(self.home), None)
         self.addCleanup(self.join)
         self.srv = None
@@ -679,13 +807,28 @@ class ComponentTest(unittest.TestCase):
         self.job()["thread"].join(20)
         self.assertFalse(self.job()["thread"].is_alive())
 
-    def gate(self):
-        gate, real = threading.Event(), W.scandir
-        patch = mock.patch.object(W, "scandir", lambda p: (gate.wait(20), real(p))[1])
+    def child(self, *command):
+        patch = mock.patch.object(MM, "CHILD", [sys.executable, *map(str, command)])
         patch.start()
         self.addCleanup(patch.stop)
-        self.addCleanup(gate.set)    # runs before the join in setUp
-        return gate
+
+    def gate(self):
+        """The real child, but its walker waits until the gate is opened. Returns the function that opens it."""
+        script, gate = self.base / "gated.py", self.base / "open"
+        script.write_text(GATED)
+        self.child(script, CHILD_DIR, gate)
+        self.addCleanup(gate.touch)    # runs before the join in setUp
+        return gate.touch
+
+    def fake(self, code):
+        """A child that is not the real one: it does what `code` says."""
+        script = self.base / "fake.py"
+        script.write_text(code)
+        self.child(script)
+
+    def pid(self):
+        self.assertTrue(until(lambda: self.job()["pid"] is not None))
+        return self.job()["pid"]
 
     def serve(self, core):
         srv = server.serve(core, 0, self.cfg)
@@ -707,9 +850,9 @@ class ComponentTest(unittest.TestCase):
             return r.status, json.loads(body) if r.getheader("Content-Type") == "application/json" else body
 
     def starts(self):
-        starts, real = [], threading.Thread
-        patch = mock.patch.object(MM.threading, "Thread", side_effect=lambda *a, **k: (
-            starts.append(1) if k.get("name") == "memory-measure" else None, real(*a, **k))[1])
+        """A list that grows by one each time a measurement starts."""
+        starts, real = [], MM._watch
+        patch = mock.patch.object(MM, "_watch", lambda *a: (starts.append(1), real(*a))[1])
         patch.start()
         self.addCleanup(patch.stop)
         return starts
@@ -718,11 +861,8 @@ class ComponentTest(unittest.TestCase):
         with closing(self.core.ctx("memory_management", {}).db()) as db:
             return db.execute("SELECT count(*) FROM memory_management_runs").fetchone()[0]
 
-    def passes(self, cfg=None):
-        """The first pass of a process only makes the job; a measurement can start from the second."""
-        for _ in range(2):
-            res = self.core.run_pass(dict(self.cfg if cfg is None else cfg))
-        return res
+    def a_pass(self, cfg=None):
+        return self.core.run_pass(dict(self.cfg if cfg is None else cfg))
 
     def test_the_component_loads_in_a_real_core_and_api_core_lists_it(self):
         want = {"name": "memory_management", "readers": 1, "actions": [], "offers": [], "reads": [], "error": None}
@@ -732,10 +872,13 @@ class ComponentTest(unittest.TestCase):
         self.assertIn(want, body["components"])
         self.assertIsNone(self.core.error)
 
-    def test_a_pass_measures_in_the_background_and_the_route_shows_it(self):
-        res = self.passes()
-        self.assertEqual(res["components"]["memory_management"], {"readers": 1, "errors": []})
-        self.wait()
+    def test_a_pass_measures_in_a_child_process_and_the_route_shows_it(self):
+        with mock.patch.object(W, "measure", side_effect=AssertionError("the walk ran inside this process")):
+            res = self.a_pass()
+            self.assertEqual(res["components"]["memory_management"], {"readers": 1, "errors": []})
+            self.wait()
+        self.assertNotIn(self.job()["pid"], (None, os.getpid()))
+        self.assertFalse(alive(self.job()["pid"]))
         status, a = self.get("/api/memory")
         self.assertEqual((status, a["state"], a["complete"]), (200, "measured", True))
         [p] = a["places"]
@@ -751,75 +894,157 @@ class ComponentTest(unittest.TestCase):
         self.assertEqual(set(a), KEYS)
 
     def test_a_slow_walk_does_not_block_the_pass_and_the_route_answers_before_it_is_ready(self):
-        gate = self.gate()
+        open_gate = self.gate()
         t = time.monotonic()
-        self.passes()
+        self.a_pass()
         self.assertLess(time.monotonic() - t, 1.0)
         self.assertTrue(self.job()["thread"].is_alive())
         status, a = self.get("/api/memory")
         self.assertEqual((status, a["state"], a["measured_at"], a["places"]), (200, "never", None, []))
         self.assertRegex(a["measuring"]["started_at"], ISO)
         self.assertEqual(a["measuring"]["files"], 0)
-        gate.set()
+        self.assertTrue(alive(self.pid()))
+        for _ in range(20):     # passes stay fast for as long as the child walks
+            t = time.monotonic()
+            self.a_pass()
+            self.assertLess(time.monotonic() - t, 0.5)
+        self.assertTrue(until(lambda: self.job()["progress"].get("place") == "t"))     # the child's progress arrives
+        self.assertEqual(self.get("/api/memory")[1]["measuring"]["place"], "t")
+        open_gate()
         self.wait()
         self.assertEqual(self.get("/api/memory")[1]["state"], "measured")
 
     def test_a_second_pass_does_not_start_a_second_measurement(self):
-        gate = self.gate()
+        open_gate = self.gate()
         starts = self.starts()
         for _ in range(3):
-            self.core.run_pass(dict(self.cfg))
+            self.a_pass()
         self.assertEqual(len(starts), 1)
-        gate.set()
+        open_gate()
         self.wait()
-        self.core.run_pass(dict(self.cfg))
+        self.a_pass()
         self.assertEqual(len(starts), 1)
         self.assertEqual(self.runs(), 1)
 
     def test_it_measures_again_only_when_the_last_one_is_older_than_every(self):
-        self.passes()
+        self.a_pass()
         self.wait()
         self.job()["last_try"] -= 5 * 3600
-        self.core.run_pass(dict(self.cfg))
+        self.a_pass()
         self.assertFalse(self.job()["thread"].is_alive())
         self.assertEqual(self.runs(), 1)
         self.job()["last_try"] -= 2 * 3600
-        self.core.run_pass(dict(self.cfg))
+        self.a_pass()
         self.wait()
         self.assertEqual(self.runs(), 2)
 
     def test_a_new_process_reads_the_age_from_the_store(self):
-        self.passes()
+        self.a_pass()
         self.wait()
         MM._JOBS.pop(str(self.home))
-        self.passes()
+        self.a_pass()
         self.assertIsNone(self.job()["thread"])
         self.assertLess(abs(self.job()["last_try"] - time.time()), 60)
 
+    def test_only_the_service_measures(self):
+        self.core.service = False       # collect.py run, prune.py, the desktop MCP tool: any process but the service
+        starts = self.starts()
+        for _ in range(3):
+            res = self.a_pass()
+        self.assertEqual(res["components"]["memory_management"], {"readers": 1, "errors": []})
+        self.assertEqual((starts, str(self.home) in MM._JOBS, self.runs()), ([], False, 0))
+        self.core.service = True
+        self.a_pass()
+        self.assertEqual(len(starts), 1)
+        self.wait()
+        self.assertEqual((self.job()["error"], self.runs()), (None, 1))
+
     def test_no_places_means_no_measurement_and_the_route_says_why(self):
         self.cfg = {}
-        self.passes()
+        self.a_pass()
         self.assertTrue(str(self.home) not in MM._JOBS or MM._JOBS[str(self.home)]["thread"] is None)
         status, a = self.get("/api/memory")
         self.assertEqual((status, a["state"], a["idle"], a["measuring"]), (200, "never", IDLE, None))
 
     def test_a_measurement_that_fails_is_reported_and_not_retried_at_once(self):
-        with mock.patch.object(W, "measure", side_effect=RuntimeError("boom")):
-            self.passes()
-            self.wait()
-            self.assertEqual(self.get("/api/memory")[1]["error"], "RuntimeError: boom")
-            starts = self.starts()
-            self.core.run_pass(dict(self.cfg))
-            self.core.run_pass(dict(self.cfg))
+        self.fake('import sys, time\nsys.stdin.readline()\nprint(\'{"error": "RuntimeError: boom"}\', flush=True)\ntime.sleep(30)\n')
+        self.a_pass()
+        self.wait()
+        self.assertFalse(alive(self.job()["pid"]))      # it said its error and was not left to sleep
+        self.assertEqual(self.get("/api/memory")[1]["error"], "RuntimeError: boom")
+        starts = self.starts()
+        self.a_pass()
+        self.a_pass()
         self.assertEqual(len(starts), 0)
+
+    def test_a_child_that_hangs_is_stopped_at_the_time_limit_and_the_last_measurement_stays(self):
+        self.a_pass()
+        self.wait()
+        before = self.get("/api/memory")[1]
+        self.job()["last_try"] -= 7 * 3600
+        self.gate()                     # never opened: the walker hangs in its first folder
+        self.cfg = {"memory": {"places": self.cfg["memory"]["places"], "max_seconds": "1s"}}
+        with mock.patch.object(MM, "GRACE", 0.3):
+            t = time.monotonic()
+            self.a_pass()
+            pid = self.pid()
+            self.assertTrue(alive(pid))
+            self.wait()
+        self.assertLess(time.monotonic() - t, 5)
+        self.assertFalse(alive(pid))
+        a = self.get("/api/memory")[1]
+        self.assertEqual(a["error"], "stopped at the time limit: no answer after 1 s, last in t")
+        self.assertIsNone(a["measuring"])
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual({k: a[k] for k in a if k != "error"}, {k: before[k] for k in before if k != "error"})
+
+    def test_the_child_stops_its_own_walk_at_the_time_limit_and_what_it_has_is_kept(self):
+        put(self.tree / "sub2" / "f3", 10)
+        open_gate = self.gate()
+        self.cfg = {"memory": {"places": self.cfg["memory"]["places"], "max_seconds": "1s"}}
+        self.a_pass()
+        self.pid()
+        time.sleep(1.2)                 # past the limit, inside the grace: the walker is still in its first folder
+        open_gate()
+        self.wait()
+        a = self.get("/api/memory")[1]
+        self.assertEqual((a["state"], a["complete"], a["note"], a["error"]), ("measured", False, "time limit", None))
+        self.assertEqual(a["places"][0]["state"], "partial")
+        self.assertIn({"path": str(self.tree), "reason": "time limit"}, a["not_measured"])
+
+    def test_a_child_that_dies_cannot_start_or_talks_nonsense_is_reported(self):
+        wait_for_order = "import sys\nsys.stdin.readline()\n"
+        for name, code, want in (
+                ("dies", wait_for_order + "sys.exit(3)\n", r"^the measuring process ended with no result \(code 3\)$"),
+                ("is killed", wait_for_order + "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n",
+                 r"^the measuring process ended with no result \(code -9\)$"),
+                ("talks nonsense", wait_for_order + "print('hello', flush=True)\n", r"^JSONDecodeError: "),
+                ("says nothing useful", wait_for_order + "print('{}', flush=True)\n",
+                 r"^the measuring process ended with no result \(code "),
+                ("cannot start", None, r"^FileNotFoundError: ")):
+            with self.subTest(name):
+                if code is None:
+                    patch = mock.patch.object(MM, "CHILD", [str(self.base / "no-such-python")])
+                    patch.start()
+                    self.addCleanup(patch.stop)
+                else:
+                    self.fake(code)
+                if str(self.home) in MM._JOBS:
+                    self.job()["last_try"] -= 7 * 3600
+                self.a_pass()
+                self.wait()
+                a = self.get("/api/memory")[1]
+                self.assertRegex(a["error"], want)
+                self.assertEqual((a["state"], a["measuring"], self.runs()), ("never", None, 0))
 
     def test_the_home_is_removed_while_it_measures(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            gate = self.gate()
-            self.passes()
+            open_gate = self.gate()
+            self.a_pass()
+            self.pid()
             shutil.rmtree(self.home)
-            gate.set()
+            open_gate()
             self.wait()
         self.assertFalse(self.home.exists())
         self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
@@ -831,6 +1056,7 @@ class ComponentTest(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             core = Core(broken, broken / ".claude", COMPS)
+            core.service = True
             self.assertIsNotNone(core.error)
             status, body = self.get("/api/memory", core=core)
             starts = self.starts()
@@ -849,39 +1075,30 @@ class ComponentTest(unittest.TestCase):
         home.mkdir()
         self.addCleanup(MM._JOBS.pop, str(home), None)
         core = Core(home, home / ".claude", COMPS)
+        core.service = True
         with mock.patch.dict(os.environ, {"HOME": str(home.parent)}):
             for _ in range(2):
                 core.run_pass({})
         self.assertTrue(str(home) not in MM._JOBS or MM._JOBS[str(home)]["thread"] is None)
 
-    def test_the_first_pass_of_a_process_never_measures(self):
-        starts = self.starts()
-        self.core.run_pass(dict(self.cfg))
-        self.assertEqual((starts, self.job()["thread"], self.runs()), ([], None, 0))
-        self.core.run_pass(dict(self.cfg))
-        self.assertEqual(len(starts), 1)
-        self.wait()
-        self.assertEqual(self.runs(), 1)
-
     def test_a_thread_that_cannot_start_is_shown(self):
         class NoStart(threading.Thread):
             def start(self):
                 raise RuntimeError("can't start new thread")
-        self.core.run_pass(dict(self.cfg))
         with mock.patch.object(MM.threading, "Thread", NoStart):
-            res = self.core.run_pass(dict(self.cfg))
+            res = self.a_pass()
         self.assertEqual(res["components"]["memory_management"]["errors"], [])
         a = self.get("/api/memory")[1]
         self.assertEqual((a["error"], a["measuring"], a["state"]), ("RuntimeError: can't start new thread", None, "never"))
         starts = self.starts()
-        self.core.run_pass(dict(self.cfg))
+        self.a_pass()
         self.assertEqual(starts, [])
 
     def test_a_save_that_fails_is_reported(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
                 mock.patch.object(R, "save", side_effect=RuntimeError("disk full")):
-            self.passes()
+            self.a_pass()
             self.wait()
         a = self.get("/api/memory")[1]
         self.assertEqual((a["error"], a["state"]), ("RuntimeError: disk full", "never"))
@@ -907,7 +1124,7 @@ class ComponentTest(unittest.TestCase):
                     got[os.path.join(d, name)] = (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ino, st.st_nlink)
             return got
         before = look()
-        self.passes()
+        self.a_pass()
         self.wait()
         self.assertEqual(look(), before)
         self.assertEqual(len(before), 12)      # the file in the locked folder cannot be listed
@@ -920,7 +1137,7 @@ class ComponentTest(unittest.TestCase):
         self.assertEqual(self.get("/api/memory", method="POST")[0], 404)
 
     def test_the_component_imports_only_the_core_and_itself(self):
-        for f in (COMPS / "memory_management").glob("*.py"):
+        for f in CHILD_DIR.glob("*.py"):
             for node in ast.walk(ast.parse(f.read_text())):
                 names = ([a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import)
                          else [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.level == 0
@@ -931,13 +1148,41 @@ class ComponentTest(unittest.TestCase):
                         self.assertTrue(n in sys.stdlib_module_names or n == "core", f"{f.name}: {n}")
 
     def test_no_code_changes_a_file(self):
-        for f in (COMPS / "memory_management").glob("*.py"):
-            text = f.read_text().replace("os.open(", "")
+        for f in CHILD_DIR.glob("*.py"):
+            text = f.read_text().replace("os.open(", "").replace("subprocess.Popen(", "subprocess.P(")
             for bad in ("os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "shutil", "os.chmod", "open(",
-                        ".write_text", ".unlink(", ".mkdir(", "subprocess", "os.truncate", "os.utime", "os.symlink",
+                        ".write_text", ".unlink(", ".mkdir(", "os.truncate", "os.utime", "os.symlink",
                         "os.link(", "os.mkdir", "os.makedirs", ".touch(", ".rename(", ".replace(", "O_WRONLY",
-                        "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"):
+                        "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND", "shell=", "os.system", "os.exec", "os.spawn",
+                        "os.popen"):
                 self.assertNotIn(bad, text, f.name)
+            # one process is ever started: the component's own child, by the watcher
+            self.assertEqual(text.count("subprocess."), 4 if f.name == "__init__.py" else 0, f.name)
+        self.assertEqual(MM.CHILD, [sys.executable, str(CHILD_DIR / "walk.py")])
+
+
+class StarterGoneTest(unittest.TestCase):
+    def test_the_child_ends_when_the_service_stops_however_it_stops(self):
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(sig.name):
+                base = Path(os.path.realpath(tempfile.mkdtemp()))
+                self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+                (base / "stx").mkdir()
+                put(base / "tree" / "f", 10)
+                (base / "gated.py").write_text(GATED)
+                (base / "starter.py").write_text(STARTER)
+                starter = subprocess.Popen(
+                    [sys.executable, str(base / "starter.py"), str(REPO / "collector"), str(base / "stx"),
+                     str(base / "tree"), str(base / "gated.py"), str(base / "never")],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.addCleanup(reap, starter)
+                line = starter.stdout.readline()
+                self.assertTrue(line.strip().isdigit(), starter.stderr.read() if not line else line)
+                pid = int(line)
+                self.assertTrue(alive(pid))
+                starter.send_signal(sig)
+                starter.wait(10)
+                self.assertTrue(until(lambda: not alive(pid)), "the child outlived its starter")
 
 
 if __name__ == "__main__":

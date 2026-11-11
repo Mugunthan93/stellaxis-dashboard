@@ -1,11 +1,14 @@
 """The walker: measures folder sizes, read only. It never follows a symlink, never enters another volume and never
 opens a guarded folder. No recursion (a thread on macOS has a small C stack); one lstat per entry, and one more per
-folder just before it is opened."""
+folder just before it is opened. Run as a script it is the measuring process (see the end of the file)."""
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import stat
+import sys
+import threading
 import time
 
 GUARDED_HOME = ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", ".Trash",
@@ -302,3 +305,67 @@ def measure(places: list[dict], guard: Guard, deadline: float, progress: dict) -
             rows.append(_row(real, None, p, "place", "failed"))
     return {"rows": rows, "skipped": run.skipped, "skipped_count": run.skipped_count, "files": run.files,
             "complete": not run.timeout and run.troubles == 0, "note": "time limit" if run.timeout else None}
+
+
+# ---- run as a process -------------------------------------------------------------------------------------------
+# The component starts this file as a child process (`python walk.py`), so the walk never shares an interpreter with
+# the service. It reads one JSON line from stdin: {"places", "guarded", "max_seconds"}. It writes JSON lines to
+# stdout: {"progress": {...}} about once a second, then {"result": {...}} or {"error": "..."}. It ends when its stdin
+# closes, so it never outlives the process that started it. It only reads the disk, at background priority.
+
+TICK = 1.0
+
+
+def lower() -> None:
+    """Give way to everything else: background priority for the CPU and the disk; plain nice where Python lacks it."""
+    try:
+        os.setpriority(os.PRIO_DARWIN_PROCESS, 0, os.PRIO_DARWIN_BG)
+    except (AttributeError, OSError):
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+
+
+def gone(fd: int) -> None:
+    """Wait until the starter closes our stdin (it does when it ends, however it ends), then end at once."""
+    try:
+        while os.read(fd, 4096):
+            pass
+    finally:
+        os._exit(0)
+
+
+def main() -> None:
+    fd, out, line = sys.stdin.fileno(), sys.stdout, b""
+    while not line.endswith(b"\n"):     # the raw descriptor: a thread waiting in a buffered read breaks the shutdown
+        got = os.read(fd, 65536)
+        if not got:
+            return      # the starter went away before it said what to measure
+        line += got
+    threading.Thread(target=gone, args=(fd,), daemon=True).start()
+    lock, done, progress = threading.Lock(), threading.Event(), {}
+
+    def say(obj) -> None:
+        with lock:
+            out.write(json.dumps(obj) + "\n")
+            out.flush()
+
+    def tick() -> None:
+        while not done.wait(TICK):
+            say({"progress": dict(progress)})
+
+    lower()
+    try:
+        spec = json.loads(line)
+        threading.Thread(target=tick, daemon=True).start()
+        result = measure(spec["places"], Guard(spec["guarded"]), time.monotonic() + spec["max_seconds"], progress)
+        done.set()
+        say({"result": result})
+    except Exception as e:
+        done.set()
+        say({"error": f"{type(e).__name__}: {e}"})
+
+
+if __name__ == "__main__":
+    main()

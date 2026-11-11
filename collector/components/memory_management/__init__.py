@@ -1,10 +1,12 @@
-"""Memory management: measures where the disk space of this Mac goes, in the background, and answers GET /api/memory."""
+"""Memory management: measures where the disk space of this Mac goes, in a child process, and answers GET /api/memory."""
 from __future__ import annotations
 
 import json
 import os
 import pwd
 import re
+import subprocess
+import sys
 import threading
 import time
 from contextlib import closing
@@ -12,6 +14,7 @@ from pathlib import Path
 
 from core.app import StoreError
 from core.component import Component
+from core.server import send_json
 from core.util import now_iso
 
 from . import records, walk
@@ -38,6 +41,8 @@ DEFAULT_PLACES = [
 IDLE = ("no places to measure: the Stellaxis data folder is not .stellaxis in the account's home folder, "
         "and config names no places")
 ALL_OFF = "no places to measure: config turned every place off"
+CHILD = [sys.executable, str(Path(__file__).resolve().parent / "walk.py")]     # the walk runs there, not in the service
+GRACE = 30.0    # seconds past max_seconds before a child that has not answered is killed
 _JOBS: dict = {}
 _LOCK = threading.Lock()
 
@@ -53,7 +58,7 @@ def account_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
-def settings(cfg: dict, stx_home) -> dict:
+def settings(cfg: dict, stx_home, claude_dir=None) -> dict:
     m = cfg.get("memory") if isinstance(cfg, dict) else None
     m = m if isinstance(m, dict) else {}
     home = account_home()
@@ -67,7 +72,7 @@ def settings(cfg: dict, stx_home) -> dict:
     places: dict = {}
     if on:
         for name, path, owner, depth, repos in DEFAULT_PLACES:
-            path = expand(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude" if name == "claude"
+            path = expand(str(claude_dir or "~/.claude") if name == "claude"
                           else str(stx_home) if name == "stellaxis" else path)
             if path:
                 places[name] = {"name": name, "path": path, "owner": owner, "depth": depth, "repos": repos}
@@ -87,31 +92,53 @@ def settings(cfg: dict, stx_home) -> dict:
                 "repos": e["repos"] if isinstance(e.get("repos"), bool) else was["repos"]}
     extra = m.get("guarded")
     homes = dict.fromkeys([str(home), os.path.realpath(home)])
-    guard = walk.Guard(list(dict.fromkeys([os.path.join(h, g) for h in homes for g in walk.GUARDED_HOME]
-                                          + walk.GUARDED_ABS
-                                          + [expand(g) for g in (extra if isinstance(extra, list) else [])
-                                             if isinstance(g, str) and expand(g)])))
+    guarded = list(dict.fromkeys([os.path.join(h, g) for h in homes for g in walk.GUARDED_HOME] + walk.GUARDED_ABS
+                                 + [expand(g) for g in (extra if isinstance(extra, list) else [])
+                                    if isinstance(g, str) and expand(g)]))
     return {"every": max(60.0, duration(m.get("every"), 6 * 3600)),
-            "max_seconds": max(1.0, duration(m.get("max_seconds"), 900)),
-            "places": list(places.values()), "guard": guard,
+            "max_seconds": max(1.0, duration(m.get("max_seconds"), 1800)),
+            "places": list(places.values()), "guarded": guarded, "guard": walk.Guard(guarded),
             "idle": None if places else ALL_OFF if on else IDLE}
 
 
-def _measure(ctx, s: dict, job: dict) -> None:
+def _watch(ctx, s: dict, job: dict) -> None:
+    """Start the child, follow what it says, save its result. The child is gone when this returns."""
     try:
         try:
             st = os.statvfs(ctx.home)
             disk = {"path": str(ctx.home), "total": st.f_frsize * st.f_blocks, "free": st.f_frsize * st.f_bavail}
         except OSError:
             disk = None
-        t0 = time.monotonic()
-        result = walk.measure(s["places"], s["guard"], t0 + s["max_seconds"], job["progress"])
-        if (ctx.home / "stellaxis.db").exists():
+        t0, late, result, error = time.monotonic(), threading.Event(), None, None
+        with subprocess.Popen(CHILD, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+            job["pid"] = proc.pid
+            timer = threading.Timer(s["max_seconds"] + GRACE, lambda: (late.set(), proc.kill()))
+            timer.daemon = True
+            timer.start()
+            try:
+                spec = {"places": s["places"], "guarded": s["guarded"], "max_seconds": s["max_seconds"]}
+                proc.stdin.write((json.dumps(spec) + "\n").encode())
+                proc.stdin.flush()      # stdin stays open: the child ends itself when it closes, also if we die
+                for line in proc.stdout:
+                    said = json.loads(line)
+                    if "progress" in said:
+                        job["progress"] = said["progress"]
+                    else:
+                        result, error = said.get("result"), said.get("error")
+                        break
+            finally:
+                timer.cancel()
+                proc.kill()
+        if late.is_set():
+            error = (f"stopped at the time limit: no answer after {s['max_seconds'] + GRACE:.0f} s, "
+                     f"last in {job['progress'].get('place')}")
+        elif result is None and error is None:
+            error = f"the measuring process ended with no result (code {proc.returncode})"
+        if error is None and (ctx.home / "stellaxis.db").exists():
             run = {"started_at": job["started_at"], "finished_at": now_iso(), "finished_ts": time.time(),
                    "seconds": time.monotonic() - t0, "disk": disk}
             with closing(ctx.db()) as db, db:
                 records.save(db, run, result)
-        error = None
     except BaseException as e:
         error = f"{type(e).__name__}: {e}"
     with _LOCK:
@@ -119,14 +146,14 @@ def _measure(ctx, s: dict, job: dict) -> None:
 
 
 def measure_reader(ctx) -> None:
-    s = settings(ctx.cfg, ctx.home)
+    if not ctx.service:     # only the service measures: a process that makes one pass could not finish a walk
+        return
+    s = settings(ctx.cfg, ctx.home, ctx.claude_dir)
     if not s["places"]:
         return
     with _LOCK:
-        job = _JOBS.get(str(ctx.home))
-        if job is None:     # the first pass of a process only makes the job: a one-pass process never measures
-            _JOBS[str(ctx.home)] = {"thread": None, "started_at": None, "progress": {}, "last_try": None, "error": None}
-            return
+        job = _JOBS.setdefault(str(ctx.home), {"thread": None, "pid": None, "started_at": None, "progress": {},
+                                               "last_try": None, "error": None})
         if job["thread"] is not None and job["thread"].is_alive():
             return
         if job["last_try"] is None:
@@ -134,8 +161,8 @@ def measure_reader(ctx) -> None:
                 job["last_try"] = records.last_finished_ts(db)
         if job["last_try"] is not None and time.time() - job["last_try"] < s["every"]:
             return
-        job["last_try"], job["started_at"], job["progress"] = time.time(), now_iso(), {}
-        t = threading.Thread(target=_measure, args=(ctx, s, job), name="memory-measure", daemon=True)
+        job["last_try"], job["started_at"], job["progress"], job["pid"] = time.time(), now_iso(), {}, None
+        t = threading.Thread(target=_watch, args=(ctx, s, job), name="memory-measure", daemon=True)
         try:
             t.start()
             job["thread"] = t
@@ -155,7 +182,7 @@ def answer(ctx) -> dict:
     out = {"state": "never", "measured_at": None, "started_at": None, "seconds": None, "complete": None,
            "note": None, "measuring": measuring, "disk": None, "places": [], "folders": [],
            "elsewhere_bytes": None, "not_measured": [], "not_measured_count": 0,
-           "idle": settings(ctx.cfg, ctx.home)["idle"], "error": error}
+           "idle": settings(ctx.cfg, ctx.home, ctx.claude_dir)["idle"], "error": error}
     if got:
         run, rows = got["run"], got["rows"]
         disk = run["disk"] and dict(run["disk"], used=run["disk"]["total"] - run["disk"]["free"])
@@ -176,13 +203,7 @@ def handle(handler, method: str, ctx) -> bool:
         status, obj = 200, answer(ctx)
     except StoreError as e:
         status, obj = 503, {"error": str(e)}
-    body = json.dumps(obj).encode()
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+    send_json(handler, status, obj)
     return True
 
 
