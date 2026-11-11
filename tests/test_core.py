@@ -486,7 +486,10 @@ class ServeTest(HttpCase):
         put(self.comps, "beta", "raise RuntimeError('broken')")
         self.serve()
         self.assertEqual(self.get("/api/alpha"), (200, b"alpha"))
-        status, body = self.get("/api/alpha/boom")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status, body = self.get("/api/alpha/boom")
+        self.assertIn("RuntimeError: boom", err.getvalue())
         self.assertEqual((status, json.loads(body)), (500, {"error": "RuntimeError: boom"}))
         self.assertEqual(self.get("/api/alpha")[0], 200)
         by = {c["name"]: c for c in json.loads(self.get("/api/core")[1])["components"]}

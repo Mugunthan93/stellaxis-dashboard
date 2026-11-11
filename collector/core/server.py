@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import traceback
 
 from core.app import Core
 
@@ -38,6 +39,7 @@ def handle(core: Core, handler, method: str, cfg: dict) -> bool:
             if c.handle(handler, method, core.ctx(c.name, cfg)):
                 return True
         except Exception as e:
+            traceback.print_exc()
             _json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
             return True
     return False

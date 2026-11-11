@@ -30,7 +30,7 @@ import zlib
 from pathlib import Path
 
 import settings_api
-import workspaces
+import workspaces  # kept so the alias loads at import, on the main thread, before any thread starts; tests patch C.workspaces; goes away with the alias in step 2B
 from core import server as core_server
 from core.app import Core
 from core.util import read_json, write_json, short_path

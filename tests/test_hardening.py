@@ -269,7 +269,8 @@ class RouteMatrix(unittest.TestCase):
             ("/reels/raw", 200), ("/reels/images/a.jpg", 200), ("/snapshot.json", 200), ("/api/snapshot", 200), ("/api/status", 200),
             ("/api/refresh", 202), ("/api/settings", 200), ("/api/workspaces", 200), ("/api/approvals", 200),
             ("/api/workspaces/w/tasks", 200), ("/api/workspaces/other/tasks", 200), ("/api/workspaces/w/work", 200),
-            (f"/api/sessions/{self.DONE}/reply", 200))] + [
+            (f"/api/sessions/{self.DONE}/reply", 200), ("/api/jarvis", 200))] + [
+            ("POST", "/api/jarvis/hush", {}, 200), ("POST", "/api/jarvis/hear", {}, 415),
             ("POST", f"/api/approvals/session/{self.LIVE}", {"on": True}, 200), ("POST", f"/api/approvals/{self.REQ}", {"allow": False}, 200),
             ("POST", "/api/workspaces/w/tasks", {"add": "x"}, 200), ("POST", "/api/workspaces/w/tests/run", {"repo": self.repo}, 200),
             ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200),
