@@ -30,7 +30,6 @@ import zlib
 from pathlib import Path
 
 import settings_api
-import workspaces  # kept so the alias loads at import, on the main thread, before any thread starts; tests patch C.workspaces; goes away with the alias in step 2B
 from core import server as core_server
 from core.app import Core
 from core.util import read_json, write_json, short_path
@@ -1355,7 +1354,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "GET", load_config()):
             return
-        if jarvis.handle(self, "GET", load_config()):
+        if jarvis.handle(self, "GET", load_config(), the_core()):
             return
         if settings_api.handle(self, "GET"):
             return
@@ -1427,7 +1426,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "POST", load_config()):
             return
-        if jarvis.handle(self, "POST", load_config()):
+        if jarvis.handle(self, "POST", load_config(), the_core()):
             return
         if not settings_api.handle(self, "POST"):
             self.send_error(404)
@@ -1435,6 +1434,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def serve():
     cfg = load_config()
+    the_core()  # the components are imported here, on the main thread, before any thread starts
     last_probe = 0.0
 
     def loop():

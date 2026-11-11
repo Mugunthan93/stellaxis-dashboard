@@ -12,7 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 import unplaced.jarvis as J  # noqa: E402
-import workspaces as W  # noqa: E402
+from core.app import Core  # noqa: E402
+from core.component import import_folder  # noqa: E402
+
+COMPS = Path(__file__).resolve().parent.parent / "collector" / "components"
+W = import_folder(COMPS / "project_management").centre
 
 
 class BriefingTest(unittest.TestCase):
@@ -23,6 +27,7 @@ class BriefingTest(unittest.TestCase):
         cls.old = os.environ.get("STELLAXIS_HOME")
         os.environ["STELLAXIS_HOME"] = str(cls.home)
         cls.cfg = {"claude_bin": "/no/such/claude"}
+        core = Core(cls.home, cls.home / ".claude", COMPS)
         import http.server
         import threading
 
@@ -31,7 +36,7 @@ class BriefingTest(unittest.TestCase):
                 pass
 
             def do_GET(self):
-                if not J.handle(self, "GET", cls.cfg):
+                if not J.handle(self, "GET", cls.cfg, core):
                     self.send_error(404)
 
         cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -105,13 +110,14 @@ class JarvisAskTest(unittest.TestCase):
             "whisper_model": str(d / "model.bin"), "workspaces": [{"id": "p", "name": "PartHub"}]}
         self.log = log
         cfg = self.cfg
+        core = Core(d / "stx", d / "claude", COMPS)
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
                 pass
 
             def do_POST(self):
-                if not J.handle(self, "POST", cfg):
+                if not J.handle(self, "POST", cfg, core):
                     self.send_error(404)
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)

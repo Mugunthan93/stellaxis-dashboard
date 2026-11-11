@@ -21,6 +21,21 @@ TMP = tempfile.TemporaryDirectory()
 ENV = {"REELS_HOME": TMP.name}
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
+from core.component import import_folder
+
+CENTRE = import_folder(REPO / "collector" / "components" / "project_management").centre
+
+
+def fake_home(case, stx: Path, claude: Path | None = None) -> None:
+    """Point collect, the command centre and a fresh core at a temp home, until the test (or class) ends."""
+    claude = claude or stx / ".claude"
+    add = case.addClassCleanup if isinstance(case, type) else case.addCleanup
+    for patch in (mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(stx), "CLAUDE_CONFIG_DIR": str(claude)}),
+                  mock.patch.object(C, "STX_HOME", stx), mock.patch.object(C, "CLAUDE_DIR", claude)):
+        patch.start()
+        add(patch.stop)
+    C._core = None
+    add(setattr, C, "_core", None)
 
 
 class Page(html.parser.HTMLParser):
@@ -157,9 +172,7 @@ class Service(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.home = tempfile.TemporaryDirectory()
-        cls.stx = mock.patch.object(C, "STX_HOME", Path(cls.home.name))
-        cls.stx.start()
-        C._core = None
+        fake_home(cls, Path(cls.home.name))
         cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.port = cls.srv.server_address[1]
@@ -168,8 +181,6 @@ class Service(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
         cls.srv.server_close()
-        cls.stx.stop()
-        C._core = None
         cls.home.cleanup()
 
     def req(self, path, host=None):
@@ -232,14 +243,12 @@ class RouteMatrix(unittest.TestCase):
         stx, claude, reels, repo = root / "stx", root / "claude", root / "reels", root / "repo"
         for d in (stx / "approvals" / "on", claude / "projects" / "p", claude / "sessions", reels / "images", repo):
             d.mkdir(parents=True)
-        for patch in (mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(stx), "CLAUDE_CONFIG_DIR": str(claude)}),
-                      mock.patch.object(C, "STX_HOME", stx), mock.patch.object(C, "REELS_HOME", reels),
+        fake_home(self, stx, claude)
+        for patch in (mock.patch.object(C, "REELS_HOME", reels),
                       mock.patch.object(C.settings_api, "STX_HOME", stx), mock.patch.object(C.settings_api, "CLAUDE_DIR", claude),
                       mock.patch.object(C, "collect")):
             patch.start()
             self.addCleanup(patch.stop)
-        C._core = None
-        self.addCleanup(setattr, C, "_core", None)
         (reels / "dashboard.html").write_text("<p>x</p>")
         (reels / "images" / "a.jpg").write_bytes(b"x")
         fake = root / "claude-bin"
@@ -297,7 +306,7 @@ class RouteMatrix(unittest.TestCase):
         for method, path, body, code in self.routes():
             self.assertEqual(self.req(method, path, body), code, path)
         for _ in range(100):  # the test run writes under this temp home, so it has to end before cleanup
-            if not C.workspaces._RUNNING:
+            if not CENTRE._RUNNING:
                 break
             time.sleep(0.05)
         for method, path, body, _ in self.routes():
@@ -315,12 +324,10 @@ class Install(unittest.TestCase):
 class IndexFailure(unittest.TestCase):
     def test_index_error_stays_on_the_idle_status(self):
         snap = {"generated_at": "g", "meta": {"elapsed_ms": 1}, "sessions": [], "projects": []}
-        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "STX_HOME", Path(t)), \
-                mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
-                mock.patch.object(C.workspaces, "live", return_value=None), \
-                mock.patch.object(C.workspaces, "build_index", side_effect=ValueError("boom")):
-            C._core = None
-            self.addCleanup(setattr, C, "_core", None)
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
+                mock.patch.object(CENTRE, "live", return_value=None), \
+                mock.patch.object(CENTRE, "build_index", side_effect=ValueError("boom")):
+            fake_home(self, Path(t))
             C.collect({"x": 1})
             st = json.loads(Path(t, "status.json").read_text())
         self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
@@ -329,12 +336,11 @@ class IndexFailure(unittest.TestCase):
 
     def test_collection_clears_stale_switches(self):
         snap = {"sessions": [], "projects": []}
-        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "STX_HOME", Path(t)), \
-                mock.patch.object(C.workspaces, "live", return_value=[]) as live, \
-                mock.patch.object(C.workspaces, "clear_stale") as clear, \
-                mock.patch.object(C.workspaces, "app_records", return_value={}):
-            C._core = None
-            self.addCleanup(setattr, C, "_core", None)
+        with tempfile.TemporaryDirectory() as t, \
+                mock.patch.object(CENTRE, "live", return_value=[]) as live, \
+                mock.patch.object(CENTRE, "clear_stale") as clear, \
+                mock.patch.object(CENTRE, "app_records", return_value={}):
+            fake_home(self, Path(t))
             self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
         live.assert_called_once_with("/no/claude")
         clear.assert_called_once_with([])

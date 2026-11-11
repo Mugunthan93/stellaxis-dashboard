@@ -13,7 +13,9 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
-import workspaces as W  # noqa: E402
+from core.component import import_folder  # noqa: E402
+
+W = import_folder(Path(__file__).resolve().parent.parent / "collector" / "components" / "project_management").centre
 
 WS = [{"id": "ph", "name": "PartHub", "folders": ["~/code/ph-admin", "~/code/ph-admin-ui"]}]
 
@@ -515,7 +517,7 @@ class ActionApiTest(unittest.TestCase):
             if "-p" in args:
                 raise subprocess.TimeoutExpired(args, 90)
             return real(args, **kw)
-        with mock.patch("workspaces.subprocess.run", side_effect=slow_relay):
+        with mock.patch.object(W.subprocess, "run", side_effect=slow_relay):
             self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
         self.behave(relay={"code": 1, "tool": None})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)

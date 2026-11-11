@@ -19,4 +19,21 @@ def handle(handler, method: str, ctx) -> bool:
     return centre.handle(handler, method, ctx.cfg)
 
 
-COMPONENT = Component(name="project_management", readers=[index_reader], handle=handle)
+def _index(ctx) -> list:
+    return centre._index().get("workspaces") or []
+
+
+def _projects(ctx) -> list:
+    return centre._entries(ctx.cfg.get("workspaces"))
+
+
+def _live(ctx) -> list:
+    return centre.live(centre._bin(ctx.cfg)) or []
+
+
+def _approvals(ctx) -> list:
+    return centre.pending()
+
+
+COMPONENT = Component(name="project_management", readers=[index_reader], handle=handle,
+                      offers={"index": _index, "projects": _projects, "live": _live, "approvals": _approvals})
