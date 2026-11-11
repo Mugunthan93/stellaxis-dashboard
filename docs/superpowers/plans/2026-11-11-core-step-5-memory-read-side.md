@@ -478,3 +478,18 @@ git commit -m "Docs: Memory management in CLAUDE.md; what the build of step 5 fo
   - Nobody has run the default places under launchd yet. On the first start, watch `GET /api/memory`. If
     `measuring.place` stays the same and `started_at` gets old, the walk waits on a macOS prompt. Add that folder
     to `memory.guarded` and restart the service.
+
+### The last check, after the fixes
+
+- **The whole walk was run by hand, read only, with no store** (2026-11-11, the final code, the 27 default places and
+  the guarded list as the service would use them). It took 84.5 seconds. It saw 2,422,354 files and made 1,092 folder
+  rows: 16 repos, 96 worktrees, 34 deps, 2 venv, 55 build. The places hold 126.6 GB of the 236 GB in use. 57 folders
+  were left out as guarded by macOS. No folder was refused, and no permission prompt came up. Every place was `ok`,
+  and `~/.gradle` was `missing`.
+- **This is not the service.** macOS treats the launchd service as a different program. The first start still needs
+  the look at `GET /api/memory` that the design describes.
+- **The scoped re-review found every finding addressed and nothing new that is Critical or Important.** Five small
+  things stay open: a `memory.guarded` entry that holds a NUL character makes every measurement fail (the route shows
+  the error); a place that fails keeps its path "taken", so a later place around it is refused as overlapping, and
+  its files already counted stay in the total; `prune.py` can make a second pass after `--apply`; and two sentences
+  of the design were a little wider than the code (corrected after the re-review).

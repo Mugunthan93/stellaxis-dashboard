@@ -34,7 +34,8 @@ Rule added by this design (my call):
 7. Measuring only reads. It reads the size and the change time of a file, not what is inside it.
    There is one exception: the small `.git` file of a worktree, to see that the folder is a worktree.
    The records hold folder paths and numbers. They hold no file contents. They hold no file names,
-   except where one file could not be read and is listed as not measured.
+   except where one file could not be read, or a place in config is a file; then its path is listed
+   as not measured.
 
 ## What is measured
 
@@ -60,9 +61,9 @@ changed in `config.json`. These are the defaults (my call). The sizes are from t
 | xcode | `~/Library/Developer` | none | 0.2 GB |
 | android_sdk | `~/Library/Android` | none | 18.0 GB |
 | android | `~/.android` | none | 3.2 GB |
-| caches | `~/Library/Caches` | none | more than 6 GB |
+| caches | `~/Library/Caches` | none | 6.5 GB |
 | homebrew | `/opt/homebrew` | none | 9.7 GB |
-| applications | `/Applications` | none | not measured yet |
+| applications | `/Applications` | none | 19.2 GB |
 | local | `~/.local` | none | 7.2 GB |
 | pnpm, npm, bun, yarn | `~/Library/pnpm`, `~/.npm`, `~/.bun`, `~/.yarn` | none | 2.7 GB |
 | cache | `~/.cache` | none | 0.6 GB |
@@ -75,17 +76,17 @@ changed in `config.json`. These are the defaults (my call). The sizes are from t
 
 A default place that does not exist on the Mac shows as "missing". That is not an error.
 
-Together these places hold about 107 GB (`/Applications` was added after that count and is not in
-it). The disk has about 235 GB in use. The rest, about 128 GB, is shown as one number, "elsewhere".
-Memory management does not guess what is in it. This much is known about it on this Mac:
+Together these places hold about 127 GB. The disk has about 236 GB in use. The rest, about 110 GB, is
+shown as one number, "elsewhere". Memory management does not guess what is in it. This much is known
+about it on this Mac:
 
 - About 33 GB is in no folder of the owner. It is the other parts of the same disk: macOS itself, its
   recovery copy and its swap space.
-- About 95 GB is in folders outside the places. Some of them macOS guards (see below). Many it does
-  not: the applications, the rest of `~/Library/Application Support` (Chrome's data alone is 8 GB),
-  `/Library`, and whatever else lies in the home folder.
+- About 77 GB is in folders outside the places. Some of them macOS guards (see below). Many it does
+  not: the rest of `~/Library/Application Support` (Chrome's data alone is 8 GB), `/Library`, and
+  whatever else lies in the home folder.
 
-So more than half of the used space is still one number. That is the largest gap of the read side.
+So almost half of the used space is still one number. That is the largest gap of the read side.
 The next step for it is under "Known limits".
 
 ### Inside a place
@@ -196,7 +197,8 @@ today, so it is not built today.
 
 - `state`: `never` before the first measurement is stored, then `measured`.
 - `measured_at`, `started_at`, `seconds`, `complete`, `note`: the last measurement. `complete` is
-  false when the time limit cut it short or a folder could not be read.
+  false when the time limit cut it short, or when a folder or a whole place could not be measured for
+  a reason other than macOS guarding it.
 - `measuring`: `null`, or when it started, which place it is in, and how many files it has seen.
 - `disk`: total, free and used bytes at the time of the measurement.
 - `places`: one row for each place, with its state: `ok`, `partial`, `missing`, `refused`,
@@ -226,9 +228,10 @@ minute on this Mac (2 million files). It may not run inside the pass. So:
 - Nothing is written to the store while it walks. The result is written in one step at the end. If the
   service stops in the middle, the old result stays and nothing is half written.
 - A measurement that fails is tried again after `every`, not after one minute.
-- The first pass of a process never starts a measurement (my call). `collect.py run`, `prune.py` and
-  the desktop MCP tool each make one pass in a process of their own. A walk started there could not
-  finish. So the service measures, from its second pass on, one minute after it starts.
+- The first pass of a process never starts a measurement (my call). `collect.py run` makes one pass
+  and ends, and `prune.py` nearly always does. A walk started there would be cut off before it could
+  save. So the service measures, from its second pass on, one minute after it starts. The cases this
+  rule does not cover are under "Known limits".
 
 Measured on this Mac: while the walk ran, other work in the same process was not slower (0.162 s with
 the walk, 0.166 s without).
@@ -395,18 +398,22 @@ files and archives are in use; whether the desktop app is running.
 
 - **Cloned files are counted in full each time** (see "How a size is counted"). Next step: one more
   number for each folder, "bytes that removing this folder alone frees".
-- **"Elsewhere" is more than half of the used space** (see "Places"). Next step: let a place hold
+- **"Elsewhere" is almost half of the used space** (see "Places"). Next step: let a place hold
   another place, with the inner one taken out, so "the rest of the home folder" can be one row.
 - **A measurement that waits on the disk cannot be stopped from outside.** If macOS showed a
   permission prompt in spite of the guarded list, that measurement would wait until the service
   restarts. The service and the collection pass keep working.
-- **No one has run the default places under the service yet.** On the first start, look at
+- **No one has run the default places under the service yet.** The same walk was run by hand on
+  2026-11-11, outside the service: 27 places, 2.4 million files, 84 seconds, and macOS refused no
+  folder. The service is a different program to macOS, so this is not proof. On the first start, look at
   `GET /api/memory`. If `measuring.place` stays the same and `started_at` gets old, the walk waits on
   a prompt in that place. Add the folder to `memory.guarded` and restart the service.
-- **Only the service measures.** A process that makes one pass (`collect.py run`, `prune.py`) never
-  measures. One case is left: the desktop MCP tool collects in its own process when the service is
-  down. If it does that twice in one process, the second pass can start a walk there. "Only one at a
-  time" holds inside one process, not across two.
+- **Almost only the service measures.** A process that makes one pass never measures. Two cases are
+  left. The desktop MCP tool collects in its own process when the service is down; if it does that
+  twice in one process, the second pass can start a walk there, and that walk can finish. And
+  `prune.py` makes a second pass after an `--apply` when there was no snapshot before; a walk started
+  then is cut off when the command ends, and nothing is saved. "Only one at a time" holds inside one
+  process, not across two.
 - **The free space is as old as the last measurement**, up to 6 hours.
 - **Nothing limits the number of rows in the code place.** Every folder named like build output gets
   a row. Today there are about 800. One odd repo could add thousands.
@@ -447,7 +454,7 @@ files and archives are in use; whether the desktop app is running.
 ## Questions only the owner can answer
 
 1. **Guarded folders.** Do you want Documents, Downloads, Pictures, Movies and Music measured? They
-   are part of the 128 GB that is "elsewhere". How large a part is not known: about 33 GB of it is
+   are part of the 110 GB that is "elsewhere". How large a part is not known: about 33 GB of it is
    macOS itself, and much of the rest is in folders that are not guarded. Measuring them needs you to
    give the Stellaxis service "Full Disk Access" in the macOS settings, one time.
 2. **Transcripts.** May old session transcripts ever be offered for cleaning? `~/.claude` is 4.3 GB,
@@ -467,5 +474,5 @@ files and archives are in use; whether the desktop app is running.
    a session is live, or the work exists nowhere else. Or do you mean "a project I am still working
    on", also when nothing runs? And for a finished worktree whose branch is merged or pushed: is
    "deleted, no undo" acceptable?
-10. **The rest of the disk.** More than half of the used space is "elsewhere". Should Stellaxis also
+10. **The rest of the disk.** Almost half of the used space is "elsewhere". Should Stellaxis also
     break down the rest of your home folder, or only the developer places it measures today?
