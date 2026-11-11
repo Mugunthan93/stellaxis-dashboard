@@ -203,6 +203,15 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(by["alpha"], {"name": "alpha", "readers": 1, "actions": [], "offers": ["things"], "reads": [], "error": None})
         self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
 
+    def test_records_that_fail_in_sqlite_stop_only_that_component(self):
+        put(self.comps, "alpha", ALPHA)
+        put(self.comps, "sick", "from core.component import Component\nCOMPONENT = Component(name='sick', records=['CREATE TABLE IF NOT EXISTS sick_t (id TEXT)', 'CREATE INDEX IF NOT EXISTS sick_i ON sick_t (missing_column)'])\n")
+        c = self.core()
+        by = {x["name"]: x for x in c.describe()["components"]}
+        self.assertIn("OperationalError", by["sick"]["error"])
+        self.assertIsNone(by["alpha"]["error"])
+        self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
+
     def test_a_store_that_cannot_open_is_reported_not_raised(self):
         (self.home / "stellaxis.db").mkdir()
         put(self.comps, "alpha", ALPHA)
@@ -352,10 +361,6 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse})
                 self.core.run_action(comp, act, {}, False, {})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 WEB = '''
 from core.component import Component
 def handle(handler, method, ctx):
@@ -441,6 +446,20 @@ class WiringTest(HttpCase):
             self.assertTrue(json.loads(self.get("/api/core")[1])["error"])
             self.assertEqual(self.get("/api/status")[0], 200)
 
+    def test_the_first_build_of_the_core_is_locked(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        got = []
+        with mock.patch.object(C, "_core", None), mock.patch.object(C, "STX_HOME", home / "stx"), \
+                mock.patch.object(C, "CLAUDE_DIR", home / "claude"):
+            threads = [threading.Thread(target=lambda: got.append(C.the_core())) for _ in range(8)]
+            for t in threads: t.start()
+            for t in threads: t.join()
+        self.assertEqual(len(got), 8)
+        self.assertTrue(all(g is got[0] for g in got))
+        self.assertIsNone(got[0].error)
+
     def test_host_ok_has_one_home(self):
         import settings_api
         self.assertIs(settings_api.host_ok, server.host_ok)
@@ -454,3 +473,7 @@ class IndependenceTest(unittest.TestCase):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0 else []
                 for n in names:
                     self.assertNotIn(n.split(".")[0], outside, f"{f.name} imports {n}")
+
+
+if __name__ == "__main__":
+    unittest.main()

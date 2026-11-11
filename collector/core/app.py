@@ -54,7 +54,7 @@ class Core:
                 continue
             try:
                 self.store.ensure(c.name, c.records)
-            except ValueError as e:
+            except Exception as e:
                 c.error = _err(e)
 
     def ctx(self, name: str, cfg: dict) -> Ctx:

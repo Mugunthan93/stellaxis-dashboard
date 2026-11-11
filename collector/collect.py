@@ -1258,12 +1258,15 @@ def write_index(cfg: dict, snap: dict) -> str | None:
 
 
 _core: Core | None = None
+_core_lock = threading.Lock()
 
 
 def the_core() -> Core:
     global _core
     if _core is None:
-        _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components")
+        with _core_lock:
+            if _core is None:
+                _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components")
     return _core
 
 
