@@ -2,7 +2,10 @@
 
   python3 -m unittest discover -s tests -k test_core
 """
+import ast
 import contextlib
+import http.client
+import http.server
 import io
 import json
 import sys
@@ -11,10 +14,12 @@ import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
-from core import component, store, undo
+import collect as C
+from core import component, store, undo, server
 from core.app import Core
 
 
@@ -349,3 +354,103 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse})
 
 if __name__ == "__main__":
     unittest.main()
+
+
+WEB = '''
+from core.component import Component
+def handle(handler, method, ctx):
+    if handler.path == "/api/alpha/boom":
+        raise RuntimeError("boom")
+    if handler.path != "/api/alpha" or method != "GET":
+        return False
+    handler.send_response(200); handler.end_headers(); handler.wfile.write(ctx.name.encode())
+    return True
+COMPONENT = Component(name="alpha", handle=handle)
+'''
+
+
+class HttpCase(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.comps = self.home / "components"
+
+    def start(self, srv):
+        self.srv = srv
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+    def get(self, path, method="GET", headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+        with closing(conn):
+            conn.request(method, path, headers=headers or {})
+            r = conn.getresponse()
+            return r.status, r.read()
+
+
+class ServeTest(HttpCase):
+    def serve(self):
+        self.start(server.serve(Core(self.home, self.home / ".claude", self.comps), 0, {}))
+
+    def test_the_core_serves_with_zero_components(self):
+        self.serve()
+        status, body = self.get("/api/core")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "last_pass": None})
+        self.assertEqual(self.get("/anything")[0], 404)
+        self.assertEqual(self.get("/api/core", method="POST")[0], 404)
+        self.assertEqual(self.get("/api/core", headers={"Host": "evil.example"})[0], 403)
+
+    def test_component_routes_and_their_errors(self):
+        put(self.comps, "alpha", WEB)
+        put(self.comps, "beta", "raise RuntimeError('broken')")
+        self.serve()
+        self.assertEqual(self.get("/api/alpha"), (200, b"alpha"))
+        status, body = self.get("/api/alpha/boom")
+        self.assertEqual((status, json.loads(body)), (500, {"error": "RuntimeError: boom"}))
+        self.assertEqual(self.get("/api/alpha")[0], 200)
+        by = {c["name"]: c for c in json.loads(self.get("/api/core")[1])["components"]}
+        self.assertIn("RuntimeError", by["beta"]["error"])
+
+    def test_no_component_runs_without_a_store(self):
+        put(self.comps, "alpha", WEB)
+        (self.home / "stellaxis.db").mkdir()
+        self.serve()
+        self.assertTrue(json.loads(self.get("/api/core")[1])["error"])
+        self.assertEqual(self.get("/api/alpha")[0], 404)
+
+
+class WiringTest(HttpCase):
+    def setUp(self):
+        super().setUp()
+        self.start(http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler))
+
+    def test_the_service_answers_api_core_and_keeps_its_routes(self):
+        core = Core(self.home, self.home / ".claude", self.home / "components")
+        with mock.patch.object(C, "_core", core):
+            self.assertEqual(json.loads(self.get("/api/core")[1])["components"], [])
+            self.assertEqual(self.get("/api/core", headers={"Host": "evil.example"})[0], 403)
+            self.assertEqual(self.get("/api/status")[0], 200)
+            self.assertEqual(self.get("/overview")[0], 200)
+
+    def test_a_core_that_cannot_open_its_store_does_not_break_the_service(self):
+        (self.home / "stellaxis.db").mkdir()
+        with mock.patch.object(C, "_core", Core(self.home, self.home / ".claude", self.home / "components")):
+            self.assertTrue(json.loads(self.get("/api/core")[1])["error"])
+            self.assertEqual(self.get("/api/status")[0], 200)
+
+    def test_host_ok_has_one_home(self):
+        import settings_api
+        self.assertIs(settings_api.host_ok, server.host_ok)
+
+
+class IndependenceTest(unittest.TestCase):
+    def test_the_core_imports_nothing_outside_itself(self):
+        outside = {p.stem for p in (REPO / "collector").glob("*.py")} | {"components"}
+        for f in (REPO / "collector" / "core").glob("*.py"):
+            for node in ast.walk(ast.parse(f.read_text())):
+                names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0 else []
+                for n in names:
+                    self.assertNotIn(n.split(".")[0], outside, f"{f.name} imports {n}")

@@ -187,6 +187,11 @@ class E2E(unittest.TestCase):
         self.assertEqual(st["phase"], "idle")
         self.assertIn("last_snapshot", st)
 
+    def test_core_store(self):
+        stx = self.home / ".stellaxis"
+        self.assertTrue((stx / "stellaxis.db").is_file())
+        self.assertIsNone(json.loads((stx / "status.json").read_text())["core_error"])
+
     def test_usage(self):
         self.assertEqual(self.items["skill:user:foo"]["usage"]["calls"], 1)
         self.assertEqual(self.items["skill:user:stale"]["usage"]["calls"], 0)

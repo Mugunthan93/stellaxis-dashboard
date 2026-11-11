@@ -19,6 +19,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from core.server import host_ok
+
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
 STX_HOME = Path(os.environ.get("STELLAXIS_HOME", HOME / ".stellaxis")).expanduser()
@@ -276,16 +278,6 @@ def save(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------- http
-
-def host_ok(handler) -> bool:
-    # reject DNS-rebinding and cross-site requests: only our own localhost origin may read or write
-    port = handler.server.server_address[1]
-    allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
-    if handler.headers.get("Host", "") not in allowed:
-        return False
-    origin = handler.headers.get("Origin")
-    return origin is None or origin.split("://", 1)[-1] in allowed
-
 
 def _send(handler, status: int, obj):
     body = json.dumps(obj).encode()

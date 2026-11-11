@@ -31,6 +31,8 @@ from pathlib import Path
 
 import settings_api
 import workspaces
+from core import server as core_server
+from core.app import Core
 from core.util import read_json, write_json, short_path
 
 VERSION = "0.2.2"
@@ -1255,6 +1257,16 @@ def write_index(cfg: dict, snap: dict) -> str | None:
     return None
 
 
+_core: Core | None = None
+
+
+def the_core() -> Core:
+    global _core
+    if _core is None:
+        _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components")
+    return _core
+
+
 def collect(cfg=None, probe=False) -> dict:
     with _lock:
         cfg = cfg or load_config()
@@ -1278,7 +1290,9 @@ def collect(cfg=None, probe=False) -> dict:
         write_json(STX_HOME / "snapshot.json", snap)
         status("indexing workspaces")
         err = write_index(cfg, snap)
-        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err)
+        the_core().run_pass(cfg)
+        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err,
+               core_error=the_core().error)
         return snap
 
 
@@ -1334,6 +1348,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if not settings_api.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
             return self.send_error(403)
+        if core_server.handle(the_core(), self, "GET", load_config()):
+            return
         if settings_api.handle(self, "GET"):
             return
         if workspaces.handle(self, "GET", load_config()):
@@ -1404,6 +1420,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if not settings_api.host_ok(self):
             return self.send_error(403)
+        if core_server.handle(the_core(), self, "POST", load_config()):
+            return
         if not settings_api.handle(self, "POST") and not workspaces.handle(self, "POST", load_config()):
             self.send_error(404)
 

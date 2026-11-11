@@ -59,6 +59,15 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
 - `collector/approval_hook.py` is the `PermissionRequest` hook. It runs on the system Python, stays silent
   unless the session's switch is on and it can show the request whole, writes `<id>.req` and waits for
   `<id>.ans`. `approve_ready` looks for it in `settings.json`; Stellaxis never installs it.
+- `collector/core/` is the core every component plugs into. It imports nothing outside itself (a test enforces
+  it). `component.py` is the `Component` contract and `load()`; `store.py` the one SQLite file, where a component
+  creates only its own tables; `app.py` `Core` and `Ctx` (readers, offers, reads, actions run as a dry run or
+  applied); `util.py` `read_json`, `write_json`, `short_path`, `now_iso`; `undo.py` `Plan` and `restore` (used
+  by `prune.py`); `server.py` `host_ok`, `handle()` and `serve()`. `collect.py` makes it on first use
+  (`the_core()`), runs `run_pass` after each collection and offers it every request before `settings_api`.
+  `collector/components/` holds component folders and is empty until step 2. Under `$STELLAXIS_HOME`: the store
+  `stellaxis.db` and the action log `actions.jsonl`. Route: `GET /api/core`. If the store cannot be opened,
+  `status.json` carries `core_error` and no component runs. The spec has the rest.
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
 
