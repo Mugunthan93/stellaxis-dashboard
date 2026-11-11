@@ -101,7 +101,7 @@ A written statement of how one component relates to another. Each new component 
 
 ## Flagged ambiguities
 
-- "workspace" and "project" were used for the same thing. Resolved: the word is **project**. The current code, `config.json` and `CLAUDE.md` still say "workspace".
+- "workspace" and "project" were used for the same thing. Resolved: the word is **project**. The old word remains only as old names that still answer (old routes, the old page address, the old index file) and in `config.json` until the owner applies the rename.
 - "Stellaxis" means both the core and component 1. Resolved: they are the same thing in two roles.
 - Skills show in two components. Resolved: **Claude management** owns them. **Project management** only shows which project has which skill.
 - "memory" can mean disk space, RAM, or the notes Claude keeps between sessions. Resolved: in **Memory management** it means disk space only.

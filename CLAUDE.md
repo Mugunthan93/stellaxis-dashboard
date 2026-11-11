@@ -34,7 +34,7 @@ that with `launchctl kickstart -k gui/$(id -u)/com.stellaxis.collector`.
 ## Architecture
 
 The measuring side flows through one file, `$STELLAXIS_HOME/snapshot.json`, written by `collect.py`. The
-command centre (Home and Workspace pages) reads a separate index, `workspaces.json`, written in the same pass:
+command centre (Home and Project pages) reads a separate index, `projects.json`, written in the same pass:
 
 - `collector/collect.py` is the core. `parse_transcripts` reads `~/.claude/projects/**/*.jsonl`
   incrementally (per-file offsets kept in `cache.json`) for usage: `Skill`, `Agent`/`Task`,
@@ -51,43 +51,54 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   registered only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It
   asks the running `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting
   inline, because inline collection inside the app can hang on a macOS folder-permission prompt.
-- `collector/components/project_management/centre.py` is the command centre (`collector/workspaces.py` is an alias:
-  `import workspaces` returns the same module). Its component's reader writes `workspaces.json` from the pass inputs
+- `collector/components/project_management/` is the Project management component. `centre.py` is the command centre and
+  speaks the new names only. Its reader (in `__init__.py`) writes `projects.json` from the pass inputs
   (`write_index` in `collect.py` passes the sessions and folders to the core's pass); `build_index` makes the
-  content: every session (not just the capped snapshot ones) grouped workspace > repo > branch, plus configured
-  folders with no sessions as repos with no branches. Its routes are served through the core. It also starts and
-  messages sessions, and holds the task lists, approvals, plans, routines and test runs. It must not import `collect`
-  (that would be circular), and nothing under `components/` may import `workspaces`, `collect` or `unplaced`;
-  `collect.py` passes it `load_config()`.
+  content: every session (not just the capped snapshot ones) grouped project > repo > branch, plus configured
+  repos with no sessions as repos with no branches. A path in no project belongs to `UNASSIGNED`. Its routes are
+  served through the core (`handle` in `__init__.py`, which calls `centre.handle`). It also starts and
+  messages sessions, and holds the task lists, approvals, plans, routines and test runs. `__init__.py` offers
+  four reads (`index`, `projects`, `live`, `approvals`) and the action `new_names` with its undo step. It must not import `collect`
+  (that would be circular); `collect.py` passes it `load_config()`. Nothing outside `collector/core/` imports a component.
+- `collector/components/project_management/old_names.py` is the alias layer: the one place that maps the old names
+  (the old route, page address, index file, config keys, request key and group name) to the new ones, and the only code
+  that may write the old word. The old names keep answering until a later step removes the layer.
+  There is no alias module any more.
 - `collector/unplaced/jarvis.py` serves the Jarvis routes (briefing, ask, hear, say, hush). It runs today and is in no
-  component yet; it reaches the command centre through `import workspaces as W`. `Handler` calls its `handle` right
-  after the core's, before `settings_api.handle`.
+  component yet; `handle(handler, method, cfg, core)` reads Project management with `core.read(...)`, so a broken
+  component cannot stop it. `Handler` calls its `handle` right after the core's, before `settings_api.handle`.
 - `collector/approval_hook.py` is the `PermissionRequest` hook. It runs on the system Python, stays silent
   unless the session's switch is on and it can show the request whole, writes `<id>.req` and waits for
   `<id>.ans`. `approve_ready` looks for it in `settings.json`; Stellaxis never installs it.
 - `collector/core/` is the core every component plugs into. It imports nothing outside itself (a test enforces
   it). `component.py` is the `Component` contract and `load()`; `store.py` the one SQLite file, where a component
   creates only its own tables; `app.py` `Core` and `Ctx` (readers, offers, reads, actions run as a dry run or
-  applied); `util.py` `read_json`, `write_json`, `short_path`, `now_iso`; `undo.py` `Plan` and `restore` (used
-  by `prune.py`); `server.py` `host_ok`, `handle()` and `serve()`. `collect.py` makes it on first use
+  applied: `Ctx.act` runs an action, `Core.read` asks a component's offer; `Component.undo` maps step names to undo
+  handlers, and a step name must start with the component name and a dot; `Core.undo_handlers` gives them to
+  `restore`); `util.py` `read_json`, `write_json`, `short_path`, `now_iso`; `undo.py` `Plan` and `restore` (used
+  by `prune.py`; each plan gets its own manifest folder, and `restore` refuses a manifest with a step that has no
+  handler); `server.py` `host_ok`, `handle()` and `serve()`. `collect.py` makes it on first use
   (`the_core()`), runs `run_pass` after each collection and offers it every request before `settings_api`.
   `collector/components/` holds the component folders. Under `$STELLAXIS_HOME`: the store
   `stellaxis.db` and the action log `actions.jsonl`. Route: `GET /api/core`. If the store cannot be opened,
-  `status.json` carries `core_error`; components still run and answer, and only what calls `ctx.db()` fails (`StoreError`). The spec has the rest.
+  `status.json` carries `core_error`; components still run and answer, and actions run too; only what calls `ctx.db()` fails (`StoreError`). The spec has the rest.
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
 
-Other files under `$STELLAXIS_HOME`: `tasks/<workspace id>.md` (checkbox lines), `approvals/` (`<id>.req`,
+Other files under `$STELLAXIS_HOME`: `tasks/<project id>.md` (checkbox lines; the unassigned list is `tasks/unassigned.md`), `approvals/` (`<id>.req`,
 `<id>.ans`, and `on/<session uuid>`, the per-session switch), `test-results/` (last result per repo).
 
 Config keys for the command centre (`config.json`): `claude_bin` (default `~/.local/bin/claude`) and
-`workspaces`, a list of `{"id", "name", "folders": [path], "tests": {repo: argv}, "routines": [name]}`.
-An entry with no id is skipped. Test commands come from config only, never from a request.
+`projects`, a list of `{"id", "name", "repos": [path], "tests": {repo: argv}, "routines": [name]}`.
+An entry with no id is skipped. Hand-written cards go under `project_notes` (`project_notes` in `collect.py`). Test commands come from config only, never from a request.
+The old keys are read until the owner applies the rename: `GET /api/projects/new-names` shows the dry run,
+`POST` with `{"apply": true}` applies it, and `prune.py restore <stamp> --apply` undoes it.
 
-API routes (`workspaces.handle`, and `unplaced/jarvis.py` for the `/api/jarvis` ones, all behind
+API routes (`centre.handle` through the component, and `unplaced/jarvis.py` for the `/api/jarvis` ones, all behind
 `settings_api.host_ok`; POSTs need `application/json`):
-`GET /api/workspaces`; `GET` and `POST /api/workspaces/<id>/tasks`; `GET /api/workspaces/<id>/work` (plans,
-routines, tests); `POST /api/workspaces/<id>/tests/run`; `POST /api/sessions/new`;
+`GET /api/projects`; `GET` and `POST /api/projects/<id>/tasks`; `GET /api/projects/<id>/work` (plans,
+routines, tests); `POST /api/projects/<id>/tests/run`; `GET` and `POST /api/projects/new-names` (above);
+`POST /api/sessions/new` (`{"project", "folder", "prompt"}`);
 `POST /api/sessions/<uuid>/message`; `GET /api/sessions/<uuid>/reply`; `GET /api/approvals`;
 `POST /api/approvals/<id>`; `POST /api/approvals/session/<uuid>`; `GET /api/jarvis` (the briefing the
 `agents/jarvis.md` agent writes to `jarvis/briefing.md`); `POST /api/jarvis/ask` (a recording as `audio/*`,
@@ -96,6 +107,7 @@ time); `POST /api/jarvis/hear` (a recording: text only), `/api/jarvis/say` (`{"t
 returns when done) and `/api/jarvis/hush`. Their binaries are config keys `ffmpeg_bin`, `whisper_bin`,
 `whisper_model`, `say_bin` (defaults under `/opt/homebrew/bin`, `~/.stellaxis/models/ggml-base.en.bin` and
 `/usr/bin/say`).
+Every old route and request key still answers through the alias layer.
 
 Home (`/`) is the voice-only Jarvis portal: served without the shell (`FULL_SCREEN` in `collect.py`), no buttons
 or inputs. It listens all the time, records whatever is louder than the room until a pause, and acts only on text
@@ -119,11 +131,11 @@ session's first turn and is the number pruning should move.
 
 `DESIGN.md` holds the palette, fonts and component rules; read it before changing any page.
 
-Routes (`PAGES` in `collect.py`): `/` is `home.html` (what needs you, from `GET /api/workspaces`),
-`/overview` is `index.html`, `/workspace?id=<id>` is `workspace.html`. The sidebar's workspace links are
+Routes (`PAGES` in `collect.py`): `/` is `home.html` (what needs you, from `GET /api/projects`),
+`/overview` is `index.html`, `/project?id=<id>` is `project.html`. The sidebar's project links are
 built in `shell.html` from the same API; static links still work if it fails.
 
-`dashboard/home.html` and `workspace.html` are localhost only, not artifacts: they may use absolute `/api`
+`dashboard/home.html` and `project.html` are localhost only, not artifacts: they may use absolute `/api`
 paths and need no artifact path. `/reels/raw` runs only its own script (`reels_scripts` in `collect.py`
 hashes the last script in the file), so that page can't use inline event handlers.
 
@@ -158,3 +170,6 @@ via `~/.stellaxis/bin` (a symlink to `collector/` created by `collector/install.
 `tests/test_e2e.py` builds a fake HOME (skills, agents, commands, a stdio fake MCP server, transcripts,
 a git worktree) in `setUpClass`, runs `collect.py run --probe` once as a subprocess, and asserts on the
 snapshot. `test_zz_prune_roundtrip` mutates the fake HOME, so it is named to run last.
+
+In tests, get the command centre module with `core.component.import_folder(...)` (on the `project_management` folder, then `.centre`), never by another import.
+A test that applies an action uses `fake_home` from `tests/test_hardening.py`, so no manifest lands in the real `~/.claude`.

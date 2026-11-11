@@ -178,3 +178,28 @@ class IndependenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OldWordTest(unittest.TestCase):
+    """Check 5 of the core spec: the old word remains only where "Names during the move" allows."""
+    WORD = "work" + "space"
+    ALLOWED = {"collector/components/project_management/old_names.py", "tests/test_old_names.py", "CONTEXT.md",
+               "README.md"}   # README.md until step 3 (check 6 of the spec)
+
+    def test_the_old_word_remains_only_in_the_alias_layer_and_the_documents(self):
+        tracked = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertGreater(len(tracked), 50)
+        found = []
+        for name in tracked:
+            if name.startswith("docs/") or name in self.ALLOWED:
+                continue
+            if self.WORD in name.lower():
+                found.append(name)
+                continue
+            try:
+                text = (REPO / name).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            found += [f"{name}:{i}" for i, line in enumerate(text.splitlines(), 1)
+                      if self.WORD in line.lower().replace("nexus-" + self.WORD, "")]
+        self.assertEqual(found, [])
