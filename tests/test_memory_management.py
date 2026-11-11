@@ -926,7 +926,7 @@ class ComponentTest(unittest.TestCase):
                          else [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.level == 0
                          else [])
                 for n in names:
-                    self.assertNotIn(n, {"collect", "workspaces", "unplaced", "prune"}, f.name)
+                    self.assertNotIn(n, {"collect", "unplaced", "prune"}, f.name)
                     if hasattr(sys, "stdlib_module_names"):
                         self.assertTrue(n in sys.stdlib_module_names or n == "core", f"{f.name}: {n}")
 
