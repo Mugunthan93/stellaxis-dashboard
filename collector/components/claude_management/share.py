@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
+from contextlib import closing
+
+from core.app import StoreError
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 FIRST_START = (3, 21)   # Thursday 21:00 UTC is Friday 02:30 in India, the owner's answer of 2026-11-12
@@ -74,3 +78,52 @@ def project_names(ctx) -> dict:
         if p.get("id") and p["id"] not in out:
             out[p["id"]] = p.get("name") or p["id"]
     return out
+
+
+def over(use: float, allowance) -> bool:
+    """True when the project has an allowance, has used something, and has used all of it."""
+    return allowance is not None and use > 0 and use >= allowance
+
+
+def update(ctx, placed: list, now: dt.datetime) -> None:
+    """The pass of one collection, in one transaction: add up the cost of each project in every open week and make the
+    warnings. `placed` is what Project management lists as sessions; with none, nothing changes. A closed week is never
+    touched again. With the store down there is nothing to do and no error."""
+    if not placed:
+        return
+    try:
+        db = ctx.db()
+    except StoreError:
+        return
+    project = {p["id"]: p.get("project") or UNASSIGNED for p in reversed(placed) if p.get("id")}
+    stamp = iso(now)
+    with closing(db), db:
+        plan, pct = setting(db), percents(db)
+        start, end = (iso(t) for t in bounds(now, plan["day"], plan["hour"]))
+        for (week,) in db.execute("SELECT starts FROM claude_management_share_weeks WHERE starts > ?", (start,)).fetchall():
+            for table in ("weeks", "use", "warnings"):
+                db.execute(f"DELETE FROM claude_management_share_{table} WHERE {'starts' if table == 'weeks' else 'week'} = ?", (week,))
+        for (week,) in db.execute("SELECT starts FROM claude_management_share_weeks WHERE starts < ? AND ends > ?", (start, start)).fetchall():
+            db.execute("UPDATE claude_management_share_weeks SET ends = ?, closed = 0 WHERE starts = ?", (start, week))
+            db.execute("DELETE FROM claude_management_share_warnings WHERE week = ?", (week,))
+        db.execute("INSERT INTO claude_management_share_weeks (starts, ends, budget, closed, updated) VALUES (?, ?, ?, 0, ?) "
+                   "ON CONFLICT(starts) DO UPDATE SET ends = excluded.ends, closed = 0", (start, end, plan["budget"], stamp))
+        open_weeks = db.execute("SELECT starts, ends FROM claude_management_share_weeks WHERE closed = 0 ORDER BY starts").fetchall()
+        rows = [(r[0], json.loads(r[1])) for r in
+                db.execute("SELECT id, hours FROM claude_management_sessions WHERE last_ts >= ?", (open_weeks[0][0][:13],))]
+        for week, ends in open_weeks:
+            total: dict = {}
+            for sid, hours in rows:
+                who = project.get(sid, UNASSIGNED)
+                total[who] = total.get(who, 0.0) + sum(c for h, c in hours.items() if week[:13] <= h < ends[:13])
+            db.execute("DELETE FROM claude_management_share_use WHERE week = ?", (week,))
+            for who in sorted(set(pct) | {w for w, c in total.items() if c > 0}):
+                cost = round(total.get(who, 0.0), 4)
+                db.execute("INSERT INTO claude_management_share_use (week, project, cost, percent) VALUES (?, ?, ?, ?)",
+                           (week, who, cost, pct.get(who)))
+                allowance = None if plan["budget"] is None or who not in pct else round(plan["budget"] * pct[who] / 100, 4)
+                if over(cost, allowance):
+                    db.execute("INSERT OR IGNORE INTO claude_management_share_warnings (week, project, at, cost, allowance) "
+                               "VALUES (?, ?, ?, ?, ?)", (week, who, stamp, cost, allowance))
+            db.execute("UPDATE claude_management_share_weeks SET budget = ?, updated = ?, closed = ? WHERE starts = ?",
+                       (plan["budget"], stamp, int(ends <= stamp), week))

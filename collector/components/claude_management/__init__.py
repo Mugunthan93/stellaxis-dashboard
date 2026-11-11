@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from core.component import Component
-from core.util import write_json
+from core.util import now, write_json
 
 from . import records, settings, setup, share, share_set, snapshot, trim, usage
 
@@ -38,7 +38,19 @@ def setup_reader(ctx) -> None:
     records.save_items(ctx, snap["items"])
 
 
-COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader], lines=usage.LINES,
+def share_reader(ctx) -> None:
+    """Round three: the cost of each project in the week that is running, from the hourly costs of round one and the
+    sessions Project management wrote in round two. When round one failed, the last good numbers stay."""
+    if "collector" not in ctx.inputs or "files" not in ctx.memo:
+        return
+    try:
+        placed = ctx.read("project_management", "sessions")
+    except RuntimeError:   # Project management did not load: round two reports it already, so the pass keeps the last numbers
+        return
+    share.update(ctx, placed, now())
+
+
+COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader, share_reader], lines=usage.LINES,
                       records=records.RECORDS, changes=records.CHANGES, handle=settings.handle,
                       reads=[("project_management", "repos"), ("project_management", "sessions"), ("project_management", "projects")],
                       actions={"archive": trim.archive, "move": trim.move, "save_settings": settings.save_settings,

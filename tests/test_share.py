@@ -236,3 +236,255 @@ class ActionsTest(ShareHome):
         self.restore(r["manifest"], out=said.append, apply=False)
         self.assertIn("[dry-run] weekly budget: $200.00 goes back to not set", said[1])
         self.assertEqual(self.setting()["budget"], 200)
+
+
+W0, W1, W2 = "2026-10-29T21:00:00Z", "2026-11-05T21:00:00Z", "2026-11-12T21:00:00Z"
+
+
+class ReaderTest(ShareHome):
+    def collect(self):
+        return C.collect(dict(self.cfg))
+
+    def use(self, week):
+        return dict(self.sql("SELECT project, cost FROM claude_management_share_use WHERE week = ?", week))
+
+    def weeks(self):
+        return self.sql("SELECT starts, ends, closed FROM claude_management_share_weeks ORDER BY starts")
+
+    def warnings(self):
+        return self.sql("SELECT week, project, at FROM claude_management_share_warnings ORDER BY week, project")
+
+    def warned_in_w1(self):                              # budget 10, parts 40% ($4.00): warned in W1 at the second pass
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 4)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [(W1, "parts", "2026-11-06T10:00:00Z")])
+
+    def test_each_project_gets_the_cost_of_its_sessions_in_this_week(self):
+        self.turn("a", self.parts, "2026-11-06T09:10:00Z", 3)
+        self.turn("b", self.curl, "2026-11-06T09:20:00Z", 2)
+        self.turn("c", self.loose, "2026-11-06T09:30:00Z", 1)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.weeks(), [(W1, W2, 0)])
+        self.assertEqual(self.use(W1), {"parts": 3.0, "curl": 2.0, "unassigned": 1.0})
+        self.assertEqual(self.warnings(), [])                       # no budget: no warning
+
+    def test_a_week_boundary_in_the_middle_of_a_session_splits_its_cost(self):
+        self.turn("a", self.parts, "2026-11-05T20:59:00Z", 3)       # one minute before the week starts: the week before
+        self.turn("a", self.parts, "2026-11-05T21:00:00Z", 2)       # exactly on the start: this week
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.use(W1), {"parts": 2.0})
+        self.assertEqual(self.weeks(), [(W1, W2, 0)])               # the week before had no pass: it gets no row
+
+    def test_a_session_with_files_in_two_projects_repos_counts_once(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3, file="p")
+        self.turn("a", self.curl, "2026-11-06T10:00:00Z", 2, file="q")      # the same session, resumed in a repo of another project
+        self.at("2026-11-06T11:00:00Z")
+        self.collect()
+        use = self.use(W1)
+        self.assertEqual(sum(use.values()), 5.0)
+        self.assertEqual(len(use), 1)                               # all of it in one project
+
+    def test_a_repo_that_moves_to_another_project_takes_its_weeks_cost_along(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.cfg["projects"][0]["repos"], self.cfg["projects"][1]["repos"] = [], [str(self.curl), str(self.parts)]
+        self.at("2026-11-06T10:05:00Z")
+        self.collect()
+        self.assertEqual(self.use(W1), {"curl": 3.0})
+
+    def test_a_new_week_starts_at_zero_and_the_week_before_is_kept(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.turn("a", self.parts, "2026-11-12T20:30:00Z", 1)       # still week 1, after its last pass
+        self.turn("a", self.parts, "2026-11-12T21:30:00Z", 2)       # week 2
+        self.at("2026-11-12T22:00:00Z")
+        self.collect()
+        self.assertEqual(self.weeks(), [(W1, W2, 1), (W2, "2026-11-19T21:00:00Z", 0)])
+        self.assertEqual(self.use(W1), {"parts": 4.0})              # added up one last time, with the late turn
+        self.assertEqual(self.use(W2), {"parts": 2.0})
+
+    def test_a_closed_week_keeps_its_numbers_when_the_transcript_is_gone(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.at("2026-11-13T10:00:00Z")
+        self.collect()                                              # closes week 1
+        (self.claude / "projects" / "p" / "a.jsonl").unlink()
+        self.turn("b", self.curl, "2026-11-13T11:00:00Z", 1)
+        self.at("2026-11-13T12:00:00Z")
+        self.collect()
+        self.assertEqual(self.use(W1), {"parts": 3.0})
+
+    def test_a_pass_after_a_long_gap_closes_the_old_week_and_makes_no_week_for_the_gap(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.at("2026-11-27T10:00:00Z")                             # three weeks later
+        self.collect()
+        self.assertEqual(self.weeks(), [(W1, W2, 1), ("2026-11-26T21:00:00Z", "2026-12-03T21:00:00Z", 0)])
+        self.assertEqual(self.use(W1), {"parts": 3.0})
+
+    def test_a_project_that_uses_all_of_its_share_is_warned_once(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)        # an allowance of $4.00
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [])                       # $3.00 of $4.00
+        self.turn("a", self.parts, "2026-11-06T10:30:00Z", 1)
+        self.at("2026-11-06T11:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [(W1, "parts", "2026-11-06T11:00:00Z")])      # $4.00 of $4.00: all of it
+        self.turn("a", self.parts, "2026-11-06T11:30:00Z", 5)
+        self.at("2026-11-06T12:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [(W1, "parts", "2026-11-06T11:00:00Z")])      # not again, and the first time stays
+        self.assertEqual(self.sql("SELECT cost, allowance FROM claude_management_share_warnings"), [(4.0, 4.0)])
+
+    def test_a_new_week_can_warn_again_and_the_old_warning_stays(self):
+        self.warned_in_w1()
+        self.turn("a", self.parts, "2026-11-12T21:30:00Z", 4)
+        self.at("2026-11-12T22:00:00Z")
+        self.collect()
+        self.assertEqual([(w, p) for w, p, _ in self.warnings()], [(W1, "parts"), (W2, "parts")])
+
+    def test_a_percent_of_0_warns_at_the_first_cent_and_no_percent_never_warns(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=0)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 1)
+        self.turn("b", self.curl, "2026-11-06T09:00:00Z", 9)        # Curlberry has no percent
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual([(w, p) for w, p, _ in self.warnings()], [(W1, "parts")])
+        self.assertEqual(self.sql("SELECT project, percent FROM claude_management_share_use ORDER BY project"), [("curl", None), ("parts", 0.0)])
+
+    def test_a_share_of_0_with_no_use_does_not_warn_and_still_has_a_row(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=0)
+        self.turn("b", self.curl, "2026-11-06T09:00:00Z", 1)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [])
+        self.assertEqual(self.use(W1), {"curl": 1.0, "parts": 0.0})
+
+    def test_shares_that_add_up_to_more_than_100_each_count_on_their_own(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=80)
+        self.act("set_percent", project="curl", percent=60)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 8)
+        self.turn("b", self.curl, "2026-11-06T09:00:00Z", 5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual([(w, p) for w, p, _ in self.warnings()], [(W1, "parts")])
+
+    def test_without_a_budget_nothing_warns(self):
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 100)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [])
+        self.assertEqual(self.sql("SELECT project, cost, percent FROM claude_management_share_use"), [("parts", 100.0, 40.0)])
+
+    def test_unassigned_warns_only_when_it_was_given_a_share(self):
+        self.act("set_budget", budget=10)
+        self.turn("c", self.loose, "2026-11-06T09:00:00Z", 5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.warnings(), [])
+        self.act("set_percent", project="unassigned", percent=10)
+        self.at("2026-11-06T10:05:00Z")
+        self.collect()
+        self.assertEqual([(w, p) for w, p, _ in self.warnings()], [(W1, "unassigned")])
+
+    def test_the_week_start_changed_in_the_middle_of_a_week_cuts_the_running_week_and_counts_no_hour_twice(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)       # Friday
+        self.turn("a", self.parts, "2026-11-09T05:00:00Z", 2)       # Monday morning
+        self.at("2026-11-09T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.use(W1), {"parts": 5.0})
+        self.act("set_week_start", day="monday", time="00:00", utc_offset="+00:00")
+        self.at("2026-11-09T10:05:00Z")
+        self.collect()
+        self.assertEqual(self.weeks(), [(W1, "2026-11-09T00:00:00Z", 1), ("2026-11-09T00:00:00Z", "2026-11-16T00:00:00Z", 0)])
+        self.assertEqual(self.use(W1), {"parts": 3.0})
+        self.assertEqual(self.use("2026-11-09T00:00:00Z"), {"parts": 2.0})
+
+    def test_a_week_start_moved_back_before_the_running_week_takes_the_running_week_in(self):
+        self.turn("a", self.parts, "2026-11-03T09:00:00Z", 1)       # Tuesday, week 0
+        self.at("2026-11-03T10:00:00Z")
+        self.collect()
+        self.turn("a", self.parts, "2026-11-04T09:00:00Z", 2)       # Wednesday, week 0
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 4)       # Friday, week 1
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual((self.use(W0), self.use(W1)), ({"parts": 3.0}, {"parts": 4.0}))
+        self.act("set_week_start", day="wednesday", time="00:00", utc_offset="+00:00")
+        self.at("2026-11-06T10:05:00Z")
+        self.collect()
+        new = "2026-11-04T00:00:00Z"
+        self.assertEqual(self.weeks(), [(W0, new, 1), (new, "2026-11-11T00:00:00Z", 0)])
+        self.assertEqual((self.use(W0), self.use(new)), ({"parts": 1.0}, {"parts": 6.0}))
+
+    def test_a_warning_of_a_week_that_is_cut_is_made_again_only_when_it_is_still_true(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)        # allowance 4
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)       # Friday
+        self.turn("a", self.parts, "2026-11-09T05:00:00Z", 2)       # Monday
+        self.at("2026-11-09T10:00:00Z")
+        self.collect()
+        self.assertEqual([(w, p) for w, p, _ in self.warnings()], [(W1, "parts")])
+        self.act("set_week_start", day="monday", time="00:00", utc_offset="+00:00")
+        self.at("2026-11-09T10:05:00Z")
+        self.collect()
+        self.assertEqual(self.use(W1), {"parts": 3.0})              # not over
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_session_project_management_does_not_list_counts_as_unassigned(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.turn("b", self.curl, "2026-11-06T09:30:00Z", 2)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        SHARE.update(C.the_core().ctx("claude_management", self.cfg), [{"id": "a", "project": "parts"}], dt.datetime(2026, 11, 6, 10, 5, tzinfo=dt.timezone.utc))
+        self.assertEqual(self.use(W1), {"parts": 3.0, "unassigned": 2.0})
+
+    def test_a_listed_session_with_no_hours_adds_nothing(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        SHARE.update(C.the_core().ctx("claude_management", self.cfg),
+                     [{"id": "a", "project": "parts"}, {"id": "ghost", "project": "curl"}], dt.datetime(2026, 11, 6, 10, 5, tzinfo=dt.timezone.utc))
+        self.assertEqual(self.use(W1), {"parts": 3.0})
+
+    def test_when_project_management_gives_no_session_nothing_changes(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 4)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        tables = "SELECT * FROM claude_management_share_%s"
+        before = [self.sql(tables % t) for t in ("weeks", "use", "warnings")]
+        self.assertTrue(before[0] and before[1] and before[2])
+        [pm] = [c for c in C.the_core().components if c.name == "project_management"]
+        self.at("2026-11-13T10:00:00Z")
+        with mock.patch.dict(pm.offers, {"sessions": lambda ctx, **args: []}):
+            self.collect()
+        self.assertEqual([self.sql(tables % t) for t in ("weeks", "use", "warnings")], before)
+
+    def test_with_the_store_down_the_pass_has_no_error_of_the_share(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        (self.stx / "stellaxis.db").mkdir()
+        snap = self.collect()
+        self.assertTrue(snap["sessions"])
+        self.assertIsNone(self.status()["index_error"])
+
+    def test_a_pass_that_is_not_a_collection_adds_nothing_up(self):
+        C.the_core().run_pass(self.cfg, {})
+        self.assertEqual(self.weeks(), [])
