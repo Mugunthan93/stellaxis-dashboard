@@ -26,11 +26,11 @@ import sys
 import threading
 import time
 import urllib.parse
-import zlib
 from pathlib import Path
 
 import settings_api
 from core import server as core_server
+from core import transcripts
 from core import util as core_util
 from core.app import Core
 from core.util import read_json, write_json, short_path
@@ -211,12 +211,10 @@ CACHE_TTL_SECONDS = 3600
 CACHE_LOSS_MIN_CONTEXT = 20000
 
 
-def new_file_state(path: str) -> dict:
-    return {"path": path, "offset": 0, "size": 0, "session": None, "cwd": None, "first_ts": None,
-            "last_ts": None, "entrypoint": None, "version": None, "branch": None,
-            "sidechain": "/subagents/" in path, "models": {}, "hourly": {}, "baseline": None,
-            "calls": {}, "mcp_tools": {}, "agent_tokens": {}, "context": {}, "recent": {},
-            "pending": {}, "turns": 0, "prompts": 0, "last_turn": None, "cache_losses": []}
+def _fresh() -> dict:
+    """The usage keys of a file's state, after the head facts the transcript helper keeps."""
+    return {"models": {}, "hourly": {}, "baseline": None, "calls": {}, "mcp_tools": {}, "agent_tokens": {},
+            "context": {}, "recent": {}, "pending": {}, "turns": 0, "prompts": 0, "last_turn": None, "cache_losses": []}
 
 
 def _bump(d: dict, k: str, n: int = 1):
@@ -296,14 +294,6 @@ def _cache_loss(st: dict, ts, model: str, row: list):
 def _line(st: dict, d: dict, ids: dict, owner: int):
     t = d.get("type")
     ts = d.get("timestamp")
-    if ts:
-        st["first_ts"] = st["first_ts"] or ts
-        st["last_ts"] = ts
-    st["session"] = st["session"] or d.get("sessionId")
-    st["cwd"] = st["cwd"] or d.get("cwd")
-    st["entrypoint"] = st["entrypoint"] or d.get("entrypoint")
-    st["version"] = d.get("version") or st["version"]
-    st["branch"] = d.get("gitBranch") or st["branch"]
     if t == "assistant":
         m = d.get("message") or {}
         mid = m.get("id") or d.get("requestId") or d.get("uuid")
@@ -388,56 +378,11 @@ def _line(st: dict, d: dict, ids: dict, owner: int):
         _attachment(st, d["attachment"])
 
 
-def _owner(key: str) -> int:
-    return zlib.crc32(key.encode())
+USAGE = transcripts.Consumer(fresh=_fresh, line=_line)
 
 
 def parse_transcripts(cache: dict) -> dict:
-    files = cache.setdefault("files", {})
-    ids = cache.setdefault("ids", {})  # call id -> owning file, across all files; a replay is not new usage
-    proj_root = CLAUDE_DIR / "projects"
-    found, seen = [], set()
-    for p in proj_root.rglob("*.jsonl") if proj_root.exists() else []:
-        seen.add(str(p))
-        try:
-            s = p.stat()
-        except OSError:
-            continue
-        found.append((s.st_mtime, str(p), s.st_size, p))
-    found.sort(key=lambda x: x[:3])  # oldest first, so the original of a replay is the one counted
-    sizes = {k: size for _, k, size, _ in found}
-    stale = {k for k, st in files.items()
-             if k not in seen or sizes.get(k, st["size"]) < st["size"] or st.get("v") != VERSION}
-    if stale:
-        gone = {_owner(k) for k in stale}
-        cache["ids"] = ids = {i: o for i, o in ids.items() if o not in gone}
-    for _, key, size, p in found:
-        st = files.get(key)
-        if st is None or key in stale:
-            st = files[key] = new_file_state(key)
-            st["v"] = VERSION
-        if size == st["offset"]:
-            continue
-        try:
-            with open(p, "rb") as f:
-                f.seek(st["offset"])
-                chunk = f.read(size - st["offset"])
-        except OSError:
-            continue
-        last_nl = chunk.rfind(b"\n")
-        if last_nl < 0:
-            continue
-        for raw in chunk[:last_nl].splitlines():
-            try:
-                _line(st, json.loads(raw), ids, _owner(key))
-            except (ValueError, TypeError, AttributeError):
-                continue
-        st["offset"] += last_nl + 1
-        st["size"] = size
-    for k in list(files):
-        if k not in seen:
-            del files[k]
-    return files
+    return transcripts.read(CLAUDE_DIR / "projects", cache, [USAGE])
 
 
 # ---------------------------------------------------------------- inventory

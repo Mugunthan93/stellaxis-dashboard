@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from core.component import Component, load
+from core import transcripts
 from core.store import Store
 from core.undo import Plan
-from core.util import now_iso
+from core.util import now_iso, read_json, write_json
 
 
 def _err(e: BaseException) -> str:
@@ -45,6 +47,29 @@ class Ctx:
     def act(self, action: str, args: dict | None = None, apply: bool = False, plan: Plan | None = None) -> dict:
         return self._core.run_action(self.name, action, args or {}, apply, self.cfg, plan=plan)
 
+    @property
+    def cache(self) -> dict:
+        """The pass cache (`cache.json`): bookkeeping only, never records. Loaded the first time it is asked in a pass."""
+        run = self._core.running()
+        if run["cache"] is None:
+            got = read_json(self.home / "cache.json", {})
+            run["cache"] = got if isinstance(got, dict) else {}
+        return run["cache"]
+
+    def transcripts(self) -> dict:
+        """The state of every transcript file (path -> state), read one time in a pass for every component."""
+        run = self._core.running()
+        if run["files"] is None:
+            consumers = [c.lines for c in self._core.components if not c.error and c.lines is not None]
+            run["files"] = transcripts.read(self.claude_dir / "projects", self.cache, consumers)
+        return run["files"]
+
+    @property
+    def memo(self) -> dict:
+        """A dict of this component's own that lives for one pass; outside a pass it is empty."""
+        run = self._core.pass_state
+        return run["memos"].setdefault(self.name, {}) if run is not None else {}
+
     def status(self, phase: str, force: bool = True, **detail) -> None:
         """Tell the way in what the pass is doing. A way in that listens gets it; nothing here ever raises."""
         fn = self._core.on_status
@@ -67,6 +92,8 @@ class Core:
         self.store: Store | None = None
         self.error: str | None = None
         self.last_pass: dict | None = None
+        self.pass_state: dict | None = None   # the cache, the transcript files and the memos of the pass that runs
+        self._pass_lock = threading.RLock()
         try:
             self.store = Store(self.home / "stellaxis.db")
         except Exception as e:
@@ -104,20 +131,31 @@ class Core:
         return {step: bind(fn, self.ctx(c.name, cfg or {}))
                 for c in self.components if not c.error for step, fn in c.undo.items()}
 
+    def running(self) -> dict:
+        if self.pass_state is None:
+            raise RuntimeError("only during a pass")
+        return self.pass_state
+
     def run_pass(self, cfg: dict, inputs: dict | None = None) -> dict:
-        out: dict = {}
-        for c in self.components:
-            if c.error:
-                continue
-            errors = []
-            for reader in c.readers:
-                try:
-                    reader(self.ctx(c.name, cfg, inputs))
-                except Exception as e:
-                    errors.append(_err(e))
-            out[c.name] = {"readers": len(c.readers), "errors": errors}
-        self.last_pass = {"at": now_iso(), "components": out}
-        return self.last_pass
+        """Run the readers in rounds: the first reader of every component (in name order), then the second, ..."""
+        with self._pass_lock:
+            comps = [c for c in self.components if not c.error]
+            out: dict = {c.name: {"readers": len(c.readers), "errors": []} for c in comps}
+            self.pass_state = {"cache": None, "files": None, "memos": {}}
+            try:
+                for i in range(max((len(c.readers) for c in comps), default=0)):
+                    for c in comps:
+                        if i < len(c.readers):
+                            try:
+                                c.readers[i](self.ctx(c.name, cfg, inputs))
+                            except Exception as e:
+                                out[c.name]["errors"].append(_err(e))
+                if self.pass_state["cache"] is not None:
+                    write_json(self.home / "cache.json", self.pass_state["cache"])
+            finally:
+                self.pass_state = None
+            self.last_pass = {"at": now_iso(), "components": out}
+            return self.last_pass
 
     def run_action(self, component: str, action: str, args: dict, apply: bool, cfg: dict, plan: Plan | None = None) -> dict:
         c = next((c for c in self.components if c.name == component), None)

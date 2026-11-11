@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+from core.transcripts import Consumer
+
 NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 _IMPORT_LOCK = threading.RLock()
@@ -25,6 +27,7 @@ class Component:
     reads: list = field(default_factory=list)
     undo: dict = field(default_factory=dict)   # step name -> handler(entry: dict, apply: bool, out) -> bool
     handle: Callable | None = None
+    lines: Consumer | None = None   # gets every new transcript line of a pass (core.transcripts)
     error: str | None = None
 
 

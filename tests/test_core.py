@@ -23,7 +23,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
-from core import component, store, undo, server
+from core import component, store, undo, server, transcripts
 from core.app import Core, StoreError
 
 
@@ -435,6 +435,237 @@ class CoreTest(unittest.TestCase):
         seen = component.import_folder(self.comps / "sees").SEEN
         self.assertEqual(seen, [{"sessions": [1, 2]}, {}])
         self.assertEqual(c.ctx("sees", {}).inputs, {})
+
+    ROUNDS = ("from core.component import Component\nfrom pathlib import Path\n"
+              "def log(ctx, what):\n    with open(Path(ctx.home) / 'order.txt', 'a') as f:\n        f.write(what + ' ')\n"
+              "def one(ctx):\n    log(ctx, '{n}1')\n    {boom}\n"
+              "def two(ctx):\n    log(ctx, '{n}2')\n"
+              "COMPONENT = Component(name='{n}', readers=[one, two])\n")
+
+    def test_a_pass_runs_in_rounds(self):
+        put(self.comps, "alpha", self.ROUNDS.format(n="alpha", boom="raise ValueError('x')"))
+        put(self.comps, "beta", self.ROUNDS.format(n="beta", boom="pass"))
+        res = Core(self.home, self.home / ".claude", self.comps).run_pass({})
+        self.assertEqual((self.home / "order.txt").read_text().split(), ["alpha1", "beta1", "alpha2", "beta2"])
+        self.assertEqual(res["components"]["alpha"], {"readers": 2, "errors": ["ValueError: x"]})
+        self.assertEqual(res["components"]["beta"], {"readers": 2, "errors": []})
+
+    def test_the_pass_cache_is_loaded_one_time_and_written_at_the_end(self):
+        put(self.comps, "alpha", "from core.component import Component\nSEEN = []\n"
+            "def r(ctx):\n    ctx.cache['k'] = 1\n    SEEN.append(ctx.cache)\n"
+            "COMPONENT = Component(name='alpha', readers=[r])\n")
+        put(self.comps, "beta", "from core.component import Component\nSEEN = []\n"
+            "def r(ctx):\n    SEEN.append(ctx.cache)\n"
+            "COMPONENT = Component(name='beta', readers=[r])\n")
+        (self.home / "cache.json").write_text('{"old": 2}')
+        c = self.core()
+        c.run_pass({})
+        a = component.import_folder(self.comps / "alpha").SEEN
+        b = component.import_folder(self.comps / "beta").SEEN
+        self.assertIs(a[0], b[0])
+        self.assertEqual(json.loads((self.home / "cache.json").read_text()), {"old": 2, "k": 1})
+        (self.home / "cache.json").write_text("[1]")   # not an object: the pass starts from an empty cache
+        c.run_pass({})
+        self.assertEqual(json.loads((self.home / "cache.json").read_text()), {"k": 1})
+        self.assertIsNot(a[1], a[0])
+
+    def test_a_pass_that_never_asks_for_the_cache_writes_none(self):
+        put(self.comps, "alpha", ALPHA)
+        self.core().run_pass({"x": 1})
+        self.assertFalse((self.home / "cache.json").exists())
+
+    def test_the_cache_and_the_transcripts_exist_only_during_a_pass(self):
+        put(self.comps, "alpha", ALPHA)
+        c = self.core()
+        for _ in range(2):
+            ctx = c.ctx("alpha", {})
+            with self.assertRaisesRegex(RuntimeError, "only during a pass"):
+                ctx.cache
+            with self.assertRaisesRegex(RuntimeError, "only during a pass"):
+                ctx.transcripts()
+            c.run_pass({})
+
+    LINES = ("from core.component import Component\nfrom core.transcripts import Consumer\nGOT = []\n"
+             "def line(st, d, ids, owner):\n    st['{n}'] += 1\n"
+             "def r(ctx):\n    GOT.append(ctx.transcripts())\n    GOT.append(ctx.transcripts())\n"
+             "COMPONENT = Component(name='{n}', readers=[r], lines=Consumer(fresh=lambda: {{'{n}': 0}}, line=line))\n")
+
+    def test_every_component_with_lines_gets_every_line_of_one_reading(self):
+        put(self.comps, "alpha", self.LINES.format(n="alpha"))
+        put(self.comps, "beta", self.LINES.format(n="beta"))
+        p = self.home / ".claude" / "projects" / "p" / "s.jsonl"
+        p.parent.mkdir(parents=True)
+        p.write_text("".join(json.dumps({"type": "user", "sessionId": "s", "n": i}) + "\n" for i in range(3)))
+        self.core().run_pass({})
+        a = component.import_folder(self.comps / "alpha").GOT
+        b = component.import_folder(self.comps / "beta").GOT
+        self.assertTrue(a[0] is a[1] is b[0] is b[1])
+        st = a[0][str(p)]
+        self.assertEqual((st["alpha"], st["beta"], st["session"]), (3, 3, "s"))
+        self.assertEqual(json.loads((self.home / "cache.json").read_text())["files"][str(p)]["alpha"], 3)
+
+    def test_a_memo_belongs_to_one_component_and_lives_for_one_pass(self):
+        put(self.comps, "alpha", "from core.component import Component\nBEFORE = []\n"
+            "def r(ctx):\n    BEFORE.append(dict(ctx.memo))\n    ctx.memo['x'] = 1\n"
+            "def m(ctx):\n    return [dict(ctx.memo)]\n"
+            "COMPONENT = Component(name='alpha', readers=[r], offers={'m': m})\n")
+        put(self.comps, "beta", "from core.component import Component\nGOT = []\n"
+            "def r(ctx):\n    GOT.append(ctx.read('alpha', 'm'))\n    GOT.append(dict(ctx.memo))\n"
+            "COMPONENT = Component(name='beta', readers=[r], reads=[('alpha', 'm')])\n")
+        c = self.core()
+        c.run_pass({})
+        self.assertEqual(component.import_folder(self.comps / "beta").GOT, [[{"x": 1}], {}])
+        self.assertEqual(c.ctx("alpha", {}).memo, {})
+        c.run_pass({})
+        self.assertEqual(component.import_folder(self.comps / "alpha").BEFORE, [{}, {}])
+
+
+def count(st, line, ids, owner):
+    st["n"] += 1
+    st["seen"].append(line["type"])
+    if "k" in line:
+        ids[line["k"]] = owner
+
+
+def boom(st, line, ids, owner):
+    raise TypeError("boom")
+
+
+COUNT = transcripts.Consumer(fresh=lambda: {"n": 0, "seen": []}, line=count)
+HEAD = ["path", "offset", "size", "session", "cwd", "first_ts", "last_ts", "entrypoint", "version", "branch", "sidechain"]
+
+
+class TranscriptsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name) / "projects"
+        self.cache = {}
+
+    def write(self, name, rows, mode="w"):
+        p = self.dir / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, mode) as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        return str(p)
+
+    def read(self, *consumers):
+        return transcripts.read(self.dir, self.cache, list(consumers))
+
+    def test_a_new_file_gets_the_state_keys_in_order(self):
+        a = self.write("p/a.jsonl", [{"type": "user"}])
+        side = self.write("p/a/subagents/x.jsonl", [{"type": "user"}])
+        files = self.read(COUNT)
+        self.assertIs(files, self.cache["files"])
+        self.assertEqual(list(files[a]), HEAD + ["n", "seen", "v"])
+        self.assertEqual((files[a]["v"], transcripts.VERSION), ("0.2.2", "0.2.2"))
+        self.assertEqual((files[a]["sidechain"], files[side]["sidechain"]), (False, True))
+
+    def test_each_line_is_handed_one_time(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}, {"type": "b"}, {"type": "c"}])
+        self.read(COUNT)
+        self.assertEqual(self.cache["files"][a]["n"], 3)
+        before = json.dumps(self.cache)
+        self.read(COUNT)
+        self.assertEqual(json.dumps(self.cache), before)
+        self.write("p/a.jsonl", [{"type": "d"}, {"type": "e"}], mode="a")
+        self.read(COUNT)
+        self.assertEqual(self.cache["files"][a]["seen"], ["a", "b", "c", "d", "e"])
+
+    def test_a_last_line_without_a_newline_waits_until_it_is_whole(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}])
+        with open(a, "a") as f:
+            f.write('{"type": "b"')
+        self.read(COUNT)
+        self.assertEqual(self.cache["files"][a]["seen"], ["a"])
+        with open(a, "a") as f:
+            f.write("}\n")
+        self.read(COUNT)
+        self.assertEqual(self.cache["files"][a]["seen"], ["a", "b"])
+
+    def test_the_head_facts(self):
+        a = self.write("p/a.jsonl", [
+            {"type": "a", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "s1", "cwd": "/one", "entrypoint": "cli",
+             "version": "1.0", "gitBranch": "main"},
+            {"type": "b", "sessionId": "s2", "cwd": "/two", "entrypoint": "sdk"},
+            {"type": "c", "timestamp": "2026-01-02T00:00:00Z", "version": "2.0", "gitBranch": "dev"}])
+        st = self.read()[a]
+        self.assertEqual({k: st[k] for k in HEAD[3:10]},
+                         {"session": "s1", "cwd": "/one", "first_ts": "2026-01-01T00:00:00Z", "last_ts": "2026-01-02T00:00:00Z",
+                          "entrypoint": "cli", "version": "2.0", "branch": "dev"})
+
+    def test_a_bad_line_or_a_failing_consumer_stops_nothing_else(self):
+        a = self.write("p/a.jsonl", ["x", {"type": "a"}])
+        with open(a, "a") as f:
+            f.write("not json\n")
+        self.write("p/a.jsonl", [{"type": "b"}], mode="a")
+        st = self.read(transcripts.Consumer(fresh=dict, line=boom), COUNT)[a]
+        self.assertEqual(st["seen"], ["a", "b"])
+
+    def test_a_file_that_got_shorter_is_read_again_and_its_ids_are_forgotten(self):
+        a = self.write("p/a.jsonl", [{"type": "a", "k": "1"}, {"type": "a", "k": "2"}])
+        b = self.write("p/b.jsonl", [{"type": "b", "k": "3"}])
+        self.read(COUNT)
+        self.assertEqual(self.cache["ids"], {"1": transcripts.owner(a), "2": transcripts.owner(a), "3": transcripts.owner(b)})
+        self.write("p/a.jsonl", [{"type": "a"}])
+        self.read(COUNT)
+        self.assertEqual(self.cache["files"][a]["n"], 1)
+        self.assertEqual(self.cache["ids"], {"3": transcripts.owner(b)})
+
+    def test_a_state_of_another_version_is_read_again(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}, {"type": "b"}])
+        self.read(COUNT)
+        self.cache["files"][a].update(v="0.1", n=99)
+        self.read(COUNT)
+        self.assertEqual((self.cache["files"][a]["n"], self.cache["files"][a]["v"]), (2, "0.2.2"))
+
+    def test_a_deleted_file_leaves_files(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}])
+        b = self.write("p/b.jsonl", [{"type": "b"}])
+        self.read(COUNT)
+        Path(a).unlink()
+        self.assertEqual(list(self.read(COUNT)), [b])
+
+    def test_a_consumer_added_later_gets_every_line(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}, {"type": "a"}])
+        b = self.write("p/b.jsonl", [{"type": "b"}] * 3)
+        self.read()
+        self.assertNotIn("n", self.cache["files"][a])
+        files = self.read(COUNT)
+        self.assertEqual((files[a]["n"], files[b]["n"]), (2, 3))
+
+    def test_a_consumer_that_is_gone_leaves_the_files_that_move(self):
+        a = self.write("p/a.jsonl", [{"type": "a"}, {"type": "a"}])
+        b = self.write("p/b.jsonl", [{"type": "b"}] * 3)
+        self.read(COUNT)
+        self.write("p/a.jsonl", [{"type": "a"}], mode="a")
+        files = self.read()
+        self.assertEqual(list(files[a]), HEAD + ["v"])
+        self.assertEqual(files[b]["n"], 3)
+        b_before = json.dumps(files[b])
+        files = self.read(COUNT)
+        self.assertEqual(files[a]["n"], 3)
+        self.assertEqual(json.dumps(files[b]), b_before)
+
+    def test_sessions_groups_the_files(self):
+        def state(path, **kw):
+            st = {"path": path, "session": None, "cwd": None, "first_ts": None, "last_ts": None, "entrypoint": None,
+                  "version": None, "branch": None, "sidechain": "/subagents/" in path}
+            st.update(kw)
+            return st
+        main = state("/p/s.jsonl", session="s", cwd="/a", branch="main", first_ts="2026-01-02", last_ts="2026-01-03",
+                     entrypoint="cli", version="1")
+        later = state("/p/s2.jsonl", session="s", branch="dev", first_ts="2026-01-04", last_ts="2026-01-05", version="2")
+        side = state("/p/s/subagents/x.jsonl", session="s", cwd="/other", branch="side", entrypoint="sdk",
+                     first_ts="2026-01-01", last_ts="2026-01-02")
+        lonely = state("/p/lonely.jsonl", cwd="/l", first_ts="2026-02-01", last_ts="2026-02-01")
+        out = transcripts.sessions({s["path"]: s for s in (main, later, side, lonely)})
+        self.assertEqual(list(out), ["s", "lonely"])
+        self.assertEqual(out["s"], {"id": "s", "cwd": "/a", "branch": "dev", "first_ts": "2026-01-01", "last_ts": "2026-01-05",
+                                    "entrypoint": "cli", "version": "2", "subagent_files": 1, "files": [main, later, side]})
+        self.assertEqual(out["lonely"], {"id": "lonely", "cwd": "/l", "branch": None, "first_ts": "2026-02-01",
+                                         "last_ts": "2026-02-01", "entrypoint": None, "version": None,
+                                         "subagent_files": 0, "files": [lonely]})
 
 
 class UtilTest(unittest.TestCase):
