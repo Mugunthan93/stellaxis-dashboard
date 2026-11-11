@@ -6,6 +6,8 @@ A path in no project belongs to UNASSIGNED.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -177,11 +179,30 @@ def _bin(cfg: dict) -> str:
     return os.path.expanduser(cfg.get("claude_bin") or "~/.local/bin/claude")
 
 
+_PLACES: contextvars.ContextVar = contextvars.ContextVar("stellaxis_places", default=None)  # (home, claude_dir) while a component call runs
+
+
+@contextlib.contextmanager
+def at(ctx):
+    """Inside it the two folders are the ctx's; outside it they come from the environment."""
+    token = _PLACES.set((Path(ctx.home), Path(ctx.claude_dir)))
+    try:
+        yield
+    finally:
+        _PLACES.reset(token)
+
+
 def _claude_dir() -> Path:
+    places = _PLACES.get()
+    if places:
+        return places[1]
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
 
 
 def _home() -> Path:
+    places = _PLACES.get()
+    if places:
+        return places[0]
     return Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
 
 

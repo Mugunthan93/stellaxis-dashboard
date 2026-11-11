@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 import unplaced.jarvis as J  # noqa: E402
@@ -29,7 +30,7 @@ class BriefingTest(unittest.TestCase):
         cls.old = os.environ.get("STELLAXIS_HOME")
         os.environ["STELLAXIS_HOME"] = str(cls.home)
         cls.cfg = {"claude_bin": "/no/such/claude"}
-        core = Core(cls.home, cls.home / ".claude", COMPS)
+        cls.core = core = Core(cls.home, cls.home / ".claude", COMPS)
         import http.server
         import threading
 
@@ -73,6 +74,13 @@ class BriefingTest(unittest.TestCase):
         self.assertEqual((code, body["text"]), (200, "# Briefing\n- one"))
         self.assertTrue(body["written"])
 
+    def test_the_briefing_answers_when_an_offer_fails(self):
+        def boom(ctx, **kw):
+            raise RuntimeError("boom")
+        [pm] = [c for c in self.core.components if c.name == "project_management"]
+        with mock.patch.dict(pm.offers, {"index": boom}):
+            self.assertEqual(self.get("/api/jarvis")[0], 200)
+
     def test_the_command_centre_no_longer_answers_jarvis_routes(self):
         for name in ("_jarvis", "_jarvis_ask", "_jarvis_voice", "transcribe", "ask", "say", "_ASK_LOCK", "_HEAR_LOCK", "_SAY_LOCK"):
             self.assertFalse(hasattr(W, name), name)
@@ -112,7 +120,7 @@ class JarvisAskTest(unittest.TestCase):
             "whisper_model": str(d / "model.bin"), "projects": [{"id": "p", "name": "PartHub"}]}
         self.log = log
         cfg = self.cfg
-        core = Core(d / "stx", d / "claude", COMPS)
+        self.core = core = Core(d / "stx", d / "claude", COMPS)
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -153,6 +161,14 @@ class JarvisAskTest(unittest.TestCase):
         code, body = self.post(json.dumps({"question": "hello"}).encode(), "application/json")
         self.assertEqual((code, body["answer"]), (200, "You asked: hello"))
         self.assertFalse(self.log.exists() and self.calls("whisper"))
+
+    def test_an_offer_that_fails_does_not_stop_the_answer(self):
+        def boom(ctx, **kw):
+            raise RuntimeError("boom")
+        [pm] = [c for c in self.core.components if c.name == "project_management"]
+        with mock.patch.dict(pm.offers, {"index": boom, "live": boom, "approvals": boom}):
+            code, body = self.post(json.dumps({"question": "hello"}).encode(), "application/json")
+        self.assertEqual((code, body["answer"]), (200, "You asked: hello"))
 
     def test_silence_is_not_sent_to_claude(self):
         code, body = self.post(b"[BLANK_AUDIO]", "audio/webm")

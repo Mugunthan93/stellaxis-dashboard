@@ -1271,7 +1271,9 @@ def the_core() -> Core:
     if _core is None:
         with _core_lock:
             if _core is None:
-                _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components")
+                _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components",
+                             claude_json=(CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json")
+                _core.on_status = status
     return _core
 
 
@@ -1437,7 +1439,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def serve():
     cfg = load_config()
-    the_core()  # the components are imported here, on the main thread, before any thread starts
+    the_core().service = True  # the components are imported here, on the main thread, before any thread starts
     last_probe = 0.0
 
     def loop():

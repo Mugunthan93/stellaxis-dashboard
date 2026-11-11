@@ -15,13 +15,12 @@ def index_reader(ctx) -> None:
     """The project index from the pass inputs, and beside it the same index under the old names; a pass without sessions leaves them alone."""
     if "sessions" not in ctx.inputs:
         return
-    if Path(ctx.home).expanduser() != centre._home():
-        raise RuntimeError(f"the core's home {ctx.home} is not STELLAXIS_HOME {centre._home()}")
-    cfg = old_names.config(ctx.cfg)
-    centre.clear_stale(centre.live(centre._bin(cfg)))
-    index = centre.build_index(ctx.inputs["sessions"], ctx.inputs["folders"], centre.app_records(centre.app_base()), cfg)
-    write_json(centre._home() / centre.INDEX_FILE, index)
-    write_json(centre._home() / old_names.INDEX_FILE, old_names.answer(index))
+    with centre.at(ctx):
+        cfg = old_names.config(ctx.cfg)
+        centre.clear_stale(centre.live(centre._bin(cfg)))
+        index = centre.build_index(ctx.inputs["sessions"], ctx.inputs["folders"], centre.app_records(centre.app_base()), cfg)
+        write_json(centre._home() / centre.INDEX_FILE, index)
+        write_json(centre._home() / old_names.INDEX_FILE, old_names.answer(index))
 
 
 def _user_config(f: Path) -> dict | None:
@@ -34,6 +33,11 @@ def _user_config(f: Path) -> dict | None:
 
 
 def new_names(plan, ctx) -> bool:
+    with centre.at(ctx):
+        return _new_names(plan, ctx)
+
+
+def _new_names(plan, ctx) -> bool:
     """Move config.json to the new keys and tasks/other.md to tasks/unassigned.md, each only when it is still in the old shape."""
     f = centre._home() / "config.json"
     user = _user_config(f)
@@ -62,7 +66,7 @@ def new_names(plan, ctx) -> bool:
     return True
 
 
-def _old_config_keys(entry: dict, apply: bool, out) -> bool:
+def _old_config_keys(entry: dict, apply: bool, out, ctx) -> bool:
     out(f"{pre(apply)}put the old keys back in {short_path(entry['file'])}")
     if apply:
         user = _user_config(Path(entry["file"]))
@@ -91,6 +95,11 @@ def _new_names_route(handler, method: str, ctx) -> None:
 
 
 def handle(handler, method: str, ctx) -> bool:
+    with centre.at(ctx):
+        return _handle(handler, method, ctx)
+
+
+def _handle(handler, method: str, ctx) -> bool:
     cfg = old_names.config(ctx.cfg)
     path, _, query = handler.path.partition("?")
     if path == "/api/projects/new-names" and method in ("GET", "POST"):
@@ -111,19 +120,23 @@ def handle(handler, method: str, ctx) -> bool:
 
 
 def _index(ctx) -> list:
-    return centre._index().get("projects") or []
+    with centre.at(ctx):
+        return centre._index().get("projects") or []
 
 
 def _projects(ctx) -> list:
-    return centre._entries(old_names.config(ctx.cfg).get("projects"))
+    with centre.at(ctx):
+        return centre._entries(old_names.config(ctx.cfg).get("projects"))
 
 
 def _live(ctx) -> list:
-    return centre.live(centre._bin(old_names.config(ctx.cfg))) or []
+    with centre.at(ctx):
+        return centre.live(centre._bin(old_names.config(ctx.cfg))) or []
 
 
 def _approvals(ctx) -> list:
-    return centre.pending()
+    with centre.at(ctx):
+        return centre.pending()
 
 
 centre.index_fallback = old_names.index

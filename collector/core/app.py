@@ -27,6 +27,9 @@ class Ctx:
         self.name = name
         self.cfg = cfg
         self.home = core.home
+        self.claude_dir = core.claude_dir
+        self.claude_json = core.claude_json
+        self.service = core.service
 
     def db(self) -> sqlite3.Connection:
         if self._core.store is None:
@@ -39,14 +42,27 @@ class Ctx:
             raise LookupError(f"{self.name!r} did not declare reads of {owner}.{offer}")
         return self._core.read(owner, offer, self.cfg, **args)
 
-    def act(self, action: str, args: dict | None = None, apply: bool = False) -> dict:
-        return self._core.run_action(self.name, action, args or {}, apply, self.cfg)
+    def act(self, action: str, args: dict | None = None, apply: bool = False, plan: Plan | None = None) -> dict:
+        return self._core.run_action(self.name, action, args or {}, apply, self.cfg, plan=plan)
+
+    def status(self, phase: str, force: bool = True, **detail) -> None:
+        """Tell the way in what the pass is doing. A way in that listens gets it; nothing here ever raises."""
+        fn = self._core.on_status
+        if fn is not None:
+            try:
+                fn(phase, force, **detail)
+            except Exception:
+                pass
 
 
 class Core:
-    def __init__(self, home: Path, claude_dir: Path, components_dir: Path):
+    def __init__(self, home: Path, claude_dir: Path, components_dir: Path, claude_json: Path | None = None):
         self.home = Path(home)
         self.claude_dir = Path(claude_dir)
+        self.claude_json = Path(claude_json) if claude_json else self.claude_dir / ".claude.json"
+        self.service = False
+        self.on_status = None
+        self.offer_errors: dict[str, str] = {}
         self.components: list[Component] = load(components_dir)
         self.store: Store | None = None
         self.error: str | None = None
@@ -72,10 +88,21 @@ class Core:
         other = next((c for c in self.components if c.name == owner), None)
         if other is None or other.error or offer not in other.offers:
             return []
-        return other.offers[offer](self.ctx(owner, cfg), **args)
+        key = f"{owner}.{offer}"
+        try:
+            got = other.offers[offer](self.ctx(owner, cfg), **args)
+        except Exception as e:
+            self.offer_errors[key] = _err(e)
+            return []
+        self.offer_errors.pop(key, None)
+        return got
 
-    def undo_handlers(self) -> dict:
-        return {step: fn for c in self.components if not c.error for step, fn in c.undo.items()}
+    def undo_handlers(self, cfg: dict | None = None) -> dict:
+        """step -> (entry, apply, out) -> bool, each handler given the ctx of its component."""
+        def bind(fn, ctx):
+            return lambda entry, apply, out: fn(entry, apply, out, ctx)
+        return {step: bind(fn, self.ctx(c.name, cfg or {}))
+                for c in self.components if not c.error for step, fn in c.undo.items()}
 
     def run_pass(self, cfg: dict, inputs: dict | None = None) -> dict:
         out: dict = {}
@@ -92,11 +119,13 @@ class Core:
         self.last_pass = {"at": now_iso(), "components": out}
         return self.last_pass
 
-    def run_action(self, component: str, action: str, args: dict, apply: bool, cfg: dict) -> dict:
+    def run_action(self, component: str, action: str, args: dict, apply: bool, cfg: dict, plan: Plan | None = None) -> dict:
         c = next((c for c in self.components if c.name == component), None)
         if c is None or c.error or action not in c.actions:
             raise KeyError(f"{component}.{action}")
-        plan = Plan(apply, f"{component}-{action}", self.claude_dir / "_archive", out=lambda _: None)
+        if plan is None:
+            plan = Plan(apply, f"{component}-{action}", self.claude_dir / "_archive", out=lambda _: None)
+        private = getattr(c.actions[action], "private", ())
         ok, error = False, None
         try:
             ok = bool(c.actions[action](plan, self.ctx(component, cfg), **args))
@@ -106,12 +135,13 @@ class Core:
         finally:
             path = plan.finish()
             if apply:
-                row = {"at": now_iso(), "component": component, "action": action, "args": args,
+                row = {"at": now_iso(), "component": component, "action": action, "args": {k: v for k, v in args.items() if k not in private},
                        "ok": ok, "manifest": str(path) if path else None, "error": error}
                 self.home.mkdir(parents=True, exist_ok=True)
                 with open(self.home / "actions.jsonl", "a") as f:
                     f.write(json.dumps(row) + "\n")
-        return {"applied": apply, "ok": ok, "steps": plan.steps, "manifest": str(path) if path else None}
+        return {"applied": apply, "ok": ok, "steps": plan.steps, "notes": plan.notes, "result": plan.result,
+                "manifest": str(path) if path else None}
 
     def describe(self) -> dict:
         return {
@@ -120,5 +150,6 @@ class Core:
                            for c in self.components],
             "store": str(self.home / "stellaxis.db"),
             "error": self.error,
+            "offer_errors": dict(self.offer_errors),
             "last_pass": self.last_pass,
         }

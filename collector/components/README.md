@@ -11,3 +11,7 @@ An action that must be undoable adds a manifest entry whose `op` is `<component 
 Actions run also when the store is down; only `ctx.db()` fails.
 A route reads a JSON body with `core.server.read_body`, which refuses other content types, answers with `core.server.send_json`, and raises `core.server.ApiError` for a refusal.
 A component imports only the standard library, `core` and its own folder. It never names another component's tables or module.
+`ctx.home`, `ctx.claude_dir` and `ctx.claude_json` are the folders; never read them from the environment.
+An undo handler is `(entry, apply, out, ctx)`.
+An offer that raises gives the caller an empty list; the error shows in `GET /api/core`.
+An action sets `plan.result` to what its route answers, says what it skipped with `plan.note`, and lists in `private` the arguments the log must not hold.

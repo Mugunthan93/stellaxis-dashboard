@@ -223,6 +223,38 @@ class CoreTest(unittest.TestCase):
     def core(self):
         return Core(self.home, self.home / ".claude", self.comps)
 
+    def test_a_component_sees_the_folders_and_the_service_flag(self):
+        put(self.comps, "alpha", "from core.component import Component\nSEEN = []\n"
+            "def r(ctx):\n    SEEN.append((ctx.home, ctx.claude_dir, ctx.claude_json, ctx.service))\n    ctx.status('working', force=False, path='x')\n"
+            "COMPONENT = Component(name='alpha', readers=[r])\n")
+        core = Core(self.home, self.home / ".claude", self.comps)
+        said = []
+        core.on_status = lambda phase, force=True, **detail: said.append((phase, force, detail))
+        core.run_pass({})
+        core.service = True
+        core.run_pass({})
+        seen = sys.modules["stx_alpha"].SEEN
+        self.assertEqual(seen[0], (self.home, self.home / ".claude", self.home / ".claude" / ".claude.json", False))
+        self.assertTrue(seen[1][3])
+        self.assertEqual(said[0], ("working", False, {"path": "x"}))
+        self.assertEqual(Core(self.home, self.home / ".claude", self.comps, claude_json=self.home / "cj").claude_json, self.home / "cj")
+
+    def test_an_offer_that_raises_gives_nothing_and_is_reported(self):
+        put(self.comps, "alpha", "from core.component import Component\nBAD = [True]\n"
+            "def o(ctx):\n    if BAD[0]:\n        raise ValueError('boom')\n    return [1]\n"
+            "COMPONENT = Component(name='alpha', offers={'o': o})\n")
+        put(self.comps, "beta", "from core.component import Component\nGOT = []\n"
+            "def r(ctx):\n    GOT.append(ctx.read('alpha', 'o'))\n"
+            "COMPONENT = Component(name='beta', readers=[r], reads=[('alpha', 'o')])\n")
+        core = Core(self.home, self.home / ".claude", self.comps)
+        self.assertEqual(core.read("alpha", "o", {}), [])
+        self.assertEqual(core.run_pass({})["components"]["beta"]["errors"], [])
+        self.assertEqual(sys.modules["stx_beta"].GOT, [[]])
+        self.assertEqual(core.describe()["offer_errors"], {"alpha.o": "ValueError: boom"})
+        sys.modules["stx_alpha"].BAD[0] = False
+        self.assertEqual(core.read("alpha", "o", {}), [1])
+        self.assertEqual(core.describe()["offer_errors"], {})
+
     def test_starts_with_zero_components(self):
         c = self.core()
         self.assertEqual((c.components, c.error, c.last_pass), ([], None, None))
@@ -231,7 +263,7 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(r["components"], {})
         self.assertRegex(r["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(c.last_pass, r)
-        self.assertEqual(c.describe(), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "last_pass": r})
+        self.assertEqual(c.describe(), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "offer_errors": {}, "last_pass": r})
 
     def test_a_reader_that_raises_does_not_stop_the_others(self):
         put(self.comps, "alpha", ALPHA); put(self.comps, "beta", BETA)
@@ -455,15 +487,21 @@ def note(plan, ctx, path):
     if plan.apply:
         Path(path).write_text("n")
     return True
-def unnote(e, apply, out):
+def secret(plan, ctx, path, body):
+    plan.result = {"n": len(body)}
+    plan.note("  kept quiet")
+    return True
+secret.private = ("body",)
+def unnote(e, apply, out, ctx):
     out("remove " + e["path"])
+    out("home " + str(ctx.home))
     if apply:
         Path(e["path"]).unlink()
     return True
 def uses_db(plan, ctx):
     ctx.db()
     return True
-COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "note": note, "uses_db": uses_db}, undo={"alpha.unnote": unnote})
+COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "note": note, "secret": secret, "uses_db": uses_db}, undo={"alpha.unnote": unnote})
 '''
 
     def setUp(self):
@@ -480,7 +518,7 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             r = self.core.run_action("alpha", "touch", {"path": self.f}, False, {})
-        self.assertEqual(r, {"applied": False, "ok": True, "steps": [f"create {self.f}"], "manifest": None})
+        self.assertEqual(r, {"applied": False, "ok": True, "steps": [f"create {self.f}"], "notes": [], "result": None, "manifest": None})
         self.assertEqual((buf.getvalue(), Path(self.f).exists(), self.log.exists()), ("", False, False))
 
     def test_an_applied_action_is_logged(self):
@@ -502,7 +540,7 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "
 
     def test_an_action_that_returns_false_is_not_ok(self):
         r = self.core.run_action("alpha", "refuse", {}, False, {})
-        self.assertEqual(r, {"applied": False, "ok": False, "steps": ["refused"], "manifest": None})
+        self.assertEqual(r, {"applied": False, "ok": False, "steps": ["refused"], "notes": [], "result": None, "manifest": None})
         self.assertFalse(self.log.exists())
         r = self.core.run_action("alpha", "refuse", {}, True, {})
         self.assertEqual((r["applied"], r["ok"]), (True, False))
@@ -516,7 +554,7 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "
 
     def test_a_component_runs_its_own_action_through_the_core(self):
         ctx = self.core.ctx("alpha", {})
-        self.assertEqual(ctx.act("touch", {"path": self.f}), {"applied": False, "ok": True, "steps": [f"create {self.f}"], "manifest": None})
+        self.assertEqual(ctx.act("touch", {"path": self.f}), {"applied": False, "ok": True, "steps": [f"create {self.f}"], "notes": [], "result": None, "manifest": None})
         self.assertFalse(Path(self.f).exists())
         r = ctx.act("touch", {"path": self.f, "keep": True}, apply=True)
         self.assertTrue(Path(self.f).exists())
@@ -538,6 +576,28 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "
         self.assertEqual(sorted(self.core.undo_handlers()), ["alpha.unnote"])
         undo.restore(name, True, arch, handlers=self.core.undo_handlers(), out=lambda _: None)
         self.assertFalse(Path(self.f).exists())
+
+    def test_private_arguments_stay_out_of_the_log_and_the_result_comes_back(self):
+        r = self.core.run_action("alpha", "secret", {"path": self.f, "body": "s3cret"}, True, {})
+        self.assertEqual((r["result"], r["notes"]), ({"n": 6}, ["  kept quiet"]))
+        row = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertEqual(row["args"], {"path": self.f})
+        self.assertNotIn("s3cret", self.log.read_text())
+
+    def test_a_way_in_can_bring_its_own_plan(self):
+        said = []
+        plan = undo.Plan(True, "mine", self.home / ".claude" / "_archive", out=said.append)
+        r = self.core.run_action("alpha", "touch", {"path": self.f, "keep": True}, True, {}, plan=plan)
+        self.assertIn("  create " + self.f, said)
+        self.assertTrue(Path(r["manifest"]).parent.name.endswith("-mine"))
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_an_undo_handler_gets_the_ctx(self):
+        r = self.core.run_action("alpha", "note", {"path": self.f}, True, {})
+        said = []
+        undo.restore(Path(r["manifest"]).parent.name, True, self.home / ".claude" / "_archive",
+                     handlers=self.core.undo_handlers({"k": 1}), out=said.append)
+        self.assertIn("home " + str(self.home), said)
 
     def test_actions_run_with_the_store_down_and_only_a_store_user_fails(self):
         home = self.home / "down"
@@ -628,7 +688,7 @@ class ServeTest(HttpCase):
         self.serve()
         status, body = self.get("/api/core")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "last_pass": None})
+        self.assertEqual(json.loads(body), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "offer_errors": {}, "last_pass": None})
         self.assertEqual(self.get("/anything")[0], 404)
         self.assertEqual(self.get("/api/core", method="POST")[0], 404)
         self.assertEqual(self.get("/api/core", headers={"Host": "evil.example"})[0], 403)
