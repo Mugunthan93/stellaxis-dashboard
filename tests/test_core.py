@@ -2,6 +2,8 @@
 
   python3 -m unittest discover -s tests -k test_core
 """
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -275,6 +277,62 @@ class UndoTest(unittest.TestCase):
         self.assertTrue((d / "manifest.json").exists())
         with self.assertRaisesRegex(undo.RestoreError, "no manifest in"):
             undo.restore("absent", True, self.arch)
+
+
+class ActionTest(unittest.TestCase):
+    ACT = '''
+from pathlib import Path
+from core.component import Component
+def touch(plan, ctx, path, keep=False, fail=False):
+    plan.say(f"create {path}")
+    if keep:
+        plan.manifest["entries"].append({"op": "move", "from": path + ".old", "to": path})
+    if plan.apply:
+        Path(path).write_text("x")
+    if fail:
+        raise RuntimeError("half way")
+    return True
+COMPONENT = Component(name="alpha", actions={"touch": touch})
+'''
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.comps = self.home / "components"
+        put(self.comps, "alpha", self.ACT)
+        self.core = Core(self.home, self.home / ".claude", self.comps)
+        self.f = str(self.home / "made.txt")
+        self.log = self.home / "actions.jsonl"
+
+    def test_a_dry_run_changes_nothing_and_prints_nothing(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            r = self.core.run_action("alpha", "touch", {"path": self.f}, False, {})
+        self.assertEqual(r, {"applied": False, "ok": True, "steps": [f"create {self.f}"], "manifest": None})
+        self.assertEqual((buf.getvalue(), Path(self.f).exists(), self.log.exists()), ("", False, False))
+
+    def test_an_applied_action_is_logged(self):
+        r = self.core.run_action("alpha", "touch", {"path": self.f, "keep": True}, True, {})
+        self.assertTrue(Path(self.f).exists())
+        m = Path(r["manifest"])
+        self.assertEqual(m.parent.parent, self.home / ".claude" / "_archive")
+        self.assertTrue(m.parent.name.endswith("-alpha-touch"))
+        [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.assertEqual({k: row[k] for k in ("component", "action", "args", "ok", "manifest", "error")},
+                         {"component": "alpha", "action": "touch", "args": {"path": self.f, "keep": True}, "ok": True, "manifest": r["manifest"], "error": None})
+
+    def test_an_action_that_fails_half_way_still_leaves_its_manifest(self):
+        with self.assertRaisesRegex(RuntimeError, "half way"):
+            self.core.run_action("alpha", "touch", {"path": self.f, "keep": True, "fail": True}, True, {})
+        [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.assertEqual((row["ok"], row["error"]), (False, "RuntimeError: half way"))
+        self.assertTrue(Path(row["manifest"]).is_file())
+
+    def test_unknown_names_are_key_errors(self):
+        for comp, act in (("ghost", "touch"), ("alpha", "ghost")):
+            with self.assertRaises(KeyError):
+                self.core.run_action(comp, act, {}, False, {})
 
 
 if __name__ == "__main__":

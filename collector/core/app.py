@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 from core.component import Component, load
 from core.store import Store
+from core.undo import Plan
 from core.util import now_iso
 
 
@@ -73,6 +75,27 @@ class Core:
                 out[c.name] = {"readers": len(c.readers), "errors": errors}
         self.last_pass = {"at": now_iso(), "components": out}
         return self.last_pass
+
+    def run_action(self, component: str, action: str, args: dict, apply: bool, cfg: dict) -> dict:
+        c = next((c for c in self.components if c.name == component), None)
+        if c is None or c.error or action not in c.actions:
+            raise KeyError(f"{component}.{action}")
+        plan = Plan(apply, f"{component}-{action}", self.claude_dir / "_archive", out=lambda _: None)
+        ok, error = True, None
+        try:
+            c.actions[action](plan, self.ctx(component, cfg), **args)
+        except Exception as e:
+            ok, error = False, _err(e)
+            raise
+        finally:
+            path = plan.finish()
+            if apply:
+                row = {"at": now_iso(), "component": component, "action": action, "args": args,
+                       "ok": ok, "manifest": str(path) if path else None, "error": error}
+                self.home.mkdir(parents=True, exist_ok=True)
+                with open(self.home / "actions.jsonl", "a") as f:
+                    f.write(json.dumps(row) + "\n")
+        return {"applied": apply, "ok": True, "steps": plan.steps, "manifest": str(path) if path else None}
 
     def describe(self) -> dict:
         return {
