@@ -868,3 +868,44 @@ git commit -m "Docs and check 5: the old word remains only in the alias layer an
 - **Step 3:** records of Project management in the store, the shared transcript helper, `relocate` as an action of this component, Claude management, `README.md`.
 - **The owner applies the config rename** when he chooses. Until then the service reads the old keys.
 - **Removing the alias layer** (`old_names.py`, `tests/test_old_names.py`, `workspaces.json`, `centre.index_fallback`, the `tasks/other.md` fallback in `centre._task_file`, the id-less fallback in `collect.project_notes`, and the action `new_names` with its undo step): a later step, after the installed copy of the Jarvis agent uses the new names and the config rename is applied.
+
+---
+
+## Added while building
+
+### Task 7: The suite output is clean
+
+The starting commit printed 102 `ResourceWarning`s and two stray lines in the full run. Tasks 3 to 5 removed most of them. Task 7 removed the rest: `reels/triage.py` and `reels/build_dashboard.py` close the files they open (no other change), the test servers and files in the tests are closed, and the two printed lines are captured and asserted in their tests. `python3 -X dev -m unittest discover -s tests` now prints only the result.
+
+### The fix wave after the whole-branch review
+
+The review found no Critical and no Important issue. Fixed in one commit: the route matrix covers `/api/projects/new-names`; the reader refuses to write when the core's home is not `STELLAXIS_HOME`; the old index file is read until the first pass has written `projects.json` (`old_names.index`, `centre.index_fallback`); the rename and its undo keep non-ASCII text readable in `config.json`; the action says when `tasks/other.md` is left because `tasks/unassigned.md` exists; the undo step stops the restore when `config.json` is missing or is not JSON.
+
+### Rulings made while building (my calls, after the 18 above)
+
+19. **The set of manifest folders handed out holds full paths**, not names. Cost if wrong: none.
+20. **The old-word rule applies by area and task** (`collector/` and `tests/` after Task 3, pages and agent after Task 4, `CLAUDE.md` after Task 6). Cost if wrong: none; the test of check 5 is the gate.
+21. **Commit 76e5f34 alone has one page gap** (the unassigned page finds nothing until Task 4's commit). Not fixed in that commit, because only the merged branch is ever run. Cost if wrong: an empty unassigned page for someone who runs that one commit.
+22. **Task 7 was added and touches two scripts under `reels/`** (file handles only), because "clean output" was asked for and was not true at the start. Cost if wrong: a merge conflict if another session edits the same lines; the change is easy to drop.
+23. **The `nexus-` exception stays in the test of check 5**, as the spec names that folder. Cost if wrong: none.
+24. **Review findings not fixed, on purpose** (see the list below). Cost if wrong: a `config.json` mixed by hand (old and new keys together) can hide projects until it is fixed by hand.
+25. **`write_json` in the core got an optional `ensure_ascii`.** Cost if wrong: one parameter.
+
+## Found while building step 2B, for the step 3 plan
+
+- **`README.md` still names `collector/workspaces.py` and `dashboard/workspace.html`.** Step 3 rewrites it; then remove `README.md` from `ALLOWED` in `OldWordTest`.
+- **Removing the alias layer.** Do it after the owner has applied the rename and the installed copy of the Jarvis agent uses the new names. The list of what to remove is in "What this plan leaves for later plans".
+- **A leftover old key wins.** With a `workspaces` key in a new-shape file, `old_names.config` reads it and hides `projects`; the action then says there is nothing to rename when `project_notes` is also there. In an entry with both `folders` and `repos` the later key wins. Both need a file edited by hand. Have the dry run name a leftover old key.
+- **The notes fallback also applies to a new-shape config.** An entry of `projects` with a name and no id shows as a notes card on Overview when `project_notes` is empty.
+- **The component still reads its home and the Claude folder from the environment** (`centre._home()`, `centre._claude_dir()`). The reader now refuses a core whose home differs. Move to `ctx.home` when the records move into the store; give `Ctx` the Claude folder too.
+- **A component imports host and private names:** `settings_api` (for `host_ok`, `read_body`, `_send`, `ApiError`) and `core.undo._pre`. Give the core public helpers for these, then widen the import rule test.
+- **`_prompt` and `MAX_PROMPT` are in two places** (`centre.py` and `unplaced/jarvis.py`). They can drift.
+- **An offer that raises reaches Jarvis as an unhandled error** (a 500). Only a component that fails to import is covered today.
+- **`prune.py restore` builds the core also for a dry run**, which can create `stellaxis.db` in an empty home. The set of manifest folders handed out is never pruned (one path for each applied plan).
+- **Still open from the lists of steps 1 and 2A:** a rule for a schema change; `server.handle` writes a 500 even when the component already sent headers; `index_error` in `status.json` reports only this component's reader errors.
+- **Old routes answer errors with the new word** ("unknown project"). Short forms of the old word remain in names (`wid` in `centre.py`, the ids `ws-…` and `sx-ws` in the pages); the test of check 5 cannot see them.
+- **Tests, older than this branch:** `WiringTest` in `tests/test_core.py` reads the real `config.json` and `status.json` through `C.STX_HOME` (it never writes); `tests/test_settings_api.py` leaves `STELLAXIS_HOME` set after its class. Use `fake_home` in both. `reels/reel.py` and `reels/run_local.py` still open files without closing them.
+- **For the owner to rule on:**
+  - The spec says "No component owns undo". The code now lets a component supply the handler of its own undo step, while the core still runs every restore. One sentence in the spec would make them agree.
+  - The Jarvis code still keeps every recording in `~/.stellaxis/jarvis/heard/` with no limit (marked "TEMP", from before this branch).
+- **When the branches are merged:** the step 5 session also edits `CLAUDE.md` (one bullet). Expect a small conflict there.
