@@ -12,6 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 from core import component, store
+from core.app import Core
 
 
 def put(root: Path, name: str, init: str, **files: str) -> None:
@@ -115,6 +116,93 @@ class StoreTest(unittest.TestCase):
         t.join()
         self.assertEqual(errors, [])
         self.assertEqual(self.q(s, "SELECT count(*) FROM alpha_n")[0][0], 200)
+
+
+ALPHA = '''
+from contextlib import closing
+from core.component import Component
+def fill(ctx):
+    with closing(ctx.db()) as db, db:
+        db.execute("INSERT OR REPLACE INTO alpha_things VALUES (?)", (str(ctx.cfg.get("x")),))
+def things(ctx, prefix=""):
+    with closing(ctx.db()) as db:
+        return [dict(r) for r in db.execute("SELECT id FROM alpha_things") if r["id"].startswith(prefix)]
+COMPONENT = Component(name="alpha", records=["CREATE TABLE IF NOT EXISTS alpha_things (id TEXT PRIMARY KEY)"],
+                      readers=[fill], offers={"things": things})
+'''
+BETA = '''
+from contextlib import closing
+from core.component import Component
+def bad(ctx):
+    raise ValueError("bad")
+def good(ctx):
+    with closing(ctx.db()) as db, db:
+        db.execute("INSERT INTO beta_seen VALUES (1)")
+COMPONENT = Component(name="beta", records=["CREATE TABLE IF NOT EXISTS beta_seen (n INTEGER)"],
+                      readers=[bad, good], reads=[("alpha", "things"), ("ghost", "things"), ("broken", "things")])
+'''
+
+
+class CoreTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.comps = self.home / "components"
+
+    def core(self):
+        return Core(self.home, self.home / ".claude", self.comps)
+
+    def test_starts_with_zero_components(self):
+        c = self.core()
+        self.assertEqual((c.components, c.error, c.last_pass), ([], None, None))
+        self.assertTrue((self.home / "stellaxis.db").is_file())
+        r = c.run_pass({})
+        self.assertEqual(r["components"], {})
+        self.assertRegex(r["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(c.last_pass, r)
+        self.assertEqual(c.describe(), {"components": [], "store": str(self.home / "stellaxis.db"), "error": None, "last_pass": r})
+
+    def test_a_reader_that_raises_does_not_stop_the_others(self):
+        put(self.comps, "alpha", ALPHA); put(self.comps, "beta", BETA)
+        put(self.comps, "broken", "raise RuntimeError('boom')\n")
+        c = self.core()
+        r = c.run_pass({"x": 7})
+        self.assertEqual(r["components"], {"alpha": {"readers": 1, "errors": []}, "beta": {"readers": 2, "errors": ["ValueError: bad"]}})
+        ctx = c.ctx("alpha", {"k": 1})
+        self.assertEqual((ctx.name, ctx.cfg, ctx.home), ("alpha", {"k": 1}, self.home))
+        with closing(c.store.connect()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM beta_seen").fetchone()[0], 1)
+
+    def test_reads_go_through_declared_offers_only(self):
+        put(self.comps, "alpha", ALPHA); put(self.comps, "beta", BETA)
+        put(self.comps, "broken", "raise RuntimeError('boom')\n")
+        c = self.core(); c.run_pass({"x": 7})
+        beta = c.ctx("beta", {})
+        self.assertEqual(beta.read("alpha", "things"), [{"id": "7"}])
+        self.assertEqual(beta.read("alpha", "things", prefix="z"), [])
+        self.assertEqual(beta.read("ghost", "things"), [])      # the owner is not installed
+        self.assertEqual(beta.read("broken", "things"), [])     # the owner failed to load
+        with self.assertRaises(LookupError):
+            beta.read("alpha", "other")                         # never declared
+
+    def test_bad_records_stop_only_that_component(self):
+        put(self.comps, "alpha", ALPHA)
+        put(self.comps, "thief", "from core.component import Component\nCOMPONENT = Component(name='thief', records=['CREATE TABLE IF NOT EXISTS alpha_x (id TEXT)'])\n")
+        c = self.core()
+        by = {x["name"]: x for x in c.describe()["components"]}
+        self.assertIn("ValueError", by["thief"]["error"])
+        self.assertEqual(by["alpha"], {"name": "alpha", "readers": 1, "actions": [], "offers": ["things"], "reads": [], "error": None})
+        self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
+
+    def test_a_store_that_cannot_open_is_reported_not_raised(self):
+        (self.home / "stellaxis.db").mkdir()
+        put(self.comps, "alpha", ALPHA)
+        c = self.core()
+        self.assertTrue(c.error)
+        self.assertIsNone(c.store)
+        self.assertEqual(c.run_pass({})["components"], {})
+        self.assertEqual(c.describe()["error"], c.error)
 
 
 if __name__ == "__main__":
