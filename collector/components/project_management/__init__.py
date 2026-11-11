@@ -37,9 +37,16 @@ def index_reader(ctx) -> None:
                         "last_ts": s["last_ts"], "cost": costs.get(s["id"]) or 0, "branch": s["branch"]}
                        for s in ctx.memo["sessions"].values()), key=lambda r: r["last_ts"] or "", reverse=True)
         index = centre.build_index(rows, ctx.memo["repos"], centre.app_records(centre.app_base()), cfg)
-        records.save_index(ctx, index, {r["id"]: i for i, r in enumerate(rows)})
-        write_json(ctx.home / centre.INDEX_FILE, records.index(ctx, costs) or index)
+        failed = None
+        try:
+            records.save_index(ctx, index, {r["id"]: i for i, r in enumerate(rows)})
+            stored = records.index(ctx, costs)   # never after a failed save: the rows would be the last pass's
+        except Exception as e:   # a locked or full store, or text SQLite cannot hold: the files still get this index
+            stored, failed = None, e
+        write_json(ctx.home / centre.INDEX_FILE, stored or index)
         write_json(ctx.home / old_names.INDEX_FILE, old_names.answer(index))
+        if failed is not None:
+            raise failed
 
 
 def _repos(ctx) -> list:

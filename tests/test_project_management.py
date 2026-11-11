@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -46,7 +47,7 @@ class ProjectManagementTest(unittest.TestCase):
                                  "timestamp": "2026-11-01T00:00:00Z", "message": {"role": "user", "content": "hi"}}) + "\n")
         self.core = Core(self.home, self.home / ".claude", COMPS)
 
-    def collect(self, cfg=CFG, core=None, **more):
+    def collect(self, cfg=CFG, core=None):
         """One collection pass on the fake home, with the CLI and the desktop app's records patched."""
         with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
             return (core or self.core).run_pass({**cfg, "scan_roots": []}, COLLECTOR)
@@ -131,6 +132,43 @@ class ProjectManagementTest(unittest.TestCase):
         self.assertEqual(self.core.read("project_management", "sessions", CFG),
                          [{"id": "s1", "project": "unassigned", "repo": short_path(self.app), "branch": "main",
                            "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z"}])
+
+    def test_a_repeated_project_id_or_the_id_unassigned_still_gives_the_index(self):
+        for projects in ([{"id": "p", "name": "P", "repos": [str(self.app)]}, {"id": "p", "name": "P2", "repos": [str(self.app)]}],
+                         [{"id": "unassigned", "name": "U", "repos": [str(self.app)]}]):
+            with self.subTest(projects=projects):
+                cfg = {**CFG, "projects": projects}
+                built, real = [], W.build_index
+                with mock.patch.object(W, "build_index", side_effect=lambda *a, **k: built.append(real(*a, **k)) or built[-1]):
+                    res = self.collect(cfg)
+                self.assertEqual(res["components"]["project_management"]["errors"], [])
+                [index] = built
+                self.assertEqual(json.dumps(self.index()), json.dumps(index))
+                costs = {r["id"]: r["cost"] for r in self.core.read("claude_management", "sessions", cfg)}
+                ctx = self.core.ctx("project_management", {})
+                self.assertEqual(json.dumps(PM.records.index(ctx, costs)), json.dumps(index))
+                self.assertEqual(sum(1 for p in index["projects"] for r in p["repos"] for b in r["branches"] for x in b["sessions"]), 2)
+                self.assertEqual([(r["id"], r["project"]) for r in self.core.read("project_management", "sessions", cfg)],
+                                 [("s1", projects[0]["id"])])
+
+    def test_a_store_that_fails_still_gets_the_index_files(self):
+        with mock.patch.object(PM.records, "save_index", side_effect=sqlite3.OperationalError("database is locked")), \
+                mock.patch.object(PM.records, "index") as index:
+            res = self.collect()
+        index.assert_not_called()
+        self.assertEqual(res["components"]["project_management"]["errors"], ["OperationalError: database is locked"])
+        self.assertEqual([s["id"] for p in self.index()["projects"] for r in p["repos"] for b in r["branches"] for s in b["sessions"]], ["s1"])
+        self.assertTrue((self.home / ("work" + "spaces.json")).is_file())
+        for f in (self.home / "projects.json", self.home / ("work" + "spaces.json")):
+            f.unlink()
+        app = {"s1": {"app_id": "a1", "title": "\ud800", "branch": None, "archived": False}}
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value=app):
+            res = self.core.run_pass({**CFG, "scan_roots": []}, COLLECTOR)
+        [err] = res["components"]["project_management"]["errors"]
+        self.assertTrue(err.startswith("UnicodeEncodeError"), err)
+        [s] = self.index()["projects"][0]["repos"][0]["branches"][0]["sessions"]
+        self.assertEqual((s["id"], s["title"]), ("s1", "\ud800"))
+        self.assertTrue((self.home / ("work" + "spaces.json")).is_file())
 
     def test_with_the_store_down_the_index_is_still_written(self):
         home = self.home / "broken"
