@@ -26,17 +26,24 @@ class Store:
         `records` is the present shape. `changes` are the steps that bring an older store to it; the
         version of the component in core_schema says how many of them the store has had."""
         n = re.escape(name)
-        make = re.compile(rf"\s*CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+{n}_", re.I)
+        make = re.compile(
+            rf"\s*(CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+{n}_|CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+{n}_\w*\s+ON\s+{n}_)", re.I)
         alter = re.compile(
             rf"\s*(ALTER\s+TABLE\s+{n}_|DROP\s+(TABLE|INDEX)\s+IF\s+EXISTS\s+{n}_|UPDATE\s+{n}_"
             rf"|DELETE\s+FROM\s+{n}_|INSERT\s+INTO\s+{n}_)", re.I)
+        rename = re.compile(r"\bRENAME\s+TO\s+(?!" + n + "_)", re.I)
+
+        def one(sql: str) -> bool:
+            # exactly one statement: after one trailing ";" is dropped, no ";" may remain
+            return ";" not in sql.strip().removesuffix(";")
+
         for sql in records:
-            if not make.match(sql):
-                raise ValueError(f"component {name!r} may only create tables and indexes named {name}_…: {sql!r}")
+            if not (make.match(sql) and one(sql)):
+                raise ValueError(f"component {name!r} may only create tables and indexes named {name}_…, one statement each: {sql!r}")
         for step in changes:
             for sql in step:
-                if not (make.match(sql) or alter.match(sql)):
-                    raise ValueError(f"component {name!r} may only change tables and indexes named {name}_…: {sql!r}")
+                if not ((make.match(sql) or alter.match(sql)) and one(sql) and not rename.search(sql)):
+                    raise ValueError(f"component {name!r} may only change tables and indexes named {name}_…, one statement each: {sql!r}")
         db = self.connect()
         db.isolation_level = None
         try:
@@ -55,7 +62,7 @@ class Store:
                         db.execute(sql)
                 for sql in records:
                     db.execute(sql)
-                db.execute("INSERT OR REPLACE INTO core_schema (component, version) VALUES (?, ?)", (name, len(changes)))
+                db.execute("INSERT OR REPLACE INTO core_schema (component, version) VALUES (?, ?)", (name, max(version, len(changes))))
                 db.execute("COMMIT")
             except BaseException:
                 db.execute("ROLLBACK")

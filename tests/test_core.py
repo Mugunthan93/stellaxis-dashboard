@@ -214,6 +214,31 @@ class StoreTest(unittest.TestCase):
                 s.ensure("alpha", self.V1, [[bad]])
         self.assertIsNone(self.version(s, "alpha"))
 
+    def test_a_change_may_not_rename_a_table_out_of_its_names(self):
+        s = store.Store(self.home / "stellaxis.db")
+        with self.assertRaises(ValueError):
+            s.ensure("alpha", self.V1, [["ALTER TABLE alpha_t RENAME TO zzz"]])
+        s.ensure("alpha", self.V1, [["ALTER TABLE alpha_t RENAME TO alpha_u"], ["ALTER TABLE alpha_u RENAME COLUMN id TO key"]])
+
+    def test_the_name_check_cases(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("beta", ["CREATE TABLE IF NOT EXISTS beta_t (id TEXT)"])
+        s.ensure("alpha", self.V1, [["\n  alter table alpha_t add column more text;  "]])
+        for bad in ('ALTER TABLE "beta_t" ADD COLUMN x', 'ALTER TABLE "alpha_t" ADD COLUMN x',
+                    "DELETE FROM alpha_t; DROP TABLE beta_t", "CREATE INDEX IF NOT EXISTS alpha_i ON beta_t (id)"):
+            with self.assertRaises(ValueError):
+                s.ensure("alpha", self.V1, [[bad]])
+        for bad in ("CREATE TABLE IF NOT EXISTS alpha_a (id TEXT); CREATE TABLE IF NOT EXISTS alpha_b (id TEXT)",
+                    "CREATE INDEX IF NOT EXISTS alpha_i ON beta_t (id)"):
+            with self.assertRaises(ValueError):
+                s.ensure("alpha", [bad])
+
+    def test_an_older_code_does_not_lower_the_version(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("alpha", self.V2, self.ADD + [["UPDATE alpha_t SET more = 'x'"]])
+        s.ensure("alpha", self.V2, self.ADD)
+        self.assertEqual(self.version(s), 2)
+
     def test_two_threads_use_the_store_at_once(self):
         s = store.Store(self.home / "stellaxis.db")
         s.ensure("alpha", ["CREATE TABLE IF NOT EXISTS alpha_n (n INTEGER)"])
