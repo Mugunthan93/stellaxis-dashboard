@@ -537,7 +537,7 @@ def read_tasks(pid: str) -> list[dict]:
 
 def write_task(pid: str, op: dict) -> list[dict]:
     """op: {"add": text}, {"toggle": line, "expect": text} or {"remove": line, "expect": text}; line is 1-based."""
-    f = _task_file(pid)
+    _task_file(pid)  # a bad project id is refused here; the file is chosen again under the lock
     kinds = [k for k in ("add", "toggle", "remove") if k in op]
     if len(kinds) != 1:
         raise ApiError(400, "send one of add, toggle or remove")
@@ -551,6 +551,7 @@ def write_task(pid: str, op: dict) -> list[dict]:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1 or not isinstance(op.get("expect"), str):
             raise ApiError(400, f"send {{\"{kind}\": line, \"expect\": text}}")
     with _TASK_LOCK:
+        f = _task_file(pid)
         f.parent.mkdir(parents=True, exist_ok=True)
         for _ in range(2):  # another program may edit the file between our read and our replace: redo once
             raw = _task_raw(f)

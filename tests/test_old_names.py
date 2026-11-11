@@ -273,6 +273,15 @@ class RenameTest(unittest.TestCase):
         again = self.post("/api/projects/new-names", {"apply": True})[1]
         self.assertEqual((again["steps"], again["manifest"]), (["nothing to rename: the new names are already in use"], None))
 
+    def test_a_task_file_that_is_already_there_is_never_overwritten(self):
+        (self.home / "tasks" / "unassigned.md").write_text("- [ ] new\n")
+        body = self.post("/api/projects/new-names", {"apply": True})[1]
+        self.assertEqual((self.home / "tasks" / "other.md").read_text(), "- [ ] kept\n")
+        self.assertEqual((self.home / "tasks" / "unassigned.md").read_text(), "- [ ] new\n")
+        man = json.loads(Path(body["manifest"]).read_text())
+        self.assertNotIn("move", [e["op"] for e in man["entries"]])
+        self.assertFalse(any(s.startswith("move ") for s in body["steps"]))
+
     def test_prune_restore_undoes_it_and_keeps_a_later_edit(self):
         name = Path(self.post("/api/projects/new-names", {"apply": True})[1]["manifest"]).parent.name
         user = json.loads(self.cfg_file.read_text())

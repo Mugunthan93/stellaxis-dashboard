@@ -44,12 +44,15 @@ def new_names(plan, ctx) -> bool:
         if plan.apply:
             write_json(f, old_names.to_new(user), indent=2)
     old, new = centre._home() / "tasks" / "other.md", centre._home() / "tasks" / "unassigned.md"
-    if old.exists() and not new.exists():
+    if plan.apply:
+        with centre._TASK_LOCK:
+            if old.exists() and not new.exists():
+                plan.say(f"move {short_path(old)} -> {short_path(new)}")
+                plan.manifest["entries"].append({"op": "move", "from": str(old), "to": str(new)})
+                old.rename(new)
+    elif old.exists() and not new.exists():
         plan.say(f"move {short_path(old)} -> {short_path(new)}")
         plan.manifest["entries"].append({"op": "move", "from": str(old), "to": str(new)})
-        if plan.apply:
-            with centre._TASK_LOCK:
-                old.rename(new)
     if not plan.steps:
         plan.say("nothing to rename: the new names are already in use")
     return True
