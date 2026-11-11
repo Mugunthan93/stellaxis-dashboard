@@ -33,7 +33,6 @@ from unplaced import jarvis
 VERSION = "0.2.2"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
-CLAUDE_JSON = (CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json"
 STX_HOME = Path(os.environ.get("STELLAXIS_HOME", HOME / ".stellaxis")).expanduser()
 REPO_DIR = Path(__file__).resolve().parent.parent
 
@@ -151,6 +150,7 @@ def the_core() -> Core:
     if _core is None:
         with _core_lock:
             if _core is None:
+                # ~/.claude.json, worked out here and not at import: tests point CLAUDE_DIR and the env at a fake home
                 _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components",
                              claude_json=(CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json")
                 _core.on_status = status
@@ -182,6 +182,8 @@ def collect(cfg=None, probe=False) -> dict:
         STX_HOME.mkdir(parents=True, exist_ok=True)
         f = STX_HOME / "snapshot.json"
         before = _stamp(f)
+        was = read_json(STX_HOME / "status.json", {})
+        was = was if isinstance(was, dict) else {}
         status("reading transcripts")
         core = the_core()
         res = core.run_pass(cfg, {"collector": {"version": VERSION, "probe": probe, "reels": reels_summary(),
@@ -189,8 +191,9 @@ def collect(cfg=None, probe=False) -> dict:
         after = _stamp(f)
         snap = (read_json(f, {}) or {}) if after is not None and after != before else {}
         last_error = pass_error(core, res)
-        status("idle", last_snapshot=snap.get("generated_at"), elapsed_ms=(snap.get("meta") or {}).get("elapsed_ms"),
-               index_error=last_error, core_error=core.error)
+        last = ((snap.get("generated_at"), (snap.get("meta") or {}).get("elapsed_ms")) if snap   # no snapshot: keep the last one's
+                else (was.get("last_snapshot"), was.get("elapsed_ms")))
+        status("idle", last_snapshot=last[0], elapsed_ms=last[1], index_error=last_error, core_error=core.error)
         return snap
 
 
@@ -335,7 +338,7 @@ def serve():
             probe = c.get("probe_mcp") and time.time() - last_probe > parse_duration(c["probe_every"], 86400)
             try:
                 snap = collect(c, probe=bool(probe))
-                if probe:
+                if probe and snap:   # a pass that wrote no snapshot probes again next time
                     last_probe = time.time()
                 if snap:
                     print(f"[{snap['generated_at']}] {snap['totals']['sessions']} sessions, "
@@ -390,6 +393,8 @@ def main():
     elif snap:
         print_summary(snap)
         print(f"\nsnapshot: {short_path(STX_HOME / 'snapshot.json')}")
+    if a.cmd == "run" and last_error:   # a snapshot was written, but a component failed
+        print(f"collect: {last_error}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

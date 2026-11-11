@@ -7,10 +7,12 @@ import datetime as dt
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -114,14 +116,76 @@ srv.shutdown(); print(json.dumps(out))
         self.assertEqual(out["codes"]["/overview"], 200)
         self.assertEqual((out["snapshot"], out["index"]), (False, False))
 
+    def prune_says(self, removed: str, *args: str) -> str:
+        """The one plain line `prune.py <args>` prints, and exits 1, with only `removed` gone."""
+        cwd, env = self.copy(removed)
+        r = subprocess.run([sys.executable, "prune.py", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 1, args)
+        self.assertEqual(r.stdout, "", args)
+        self.assertNotIn("Traceback", r.stderr, args)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, (args, r.stderr))
+        return r.stderr.strip()
+
     def test_prune_says_so_when_claude_management_is_gone(self):
-        cwd, env = self.copy(*NAMES)
         for args in (["list"], ["archive", "skill:user:foo"]):
-            r = subprocess.run([sys.executable, "prune.py", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
-            self.assertEqual(r.returncode, 1, args)
-            self.assertEqual(r.stdout, "", args)
-            self.assertNotIn("Traceback", r.stderr, args)
-            self.assertEqual(len(r.stderr.strip().splitlines()), 1, (args, r.stderr))
+            self.assertIn("Claude management", self.prune_says("claude_management", *args), args)
+
+    def test_prune_relocate_says_so_when_project_management_is_gone(self):
+        self.assertEqual(self.prune_says("project_management", "relocate", "~/code/app", "~/code/app2"),   # ~ is the fake home
+                         "Project management is not loaded")
+
+
+class BrokenOneTest(unittest.TestCase):
+    """A component that is there but fails to load is not a removed one: the component that reads it fails too, and the
+    last good files stay as they were."""
+    copy = RemoveOneTest.copy
+
+    def two_passes(self, broken: str, file: str) -> tuple[Path, dict, dict]:
+        """One good pass, then a syntax error in <broken>/<file>, then one more pass. The files and items before and after."""
+        cwd, env = self.copy()
+        stx = Path(env["STELLAXIS_HOME"])
+
+        def state():
+            files = {n: (stx / n).read_bytes() for n in ("snapshot.json", "history.jsonl", "projects.json")}
+            with closing(sqlite3.connect(stx / "stellaxis.db")) as db:
+                files["items"] = db.execute("SELECT * FROM claude_management_items ORDER BY id").fetchall()
+            return files
+
+        run = lambda: subprocess.run([sys.executable, "collect.py", "run"], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+        r = run()
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        before = state()
+        with open(cwd / "components" / broken / file, "a") as f:
+            f.write("\ndef (:\n")
+        run()
+        return stx, before, state()
+
+    def test_project_management_broken_keeps_the_last_snapshot_history_and_items(self):
+        stx, before, after = self.two_passes("project_management", "repos.py")
+        self.assertTrue(before["items"])
+        for key in ("snapshot.json", "history.jsonl", "items"):
+            self.assertEqual(after[key], before[key], key)
+        err = json.loads((stx / "status.json").read_text())["index_error"]
+        self.assertIn("project_management: SyntaxError", err)
+        self.assertIn("claude_management: RuntimeError: project_management did not load", err)
+
+    def test_collect_run_names_a_failed_component_also_when_a_snapshot_was_written(self):
+        cwd, env = self.copy()
+        with open(cwd / "components" / "memory_management" / "__init__.py", "a") as f:
+            f.write("\ndef (:\n")
+        r = subprocess.run([sys.executable, "collect.py", "run"], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("\nsnapshot: ", r.stdout)
+        [line] = r.stderr.splitlines()
+        self.assertTrue(line.startswith("collect: memory_management: SyntaxError: "), line)
+
+    def test_claude_management_broken_keeps_the_last_index(self):
+        stx, before, after = self.two_passes("claude_management", "setup.py")
+        self.assertIn(b'"cost": 0.', before["projects.json"])
+        self.assertEqual(after["projects.json"], before["projects.json"])
+        err = json.loads((stx / "status.json").read_text())["index_error"]
+        self.assertIn("claude_management: SyntaxError", err)
+        self.assertIn("project_management: RuntimeError: claude_management did not load", err)
 
 
 class IndependenceTest(unittest.TestCase):

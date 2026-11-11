@@ -363,9 +363,25 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(beta.read("alpha", "things"), [{"id": "7"}])
         self.assertEqual(beta.read("alpha", "things", prefix="z"), [])
         self.assertEqual(beta.read("ghost", "things"), [])      # the owner is not installed
-        self.assertEqual(beta.read("broken", "things"), [])     # the owner failed to load
+        with self.assertRaisesRegex(RuntimeError, r"^broken did not load: RuntimeError: boom$"):
+            beta.read("broken", "things")                       # the owner is there but failed to load
         with self.assertRaises(LookupError):
             beta.read("alpha", "other")                         # never declared
+
+    def test_a_reader_that_reads_a_component_that_failed_to_load_fails_and_the_others_run(self):
+        put(self.comps, "alpha", ALPHA)
+        put(self.comps, "broken", "raise RuntimeError('boom')\n")
+        put(self.comps, "asker", "from core.component import Component\nGOT = []\n"
+            "def r(ctx):\n    GOT.append(ctx.read('ghost', 'things'))\n    GOT.append(ctx.read('broken', 'things'))\n"
+            "COMPONENT = Component(name='asker', readers=[r], reads=[('ghost', 'things'), ('broken', 'things')])\n")
+        c = self.core()
+        r = c.run_pass({"x": 7})
+        self.assertEqual(r["components"]["asker"]["errors"], ["RuntimeError: broken did not load: RuntimeError: boom"])
+        self.assertEqual(r["components"]["alpha"]["errors"], [])
+        self.assertEqual(sys.modules["stx_asker"].GOT, [[]])   # the absent owner gave [], the broken one raised
+        self.assertEqual(c.read("broken", "things", {}), [])    # a way in still gets []
+        with closing(c.store.connect()) as db:
+            self.assertEqual([tuple(x) for x in db.execute("SELECT id FROM alpha_things")], [("7",)])
 
     def test_a_way_in_reads_an_offer_without_declaring_it(self):
         put(self.comps, "alpha", ALPHA); put(self.comps, "beta", BETA)
@@ -405,6 +421,30 @@ class CoreTest(unittest.TestCase):
         self.assertIn("OperationalError", by["sick"]["error"])
         self.assertIsNone(by["alpha"]["error"])
         self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
+
+    def test_a_store_locked_while_the_core_is_made_heals_at_the_next_pass(self):
+        put(self.comps, "alpha", ALPHA)
+        store.Store(self.home / "stellaxis.db")
+        real = sqlite3.connect
+        with closing(real(self.home / "stellaxis.db", isolation_level=None)) as lock, \
+                mock.patch.object(store.sqlite3, "connect", lambda path, timeout=5: real(path, timeout=0.1)):
+            lock.execute("BEGIN IMMEDIATE")   # another writer holds the store
+            c = self.core()
+            [alpha] = c.components
+            self.assertIn("database is locked", alpha.error)
+            self.assertEqual(c.run_pass({"x": 1})["components"], {})   # still locked: still off
+            self.assertIn("database is locked", alpha.error)
+            lock.execute("ROLLBACK")
+        r = c.run_pass({"x": 7})
+        self.assertEqual(r["components"], {"alpha": {"readers": 1, "errors": []}})
+        self.assertIsNone(alpha.error)
+        self.assertEqual(c.read("alpha", "things", {}), [{"id": "7"}])
+
+    def test_a_component_that_failed_to_import_is_not_tried_again(self):
+        put(self.comps, "broken", "raise RuntimeError('boom')\n")
+        c = self.core()
+        c.run_pass({})
+        self.assertEqual([x.error for x in c.components], ["RuntimeError: boom"])
 
     def test_a_store_that_cannot_open_is_reported_not_raised(self):
         (self.home / "stellaxis.db").mkdir()

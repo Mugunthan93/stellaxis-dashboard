@@ -27,7 +27,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import collect as C  # noqa: E402
 from core import undo  # noqa: E402
-from core.undo import dig  # noqa: E402,F401
 
 ARCHIVE = C.CLAUDE_DIR / "_archive"
 

@@ -42,6 +42,9 @@ class Ctx:
         me = next((c for c in self._core.components if c.name == self.name), None)
         if me is None or (owner, offer) not in [tuple(r) for r in me.reads]:
             raise LookupError(f"{self.name!r} did not declare reads of {owner}.{offer}")
+        other = next((c for c in self._core.components if c.name == owner), None)
+        if other is not None and other.error:   # there but broken is not removed: the reader fails, its last good files stay
+            raise RuntimeError(f"{owner} did not load: {other.error}")
         return self._core.read(owner, offer, self.cfg, **args)
 
     def act(self, action: str, args: dict | None = None, apply: bool = False, plan: Plan | None = None) -> dict:
@@ -102,6 +105,7 @@ class Core:
         self.last_pass: dict | None = None
         self.pass_state: dict | None = None   # the cache, files, memos, read error and thread of the pass that runs
         self._pass_lock = threading.RLock()
+        self._not_ensured: set[str] = set()   # components whose tables failed at start: tried again at each pass
         try:
             self.store = Store(self.home / "stellaxis.db")
         except Exception as e:
@@ -110,10 +114,17 @@ class Core:
         for c in self.components:
             if c.error:
                 continue
-            try:
-                self.store.ensure(c.name, c.records, c.changes)
-            except Exception as e:
-                c.error = _err(e)
+            self._ensure(c)
+
+    def _ensure(self, c: Component) -> None:
+        try:
+            self.store.ensure(c.name, c.records, c.changes)
+        except Exception as e:
+            c.error = _err(e)
+            self._not_ensured.add(c.name)
+        else:
+            c.error = None
+            self._not_ensured.discard(c.name)
 
     def ctx(self, name: str, cfg: dict, inputs: dict | None = None) -> Ctx:
         return Ctx(self, name, cfg, inputs)
@@ -147,6 +158,9 @@ class Core:
     def run_pass(self, cfg: dict, inputs: dict | None = None) -> dict:
         """Run the readers in rounds: the first reader of every component (in name order), then the second, ..."""
         with self._pass_lock:
+            for c in self.components:
+                if c.name in self._not_ensured:   # e.g. a store that was locked at start
+                    self._ensure(c)
             comps = [c for c in self.components if not c.error]
             out: dict = {c.name: {"readers": len(c.readers), "errors": []} for c in comps}
             self.pass_state = {"cache": None, "files": None, "memos": {}, "error": None,

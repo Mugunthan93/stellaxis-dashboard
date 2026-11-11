@@ -68,6 +68,8 @@ def snapshot(refresh=False) -> dict:
         snap["collector_status"] = {"phase": "not running", "stale": stale}
         return snap
     snap = C.collect(cfg)
+    if not snap:
+        raise RuntimeError(C.last_error or "no snapshot was written")
     snap["collector_status"] = {"phase": "not running", "collected_inline": True}
     return snap
 

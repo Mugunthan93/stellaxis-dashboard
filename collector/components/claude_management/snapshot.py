@@ -284,20 +284,27 @@ def append_history(home, snap: dict):
            "always_by_kind": {k: v["tokens_always"] for k, v in t["by_kind"].items()},
            "today_tokens": t["today"]["tokens"], "today_cost": t["today"]["cost"]}
     path = home / "history.jsonl"
-    last = None
+    last, cut = None, False
     if path.exists():
         with open(path, "rb") as f:
             try:
                 f.seek(-4096, os.SEEK_END)
             except OSError:
                 f.seek(0)
-            tail = f.read().splitlines()
-            last = json.loads(tail[-1]) if tail else None
+            data = f.read()
+            tail = data.splitlines()
+            try:
+                last = json.loads(tail[-1]) if tail else None
+            except ValueError:
+                last = None
+            if not (isinstance(last, dict) and isinstance(last.get("t"), str)):   # a cut or odd last line: no last row
+                last = None
+            cut = bool(data) and not data.endswith(b"\n")
     sig = lambda r: json.dumps({k: v for k, v in (r or {}).items() if k not in ("t", "today_tokens", "today_cost")}, sort_keys=True)
     hour_changed = not last or last["t"][:13] != row["t"][:13]
     if sig(last) != sig(row) or hour_changed:
         with open(path, "a") as f:
-            f.write(json.dumps(row) + "\n")
+            f.write(("\n" if cut else "") + json.dumps(row) + "\n")   # never glue the row onto a cut line
 
 
 def load_history(home, limit=2000) -> list:

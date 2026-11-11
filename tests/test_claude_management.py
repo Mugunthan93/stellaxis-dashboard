@@ -178,10 +178,33 @@ class ClaudeManagementTest(FakeHome):
         self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'k'")
 
     def test_a_failed_collection_right_after_a_good_one_returns_no_snapshot(self):
-        self.assertTrue(C.collect(dict(CFG)))
+        good = C.collect(dict(CFG))
+        self.assertTrue(good)
         with mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
             self.assertEqual(C.collect(dict(CFG)), {})
-        self.assertIsNone(self.status()["last_snapshot"])
+        st = self.status()   # the last snapshot is still the one on disk
+        self.assertEqual((st["last_snapshot"], st["elapsed_ms"]), (good["generated_at"], good["meta"]["elapsed_ms"]))
+        self.assertEqual(st["index_error"], "claude_management: KeyError: 'k'")
+
+    def test_a_cut_last_line_in_the_history_counts_as_no_last_row(self):
+        for cut in ('{"t": "2026-11-10T09:00:00Z", "glo', "12", '{"no_t": 1}'):
+            with self.subTest(cut=cut):
+                (self.stx / "history.jsonl").write_text('{"t": "2026-11-10T08:00:00Z"}\n' + cut)
+                snap = C.collect(dict(CFG))
+                self.assertIsNone(self.status()["index_error"])
+                lines = (self.stx / "history.jsonl").read_text().splitlines()
+                self.assertEqual(json.loads(lines[-1])["t"], snap["generated_at"])
+                self.assertEqual(snap["history"][-1]["t"], snap["generated_at"])
+
+    def test_the_desktop_tool_says_so_when_its_own_collection_wrote_nothing(self):
+        import mcp_server
+        (self.stx / "config.json").write_text(json.dumps({**CFG, "port": 1}))   # no service there: the tool collects inline
+        call = {"id": 1, "method": "tools/call", "params": {"name": "stellaxis_snapshot", "arguments": {}}}
+        with mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
+            got = mcp_server.handle(call)
+        self.assertEqual(got, {"content": [{"type": "text", "text": "stellaxis error: claude_management: KeyError: 'k'"}], "isError": True})
+        with mock.patch.object(C, "collect", return_value={}), mock.patch.object(C, "last_error", None):
+            self.assertEqual(mcp_server.handle(call)["content"][0]["text"], "stellaxis error: no snapshot was written")
 
     def test_a_failed_round_one_gives_one_error(self):
         with mock.patch.object(CM.usage, "sessions", side_effect=KeyError("u")):

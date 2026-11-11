@@ -25,7 +25,7 @@ class Component:
     actions: dict = field(default_factory=dict)
     offers: dict = field(default_factory=dict)
     reads: list = field(default_factory=list)
-    undo: dict = field(default_factory=dict)   # step name -> handler(entry: dict, apply: bool, out) -> bool
+    undo: dict = field(default_factory=dict)   # step name -> handler(entry: dict, apply: bool, out, ctx) -> bool
     handle: Callable | None = None
     lines: Consumer | None = None   # gets every new transcript line of a pass (core.transcripts)
     error: str | None = None

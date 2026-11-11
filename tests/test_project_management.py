@@ -244,7 +244,8 @@ class ProjectManagementTest(unittest.TestCase):
         with mock.patch.object(c, "error", "ImportError: gone"):
             res = self.collect()
             self.assertNotIn("project_management", res["components"])
-            self.assertEqual(C.pass_error(self.core, res), "project_management: ImportError: gone")
+            self.assertEqual(C.pass_error(self.core, res), "project_management: ImportError: gone; "   # Claude management reads it
+                             "claude_management: RuntimeError: project_management did not load: ImportError: gone")
         core = Core(self.home, self.home / ".claude", self.home / "no-components")
         self.assertIsNone(C.pass_error(core, core.run_pass(cfg, COLLECTOR)))
 
@@ -287,7 +288,8 @@ srv.shutdown(); print(json.dumps(out))
         [c] = [c for c in out["core"]["components"] if c["name"] == "project_management"]
         self.assertEqual(c["error"], "RuntimeError: boom")
         self.assertEqual((out["overview"], out["jarvis"]), (200, 200))
-        self.assertEqual(out["index_error"], "project_management: RuntimeError: boom")
+        self.assertEqual(out["index_error"], "project_management: RuntimeError: boom; "   # Claude management reads it
+                         "claude_management: RuntimeError: project_management did not load: RuntimeError: boom")
 
 
 class OldWordTest(unittest.TestCase):
