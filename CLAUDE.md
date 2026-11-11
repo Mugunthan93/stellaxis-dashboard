@@ -52,7 +52,7 @@ command centre (Home and Project pages) reads a separate index, `projects.json`,
   asks the running `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting
   inline, because inline collection inside the app can hang on a macOS folder-permission prompt.
 - `collector/components/project_management/` is the Project management component. `centre.py` is the command centre and
-  speaks the new names only. Its reader (in `__init__.py`) writes `projects.json` from the pass inputs
+  speaks the new names only. Its reader (in `__init__.py`) writes `projects.json` from the pass inputs, and refuses (an error of the component, nothing written) when the core's home is not `STELLAXIS_HOME`
   (`write_index` in `collect.py` passes the sessions and folders to the core's pass); `build_index` makes the
   content: every session (not just the capped snapshot ones) grouped project > repo > branch, plus configured
   repos with no sessions as repos with no branches. A path in no project belongs to `UNASSIGNED`. Its routes are
@@ -63,6 +63,7 @@ command centre (Home and Project pages) reads a separate index, `projects.json`,
 - `collector/components/project_management/old_names.py` is the alias layer: the one place that maps the old names
   (the old route, page address, index file, config keys, request key and group name) to the new ones, and the only code
   under `collector/` that may write the old word (its tests in `tests/test_old_names.py` may too). The old names keep answering until a later step removes the layer.
+  `old_names.index` gives the old index file in the new shape; `centre._index` uses it (`centre.index_fallback`) only while `projects.json` cannot be read, so pages are not empty before the first pass.
   There is no alias module any more.
 - `collector/unplaced/jarvis.py` serves the Jarvis routes (briefing, ask, hear, say, hush). It runs today and is in no
   component yet; `handle(handler, method, cfg, core)` reads Project management with `core.read(...)`, so a broken
@@ -85,7 +86,7 @@ command centre (Home and Project pages) reads a separate index, `projects.json`,
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
 
-Other files under `$STELLAXIS_HOME`: `tasks/<project id>.md` (checkbox lines; the unassigned list is `tasks/unassigned.md`), `approvals/` (`<id>.req`,
+Other files under `$STELLAXIS_HOME`: `tasks/<project id>.md` (checkbox lines; the unassigned list is `tasks/unassigned.md`; `tasks/other.md` is read and written instead while it exists and `tasks/unassigned.md` does not, until the rename is applied), `approvals/` (`<id>.req`,
 `<id>.ans`, and `on/<session uuid>`, the per-session switch), `test-results/` (last result per repo).
 
 Config keys for the command centre (`config.json`): `claude_bin` (default `~/.local/bin/claude`) and

@@ -185,11 +185,14 @@ def _home() -> Path:
     return Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
 
 
+index_fallback = None  # set by the component: (home) -> dict | None, the index from an older file; used only while INDEX_FILE cannot be read
+
+
 def _index() -> dict:
     try:
         return json.loads((_home() / INDEX_FILE).read_text())
     except (OSError, ValueError):
-        return {"projects": []}
+        return (index_fallback and index_fallback(_home())) or {"projects": []}
 
 
 def _prompt(body: dict) -> str:

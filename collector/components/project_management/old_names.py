@@ -4,7 +4,9 @@ This is the only code that may say the old word.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 ROUTE = "/api/workspaces"
 INDEX_FILE = "workspaces.json"
@@ -12,6 +14,18 @@ INDEX_FILE = "workspaces.json"
 
 def _id(pid):
     return "unassigned" if pid == "other" else pid
+
+
+def index(home: Path) -> dict | None:
+    """The old index file under home, given in the new shape; None when it is missing, unreadable or not an index."""
+    try:
+        old = json.loads((home / INDEX_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(old, dict) or not isinstance(old.get("workspaces"), list):
+        return None
+    groups = [{**g, "id": "unassigned", "name": "Unassigned"} if isinstance(g, dict) and g.get("id") == "other" else g for g in old["workspaces"]]
+    return {**{k: v for k, v in old.items() if k != "workspaces"}, "projects": groups}
 
 
 def config(cfg: dict) -> dict:

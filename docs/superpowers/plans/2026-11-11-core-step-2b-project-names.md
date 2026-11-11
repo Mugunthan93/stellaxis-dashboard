@@ -867,4 +867,4 @@ git commit -m "Docs and check 5: the old word remains only in the alias layer an
 
 - **Step 3:** records of Project management in the store, the shared transcript helper, `relocate` as an action of this component, Claude management, `README.md`.
 - **The owner applies the config rename** when he chooses. Until then the service reads the old keys.
-- **Removing the alias layer** (`old_names.py`, `tests/test_old_names.py`, `workspaces.json`): a later step, after the installed copy of the Jarvis agent uses the new names and the config rename is applied.
+- **Removing the alias layer** (`old_names.py`, `tests/test_old_names.py`, `workspaces.json`, `centre.index_fallback`, the `tasks/other.md` fallback in `centre._task_file`, the id-less fallback in `collect.project_notes`, and the action `new_names` with its undo step): a later step, after the installed copy of the Jarvis agent uses the new names and the config rename is applied.

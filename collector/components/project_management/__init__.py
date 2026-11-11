@@ -15,6 +15,8 @@ def index_reader(ctx) -> None:
     """The project index from the pass inputs, and beside it the same index under the old names; a pass without sessions leaves them alone."""
     if "sessions" not in ctx.inputs:
         return
+    if Path(ctx.home).expanduser() != centre._home():
+        raise RuntimeError(f"the core's home {ctx.home} is not STELLAXIS_HOME {centre._home()}")
     cfg = old_names.config(ctx.cfg)
     centre.clear_stale(centre.live(centre._bin(cfg)))
     index = centre.build_index(ctx.inputs["sessions"], ctx.inputs["folders"], centre.app_records(centre.app_base()), cfg)
@@ -42,8 +44,10 @@ def new_names(plan, ctx) -> bool:
         plan.backup_json(f)
         plan.manifest["entries"].append({"op": "project_management.old_config_keys", "file": str(f)})
         if plan.apply:
-            write_json(f, old_names.to_new(user), indent=2)
+            write_json(f, old_names.to_new(user), indent=2, ensure_ascii=False)
     old, new = centre._home() / "tasks" / "other.md", centre._home() / "tasks" / "unassigned.md"
+    if old.exists() and new.exists():
+        plan.say(f"{short_path(old)} is left where it is: {short_path(new)} already exists")
     if plan.apply:
         with centre._TASK_LOCK:
             if old.exists() and not new.exists():
@@ -62,8 +66,10 @@ def _old_config_keys(entry: dict, apply: bool, out) -> bool:
     out(f"{_pre(apply)}put the old keys back in {short_path(entry['file'])}")
     if apply:
         user = _user_config(Path(entry["file"]))
-        if user is not None:
-            write_json(Path(entry["file"]), old_names.to_old(user), indent=2)
+        if user is None:
+            out(f"{_pre(apply)}{short_path(entry['file'])} is missing or is not JSON: the old keys were not put back")
+            return False
+        write_json(Path(entry["file"]), old_names.to_old(user), indent=2, ensure_ascii=False)
     return True
 
 
@@ -119,6 +125,8 @@ def _live(ctx) -> list:
 def _approvals(ctx) -> list:
     return centre.pending()
 
+
+centre.index_fallback = old_names.index
 
 COMPONENT = Component(name="project_management", readers=[index_reader], handle=handle,
                       actions={"new_names": new_names}, undo={"project_management.old_config_keys": _old_config_keys},

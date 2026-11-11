@@ -16,11 +16,11 @@ def read_json(p: Path, default=None):
         return default
 
 
-def write_json(p: Path, data, indent=None):
+def write_json(p: Path, data, indent=None, ensure_ascii=True):
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=indent, default=list)
+        json.dump(data, f, indent=indent, default=list, ensure_ascii=ensure_ascii)
     os.replace(tmp, p)
 
 

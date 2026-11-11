@@ -18,7 +18,7 @@ Stellaxis serves everything on `http://127.0.0.1:7777` (use `curl -s`):
 
 - `/api/projects`: projects > repos (`path`, `exists`, `state`: remote, ahead, dirty) > branches >
   sessions (`id`, `title`, `first_ts`, `last_ts`, `cost`, `status`: waiting, running, open, closed,
-  `archived`), plus `cost_30d` and `tests_failed` per project. The project "unassigned" holds folders outside
+  `archived`), plus `cost_30d` and `tests_failed` per project. The group "unassigned" holds folders outside
   the configured ones.
 - `/api/projects/<id>/tasks`: the owner's task list for that project.
 - `/api/projects/<id>/work`: plans, routines and the last test runs.

@@ -127,6 +127,19 @@ class ComponentTest(unittest.TestCase):
         self.assertEqual([(w["id"], w["name"]) for w in old["workspaces"]], [("x", "X"), ("other", "Other")])
         self.assertEqual(old["workspaces"][0]["repos"], new["projects"][0]["repos"])
 
+    def test_the_old_index_file_is_read_until_the_first_pass(self):
+        cfg = dict(OLD_CFG)
+        self.assertEqual((self.get("/api/projects")[1]["projects"], self.get("/api/workspaces")[1]["workspaces"]), ([], []))
+        (self.home / "workspaces.json").write_text(json.dumps({"generated_at": "g", "workspaces": [
+            {"id": "x", "name": "X", "repos": [{"path": "~/code/x"}]}, {"id": "other", "name": "Other", "repos": [{"path": "~/y"}]}]}))
+        self.assertEqual([p["id"] for p in self.get("/api/projects")[1]["projects"]], ["x", "unassigned"])
+        self.assertEqual([p["id"] for p in self.get("/api/workspaces")[1]["workspaces"]], ["x", "other"])
+        self.assertEqual(len(self.core.read("project_management", "index", cfg)), 2)
+        self.assertFalse((self.home / "projects.json").exists())
+        for bad in ("not json", "[]", json.dumps({"workspaces": "x"})):
+            (self.home / "workspaces.json").write_text(bad)
+            self.assertEqual(self.get("/api/projects")[1]["projects"], [])
+
     def test_old_routes_answer_as_before(self):
         self.run_pass()
         status, body, _ = self.get("/api/workspaces")
@@ -201,7 +214,7 @@ class RenameTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.cfg_file = self.home / "config.json"
-        self.cfg_file.write_text(json.dumps({**OLD_CFG, "interval": "1m"}, indent=4))
+        self.cfg_file.write_text(json.dumps({**OLD_CFG, "projects": [{"name": "A card", "summary": "\u00e9 \u2014 ok"}], "interval": "1m"}, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
         (self.home / "tasks" / "other.md").write_text("- [ ] kept\n")
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -258,7 +271,9 @@ class RenameTest(unittest.TestCase):
         self.assertEqual((status, body["applied"], body["ok"]), (200, True, True))
         user = json.loads(self.cfg_file.read_text())
         self.assertEqual(user["projects"], [{"id": "x", "name": "X", "repos": ["~/code/x"], "routines": ["r"]}])
-        self.assertEqual(user["project_notes"], [{"name": "A card"}])
+        self.assertEqual(user["project_notes"], [{"name": "A card", "summary": "\u00e9 \u2014 ok"}])
+        self.assertIn("\u00e9 \u2014 ok", self.cfg_file.read_text(encoding="utf-8"))
+        self.assertNotIn("\\u", self.cfg_file.read_text(encoding="utf-8"))
         self.assertNotIn("workspaces", user)
         self.assertIn(self.home.parent, Path(body["manifest"]).parents)          # under the temp folder, never the real ~/.claude
         man = json.loads(Path(body["manifest"]).read_text())
@@ -281,6 +296,7 @@ class RenameTest(unittest.TestCase):
         man = json.loads(Path(body["manifest"]).read_text())
         self.assertNotIn("move", [e["op"] for e in man["entries"]])
         self.assertFalse(any(s.startswith("move ") for s in body["steps"]))
+        self.assertIn("tasks/other.md is left where it is: tasks/unassigned.md already exists", [s.replace(str(self.home) + "/", "") for s in body["steps"]])
 
     def test_prune_restore_undoes_it_and_keeps_a_later_edit(self):
         name = Path(self.post("/api/projects/new-names", {"apply": True})[1]["manifest"]).parent.name
@@ -289,10 +305,23 @@ class RenameTest(unittest.TestCase):
         out = self.prune("restore", name, "--apply")       # prune.py as a child process, on the fake home
         self.assertIn("put the old keys back in", out)
         back = json.loads(self.cfg_file.read_text())
-        self.assertEqual((back["workspaces"], back["projects"], back["interval"]), (OLD_CFG["workspaces"], OLD_CFG["projects"], "5m"))
+        self.assertEqual((back["workspaces"], back["interval"]), (OLD_CFG["workspaces"], "5m"))
+        self.assertEqual(back["projects"][0]["summary"], "\u00e9 \u2014 ok")
+        self.assertIn("\u00e9 \u2014 ok", self.cfg_file.read_text(encoding="utf-8"))
+        self.assertNotIn("\\u", self.cfg_file.read_text(encoding="utf-8"))
         self.assertNotIn("project_notes", back)
         self.assertEqual((self.home / "tasks" / "other.md").read_text(), "- [ ] kept\n")
         self.assertFalse((self.home / "tasks" / "unassigned.md").exists())
+
+    def test_restore_stops_when_the_config_is_gone(self):
+        man = Path(self.post("/api/projects/new-names", {"apply": True})[1]["manifest"])
+        self.cfg_file.unlink()
+        env = {**os.environ, "HOME": str(self.root), "STELLAXIS_HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.home / ".claude")}
+        r = subprocess.run([sys.executable, str(REPO / "collector" / "prune.py"), "restore", man.parent.name, "--apply"], env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("config.json is missing or is not JSON: the old keys were not put back", r.stdout)
+        self.assertTrue(man.exists())
+        self.assertFalse((man.parent / "manifest.restored.json").exists())
 
 
 if __name__ == "__main__":

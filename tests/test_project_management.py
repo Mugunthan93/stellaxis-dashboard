@@ -87,6 +87,17 @@ class ProjectManagementTest(unittest.TestCase):
         self.assertEqual(res["components"]["project_management"]["errors"], [])
         self.assertFalse((self.home / "projects.json").exists())
 
+    def test_the_reader_refuses_a_home_that_is_not_the_environments(self):
+        elsewhere = self.home / "elsewhere"
+        core = Core(elsewhere, self.home / ".claude", COMPS)
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
+            res = core.run_pass(dict(CFG), {"sessions": [ROW], "folders": []})
+        [err] = res["components"]["project_management"]["errors"]
+        self.assertTrue(err.startswith("RuntimeError: the core's home"), err)
+        for d in (self.home, elsewhere):
+            self.assertFalse((d / "projects.json").exists())
+            self.assertFalse((d / ("work" + "spaces.json")).exists())
+
     def test_routes_are_served_through_the_core_also_with_the_store_down(self):
         (self.home / "broken").mkdir()
         (self.home / "broken" / "stellaxis.db").mkdir()

@@ -294,7 +294,8 @@ class RouteMatrix(unittest.TestCase):
             ("POST", "/api/projects/w/tasks", {"add": "x"}, 200), ("POST", "/api/projects/w/tests/run", {"repo": self.repo}, 200),
             ("POST", "/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": "hi"}, 200),
             ("POST", f"/api/sessions/{self.DONE}/message", {"prompt": "hi"}, 200),
-            ("POST", "/api/settings/preview", {}, 422), ("POST", "/api/settings/save", {}, 422)]
+            ("POST", "/api/settings/preview", {}, 422), ("POST", "/api/settings/save", {}, 422),
+            ("GET", "/api/projects/new-names", None, 200), ("POST", "/api/projects/new-names", {"apply": False}, 200)]
 
     def req(self, method, path, body, **headers):
         c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=20)
