@@ -1,9 +1,8 @@
-"""The shared transcript helper: reads every new line of `~/.claude/projects/**/*.jsonl` one time.
-
-The state of each file lives in `cache["files"]` (the format of `cache.json`): the head facts kept here,
-then the keys of each consumer, then `v`. Each consumer's `line` gets every new line once.
-"""
 from __future__ import annotations
+
+# The shared transcript helper: reads every new line of `~/.claude/projects/**/*.jsonl` one time.
+# The state of each file lives in `cache["files"]` (the format of `cache.json`): the head facts kept here,
+# then the keys of each consumer, then `v`. Each consumer's `line` gets every new line once.
 
 import json
 import zlib
@@ -48,9 +47,12 @@ def _head(st: dict, d: dict):
 
 
 def read(projects_dir: Path, cache: dict, consumers: list[Consumer]) -> dict:
+    wanted = [k for c in consumers for k in c.fresh()]
+    clash = sorted({k for k in wanted if k in HEAD or k == "v" or wanted.count(k) > 1})
+    if clash:
+        raise ValueError(f"consumer keys clash with the head or with each other: {clash}")
     files = cache.setdefault("files", {})
     ids = cache.setdefault("ids", {})  # call id -> owning file, across all files; a replay is not new usage
-    wanted = [k for c in consumers for k in c.fresh()]
     keep = set(HEAD) | {"v"} | set(wanted)
     found, seen = [], set()
     for p in projects_dir.rglob("*.jsonl") if projects_dir.exists() else []:

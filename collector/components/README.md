@@ -19,3 +19,4 @@ An action sets `plan.result` to what its route answers, says what it skipped wit
 A pass runs in rounds: the first reader of every component, then the second, and so on; inside a round the order is the component name. Put a reader that needs what another component wrote in this pass in the second place.
 `ctx.transcripts()` gives the state of every transcript file; the helper reads each new line one time and hands it to the `lines` consumer of every component. `core.transcripts.sessions(files)` groups the files into sessions.
 `ctx.cache` is the pass cache (`cache.json`): bookkeeping only, never records. `ctx.memo` is a dict of your own that lives for one pass.
+`fresh()` of a `lines` consumer must give a new dict each time and have no side effects: it is called more than once.

@@ -59,16 +59,24 @@ class Ctx:
     def transcripts(self) -> dict:
         """The state of every transcript file (path -> state), read one time in a pass for every component."""
         run = self._core.running()
+        if run["error"] is not None:
+            raise run["error"]   # a failed read poisons the pass: no second read on top of half-counted lines
         if run["files"] is None:
             consumers = [c.lines for c in self._core.components if not c.error and c.lines is not None]
-            run["files"] = transcripts.read(self.claude_dir / "projects", self.cache, consumers)
+            try:
+                run["files"] = transcripts.read(self.claude_dir / "projects", self.cache, consumers)
+            except Exception as e:
+                run["error"] = e
+                raise
         return run["files"]
 
     @property
     def memo(self) -> dict:
-        """A dict of this component's own that lives for one pass; outside a pass it is empty."""
+        """A dict of this component's own that lives for one pass; outside a pass (or on another thread) it is empty."""
         run = self._core.pass_state
-        return run["memos"].setdefault(self.name, {}) if run is not None else {}
+        if run is None or run["thread"] != threading.get_ident():
+            return {}
+        return run["memos"].setdefault(self.name, {})
 
     def status(self, phase: str, force: bool = True, **detail) -> None:
         """Tell the way in what the pass is doing. A way in that listens gets it; nothing here ever raises."""
@@ -92,7 +100,7 @@ class Core:
         self.store: Store | None = None
         self.error: str | None = None
         self.last_pass: dict | None = None
-        self.pass_state: dict | None = None   # the cache, the transcript files and the memos of the pass that runs
+        self.pass_state: dict | None = None   # the cache, files, memos, read error and thread of the pass that runs
         self._pass_lock = threading.RLock()
         try:
             self.store = Store(self.home / "stellaxis.db")
@@ -132,7 +140,7 @@ class Core:
                 for c in self.components if not c.error for step, fn in c.undo.items()}
 
     def running(self) -> dict:
-        if self.pass_state is None:
+        if self.pass_state is None or self.pass_state["thread"] != threading.get_ident():
             raise RuntimeError("only during a pass")
         return self.pass_state
 
@@ -141,7 +149,8 @@ class Core:
         with self._pass_lock:
             comps = [c for c in self.components if not c.error]
             out: dict = {c.name: {"readers": len(c.readers), "errors": []} for c in comps}
-            self.pass_state = {"cache": None, "files": None, "memos": {}}
+            self.pass_state = {"cache": None, "files": None, "memos": {}, "error": None,
+                               "thread": threading.get_ident()}
             try:
                 for i in range(max((len(c.readers) for c in comps), default=0)):
                     for c in comps:
@@ -150,7 +159,7 @@ class Core:
                                 c.readers[i](self.ctx(c.name, cfg, inputs))
                             except Exception as e:
                                 out[c.name]["errors"].append(_err(e))
-                if self.pass_state["cache"] is not None:
+                if self.pass_state["cache"] is not None and self.pass_state["error"] is None:
                     write_json(self.home / "cache.json", self.pass_state["cache"])
             finally:
                 self.pass_state = None

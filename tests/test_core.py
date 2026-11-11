@@ -519,6 +519,45 @@ class CoreTest(unittest.TestCase):
         c.run_pass({})
         self.assertEqual(component.import_folder(self.comps / "alpha").BEFORE, [{}, {}])
 
+    POISON = ("from core.component import Component\nfrom core.transcripts import Consumer\nBAD = [{bad}]\n"
+              "def line(st, d, ids, owner):\n    st['{n}'] += 1\n"
+              "    if BAD[0] and st['{n}'] == 3:\n        raise KeyError('third')\n"
+              "def r(ctx):\n    ctx.transcripts()\n"
+              "COMPONENT = Component(name='{n}', readers=[r, r], lines=Consumer(fresh=lambda: {{'{n}': 0}}, line=line))\n")
+
+    def test_a_failed_transcript_read_poisons_the_pass_and_saves_nothing(self):
+        put(self.comps, "alpha", self.POISON.format(n="alpha", bad="False"))
+        put(self.comps, "beta", self.POISON.format(n="beta", bad="True"))
+        p = self.home / ".claude" / "projects" / "p" / "s.jsonl"
+        p.parent.mkdir(parents=True)
+        p.write_text("".join(json.dumps({"type": "user", "n": i}) + "\n" for i in range(4)))
+        (self.home / "cache.json").write_text('{"old": 1}')
+        c = self.core()
+        res = c.run_pass({})
+        self.assertEqual(res["components"]["alpha"]["errors"], ["KeyError: 'third'"] * 2)
+        self.assertEqual(res["components"]["beta"]["errors"], ["KeyError: 'third'"] * 2)
+        self.assertEqual((self.home / "cache.json").read_text(), '{"old": 1}')
+        component.import_folder(self.comps / "beta").BAD[0] = False
+        res = c.run_pass({})
+        self.assertEqual(res["components"]["beta"]["errors"], [])
+        saved = json.loads((self.home / "cache.json").read_text())
+        self.assertEqual((saved["old"], saved["files"][str(p)]["alpha"], saved["files"][str(p)]["beta"]), (1, 4, 4))
+
+    def test_the_pass_state_belongs_to_the_thread_that_runs_the_pass(self):
+        put(self.comps, "alpha", "from core.component import Component\nimport threading\nGOT = []\n"
+            "def ask(ctx):\n"
+            "    for f in (lambda: ctx.cache, ctx.transcripts):\n"
+            "        try:\n            f()\n            GOT.append('no error')\n"
+            "        except RuntimeError as e:\n            GOT.append(str(e))\n"
+            "    ctx.memo['x'] = 1\n    GOT.append(ctx.memo)\n"
+            "def r(ctx):\n    t = threading.Thread(target=ask, args=(ctx,))\n    t.start()\n    t.join()\n"
+            "    GOT.append(dict(ctx.memo))\n"
+            "COMPONENT = Component(name='alpha', readers=[r])\n")
+        self.assertEqual(self.core().run_pass({})["components"]["alpha"]["errors"], [])
+        self.assertEqual(component.import_folder(self.comps / "alpha").GOT,
+                         ["only during a pass", "only during a pass", {}, {}])
+        self.assertFalse((self.home / "cache.json").exists())
+
 
 def count(st, line, ids, owner):
     st["n"] += 1
@@ -646,6 +685,15 @@ class TranscriptsTest(unittest.TestCase):
         files = self.read(COUNT)
         self.assertEqual(files[a]["n"], 3)
         self.assertEqual(json.dumps(files[b]), b_before)
+
+    def test_consumer_keys_may_not_clash(self):
+        self.write("p/a.jsonl", [{"type": "a"}])
+        for consumers in ([transcripts.Consumer(fresh=lambda: {"cwd": 0}, line=count)],
+                          [transcripts.Consumer(fresh=lambda: {"v": 0}, line=count)],
+                          [COUNT, transcripts.Consumer(fresh=lambda: {"n": 0}, line=count)]):
+            with self.assertRaises(ValueError):
+                transcripts.read(self.dir, self.cache, consumers)
+            self.assertEqual(self.cache, {})
 
     def test_sessions_groups_the_files(self):
         def state(path, **kw):
