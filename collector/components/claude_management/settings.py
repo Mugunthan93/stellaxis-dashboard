@@ -252,6 +252,17 @@ def preview(ctx, body: dict) -> dict:
             "sha": sha(raw), "exists": raw is not None}
 
 
+def backup_name(p: Path) -> Path:
+    """<name>.bak-<stamp> beside the file, with -1, -2, ... when that name is taken."""
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    b = p.with_name(f"{p.name}.bak-{stamp}")
+    n = 1
+    while b.exists():
+        b = p.with_name(f"{p.name}.bak-{stamp}-{n}")
+        n += 1
+    return b
+
+
 def save(ctx, body: dict) -> dict:
     p, raw, new, unchanged = _plan(ctx, body)
     if body.get("base_sha", "missing") != sha(raw):
@@ -259,12 +270,7 @@ def save(ctx, body: dict) -> dict:
                        sha=sha(raw))
     backup = None
     if raw is not None:
-        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        b = p.with_name(f"{p.name}.bak-{stamp}")
-        n = 1
-        while b.exists():
-            b = p.with_name(f"{p.name}.bak-{stamp}-{n}")
-            n += 1
+        b = backup_name(p)
         atomic_write(b, raw, p.stat().st_mode & 0o777)
         backup = str(b)
     atomic_write(p, new)
@@ -281,18 +287,33 @@ def save_settings(plan, ctx, body: dict) -> bool:
         return True
     plan.result = save(ctx, body)
     plan.say(f"save {short_path(plan.result['path'])}")
-    plan.manifest["entries"].append({"op": "claude_management.settings_file", "file": plan.result["path"], "backup": plan.result["backup"]})
+    plan.manifest["entries"].append({"op": "claude_management.settings_file", "file": plan.result["path"], "backup": plan.result["backup"],
+                                     "sha": plan.result["sha"]})
     return True
 
 
 save_settings.private = ("body",)
 
 
+def _keep_changed(f: Path, entry: dict, apply: bool) -> str:
+    """When the file is not what the save wrote, keep a copy of it beside it first. The words to add to the undo's line."""
+    raw = read_bytes(f)
+    if raw is None or sha(raw) == entry.get("sha"):   # an entry without "sha" (older code) counts as changed
+        return ""
+    copy = backup_name(f)
+    if apply:
+        atomic_write(copy, raw, f.stat().st_mode & 0o777)
+        return f"; it changed since the save, a copy is kept as {short_path(copy)}"
+    return f"; it changed since the save, a copy would be kept as {short_path(copy)}"
+
+
 def settings_file(entry: dict, apply: bool, out, ctx) -> bool:
-    """Undo a save: the file gets the bytes of its backup back, or goes when the save made it."""
+    """Undo a save: the file gets the bytes and mode of its backup back, or goes when the save made it. A file changed
+    since the save is copied beside it first, so no edit is lost."""
     f = Path(entry["file"])
     if entry["backup"] is None:
-        out(f"{pre(apply)}remove {short_path(f)}: it did not exist before the save")
+        kept = _keep_changed(f, entry, apply)
+        out(f"{pre(apply)}remove {short_path(f)}: it did not exist before the save{kept}")
         if apply and f.exists():
             f.unlink()
         return True
@@ -300,9 +321,10 @@ def settings_file(entry: dict, apply: bool, out, ctx) -> bool:
     if not backup.is_file():
         out(f"{pre(apply)}{short_path(backup)} is missing: {short_path(f)} was not put back")
         return False
-    out(f"{pre(apply)}put {short_path(f)} back from {short_path(backup)}")
+    kept = _keep_changed(f, entry, apply)
+    out(f"{pre(apply)}put {short_path(f)} back from {short_path(backup)}{kept}")
     if apply:
-        atomic_write(f, backup.read_bytes())
+        atomic_write(f, backup.read_bytes(), backup.stat().st_mode & 0o777)
     return True
 
 

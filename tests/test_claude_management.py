@@ -233,8 +233,60 @@ class SettingsActions(FakeHome):
         self.cfg = dict(CFG)
         self.core = Core(self.stx, self.claude, COMPS)
 
-    def restore(self, manifest, out=lambda _: None):
-        undo.restore(Path(manifest).parent.name, True, self.claude / "_archive", handlers=self.core.undo_handlers(self.cfg), out=out)
+    def restore(self, manifest, out=lambda _: None, apply=True):
+        undo.restore(Path(manifest).parent.name, apply, self.claude / "_archive", handlers=self.core.undo_handlers(self.cfg), out=out)
+
+    def save(self, body):
+        return self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+
+    def baks(self, folder):
+        return sorted(folder.glob("*.bak-*"))
+
+    def test_an_undo_after_a_hand_edit_keeps_the_edit_in_a_copy(self):
+        f = self.claude / "settings.json"
+        before = f.read_bytes()
+        r = self.save({"scope": "user", "data": {"model": "sonnet"}, "base_sha": hashlib.sha256(before).hexdigest()})
+        f.write_text('{"model": "edited by hand"}')
+        said = []
+        self.restore(r["manifest"], out=said.append, apply=False)
+        self.assertEqual(f.read_text(), '{"model": "edited by hand"}')
+        self.assertEqual(self.baks(self.claude), [Path(r["result"]["backup"])])
+        self.assertTrue(any("would be kept" in line for line in said), said)
+        said = []
+        self.restore(r["manifest"], out=said.append)
+        self.assertEqual(f.read_bytes(), before)
+        [kept] = [b for b in self.baks(self.claude) if str(b) != r["result"]["backup"]]
+        self.assertEqual(kept.read_text(), '{"model": "edited by hand"}')
+        self.assertTrue(any(f"a copy is kept as {short_path(kept)}" in line for line in said), said)
+        self.assertNotIn("edited by hand", "".join(said))
+
+    def test_an_undo_of_a_made_file_after_a_hand_edit_keeps_the_edit_and_removes_the_file(self):
+        f = self.app / ".claude" / "settings.local.json"
+        r = self.save({"scope": "local", "project": str(self.app), "data": {"model": "haiku"}, "base_sha": None})
+        f.write_text('{"model": "edited by hand"}')
+        self.restore(r["manifest"], apply=False)
+        self.assertTrue(f.is_file())
+        self.assertEqual(self.baks(f.parent), [])
+        self.restore(r["manifest"])
+        self.assertFalse(f.exists())
+        [kept] = self.baks(f.parent)
+        self.assertEqual(kept.read_text(), '{"model": "edited by hand"}')
+
+    def test_an_undo_of_an_untouched_file_keeps_no_copy(self):
+        f = self.claude / "settings.json"
+        r = self.save({"scope": "user", "data": {"model": "sonnet"}, "base_sha": hashlib.sha256(f.read_bytes()).hexdigest()})
+        said = []
+        self.restore(r["manifest"], out=said.append)
+        self.assertEqual(self.baks(self.claude), [Path(r["result"]["backup"])])
+        self.assertIn(f"  put {short_path(f)} back from {short_path(r['result']['backup'])}", said)
+
+    def test_the_restored_file_gets_the_mode_it_had_before_the_save(self):
+        f = self.claude / "settings.json"
+        os.chmod(f, 0o600)
+        r = self.save({"scope": "user", "data": {"model": "sonnet"}, "base_sha": hashlib.sha256(f.read_bytes()).hexdigest()})
+        os.chmod(f, 0o644)
+        self.restore(r["manifest"])
+        self.assertEqual(os.stat(f).st_mode & 0o777, 0o600)
 
     def test_a_save_can_be_undone_and_its_data_is_not_logged(self):
         f = self.claude / "settings.json"
@@ -323,6 +375,36 @@ class TrimActions(FakeHome):
         r = self.archive(core, False)
         self.assertEqual(len(r["steps"]), 1)
         self.assertEqual(r["notes"], ["  unknown id nope:x:y (run `prune.py list`)"])
+
+
+class MoveAction(FakeHome):
+    def setUp(self):
+        super().setUp()
+        self.cfg = dict(CFG)
+        C.collect(self.cfg)
+        self.skill = self.claude / "skills" / "foo"
+        self.dest = self.app / ".claude" / "skills" / "foo"
+
+    def move(self, apply):
+        return C.the_core().run_action("claude_management", "move", {"ids": ["skill:user:foo", "nope:x:y"], "to": str(self.app)}, apply, self.cfg)
+
+    def test_a_dry_run_writes_nothing(self):
+        r = self.move(False)
+        self.assertEqual(r["steps"], [f"move {short_path(self.skill)} -> {short_path(self.dest)}"])
+        self.assertIn("  unknown id nope:x:y (run `prune.py list`)", r["notes"])
+        self.assertTrue((self.skill / "SKILL.md").is_file())
+        self.assertFalse(self.dest.exists())
+        self.assertFalse((self.claude / "_archive").exists())
+
+    def test_an_applied_move_writes_one_manifest_and_restore_puts_it_back(self):
+        r = self.move(True)
+        self.assertFalse(self.skill.exists())
+        self.assertTrue((self.dest / "SKILL.md").is_file())
+        self.assertEqual(len(list((self.claude / "_archive").glob("*/manifest.json"))), 1)
+        undo.restore(Path(r["manifest"]).parent.name, True, self.claude / "_archive",
+                     handlers=C.the_core().undo_handlers(self.cfg), out=lambda _: None)
+        self.assertTrue((self.skill / "SKILL.md").is_file())
+        self.assertFalse(self.dest.exists())
 
 
 class RunCommandTest(unittest.TestCase):
