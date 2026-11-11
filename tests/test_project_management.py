@@ -214,6 +214,7 @@ class IndependenceTest(unittest.TestCase):
                     self.assertNotIn(other + "_", src, f"{f.relative_to(REPO)} names a table of {other}")
                     self.assertNotIn("stx_" + other, src, f"{f.relative_to(REPO)} names the module of {other}")
 
+
 class OldWordTest(unittest.TestCase):
     """Check 5 of the core spec: the old word remains only where "Names during the move" allows."""
     WORD = "work" + "space"
