@@ -11,3 +11,5 @@ reels/images/
 reels/venv/
 reels/hf/
 reels/queue.json
+# worktrees Claude makes for isolated work
+.claude/worktrees/
