@@ -206,9 +206,10 @@ Measured on this Mac: while the walk ran, other work in the same process was not
 the walk, 0.166 s without).
 
 **The default places are used only when Stellaxis's data folder is inside the home folder (my call).**
-In the service it is (`~/.stellaxis`). The tests keep their data in a temp folder outside the home
-folder; there the defaults are off, so a test never walks the real disk. Places named in `config.json`
-are always used.
+The home folder here is the home of the Mac account, as macOS knows it. It is not the `HOME` setting,
+which a program can change. In the service the data folder is inside it (`~/.stellaxis`). The tests
+keep their data in a temp folder, and some tests also set a false `HOME`; in both cases the defaults
+are off, so a test never walks the real disk. Places named in `config.json` are always used.
 
 ### Config
 
@@ -375,7 +376,7 @@ files and archives are in use; whether the desktop app is running.
 | 5 | Each folder keeps the time of its newest change. | One unused column. |
 | 6 | Folder rows are kept for the last measurement only. | "What grew this week, by folder" cannot be shown until history is kept. The whole-disk history is kept. |
 | 7 | Measure again after 6 hours; stop after 15 minutes. | Numbers are staler, or the disk works more often, than the owner likes. One config line. |
-| 8 | The defaults are off when the data folder is outside the home folder. | A Stellaxis set up with `STELLAXIS_HOME` outside the home folder measures nothing until places are named in config. The route says so. |
+| 8 | The defaults are on only when the data folder is inside the account's home folder. `HOME` is not looked at. | A Stellaxis set up with its data outside the home folder, or run with a different `HOME` on purpose, measures nothing until places are named in config. The route says so. |
 | 9 | The config key is `memory`; `places` adds to the defaults; `guarded` can only add. | A rename later means one more alias. |
 | 10 | Kinds in the code place: deps and build by name, venv by `pyvenv.cfg`, worktree by its `.git` file. | A folder gets the wrong label. Display only today; cleaning checks with git before it offers. |
 | 11 | No file names in the records, only folders. | "Which single file is huge" cannot be answered. |

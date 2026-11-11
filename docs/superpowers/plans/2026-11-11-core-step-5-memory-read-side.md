@@ -277,7 +277,7 @@ COMPONENT = Component(name="memory_management", readers=[measure_reader], record
 
 - `m = cfg.get("memory")`; anything that is not a dict counts as `{}`.
 - `every = duration(m.get("every"), 6 * 3600)`, but never below 60. `max_seconds = duration(m.get("max_seconds"), 900)`, never below 1.
-- Home is `Path.home()` (read at call time, not at import).
+- Home is `account_home()`: `Path(pwd.getpwuid(os.getuid()).pw_dir)`, read at call time. Not `Path.home()`, which follows `$HOME` (changed while building; see "Found while building step 5").
 - The defaults are used only when `stx_home` (resolved) is inside the home folder (resolved). Otherwise the list starts empty.
 - `m.get("places")` (a list; anything else counts as `[]`) is merged by `name`: an entry replaces the default of that name, in place; a new name is added at the end; an entry with `"off": true` removes that name. An entry that is not a dict, has no string `name`, or (when not `off`) no string `path` is dropped. `owner` defaults to `"none"`, `depth` to 1 (an int from 0 to 6; anything else is 1), `repos` to `False`.
 - Every `path` is expanded with the home folder (`~` and `~/…`) and made absolute.
@@ -427,3 +427,20 @@ Expected: `OK`.
 git add CLAUDE.md docs/superpowers/plans/2026-11-11-core-step-5-memory-read-side.md
 git commit -m "Docs: Memory management in CLAUDE.md; what the build of step 5 found"
 ```
+
+## Found while building step 5
+
+- **The home folder is the account's, not `$HOME`.** The plan first said `Path.home()`. The review of Task 3 found that `tests/test_e2e.py` and `tests/test_relocate.py` run `collect.py` with a false `HOME` and the data folder inside it. The defaults then turned on, and a background thread began to walk the real `/opt/homebrew`. Now `settings` asks macOS for the account's home (`pwd`). A false `HOME` gives no places. Two tests pin this.
+- **`collect.py run` starts a measurement it cannot finish.** It makes one pass, then the process ends, and the thread ends with it. Nothing is saved, so the next `run` starts again. Only the service finishes a measurement. The core has no way to tell a reader "this is a single pass".
+- **The reader reads the store one time while it holds its lock.** It happens once for each data folder in each process, to learn the age of the last measurement. SQLite waits at most 5 seconds. In practice it is a read of one row.
+- **A measurement that hangs cannot be stopped.** It is a thread. If macOS ever showed a permission prompt in spite of the guarded list, that thread would wait until the service restarts. The pass and the routes keep working, and `/api/memory` shows `measuring` with an old start time.
+- **What the core should get for this component:** a rule for changing a table (today tables can only be created); a way for a reader to do slow work (this component brings its own thread); Claude's folder on `Ctx` (this component reads `CLAUDE_CONFIG_DIR` itself); a way to know that a pass is the only one of its process.
+- **What the other components must offer before any cleaning:** Project management: which project owns a folder, and whether it has work in use. Claude management: which transcripts, skills, plugin files and archives are in use.
+- **Not tested:** the "another volume" rule. A test cannot mount a disk.
+- **Small things left open** are listed in the final review of this branch, not here.
+- **Measured on this Mac** (real disk, store in a temp folder, 2026-11-11):
+  - The pass took 0.003 s. The measurement took 28.4 s. State `measured`, complete, `error` is `None`.
+  - `~/code`: 26.21 GB on disk (23.68 GB logical, 0.25 GB counted once through hard links), 896,505 files.
+  - `~/.claude`: 4.32 GB on disk (4.28 GB logical), 15,296 files.
+  - 808 folder rows. 0 folders could not be measured.
+  - The check script in Task 4 Step 2 prints `p["name"]`, but a place row has the key `place`. The script stops with a `KeyError` after printing the first line; the numbers above come from the same run with the key fixed.
