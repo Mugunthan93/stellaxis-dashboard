@@ -2,7 +2,9 @@
 
   python3 -m unittest tests.test_jarvis
 """
+import contextlib
 import inspect
+import io
 import json
 import os
 import sys
@@ -162,7 +164,11 @@ class JarvisAskTest(unittest.TestCase):
         self.assertEqual(self.post(b"hi", "text/plain")[0], 415)
 
     def test_hear_only_transcribes(self):
-        self.assertEqual(self.post(b"jarvis show PartHub", "audio/webm", "/api/jarvis/hear"), (200, {"heard": "jarvis show PartHub"}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = self.post(b"jarvis show PartHub", "audio/webm", "/api/jarvis/hear")
+        self.assertIn("jarvis heard", out.getvalue())
+        self.assertEqual(result, (200, {"heard": "jarvis show PartHub"}))
         self.assertEqual([x for x in self.calls("claude") if x[:1] != ["agents"]], [])
         self.assertEqual(self.post(b"x", "application/json", "/api/jarvis/hear")[0], 415)
 

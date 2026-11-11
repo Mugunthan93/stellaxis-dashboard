@@ -62,7 +62,7 @@ command centre (Home and Project pages) reads a separate index, `projects.json`,
   (that would be circular); `collect.py` passes it `load_config()`. Nothing outside `collector/core/` imports a component.
 - `collector/components/project_management/old_names.py` is the alias layer: the one place that maps the old names
   (the old route, page address, index file, config keys, request key and group name) to the new ones, and the only code
-  that may write the old word. The old names keep answering until a later step removes the layer.
+  under `collector/` that may write the old word (its tests in `tests/test_old_names.py` may too). The old names keep answering until a later step removes the layer.
   There is no alias module any more.
 - `collector/unplaced/jarvis.py` serves the Jarvis routes (briefing, ask, hear, say, hush). It runs today and is in no
   component yet; `handle(handler, method, cfg, core)` reads Project management with `core.read(...)`, so a broken

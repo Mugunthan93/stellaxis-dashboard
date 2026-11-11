@@ -1,8 +1,10 @@
 """Local-server hardening: untrusted reel text stays inert, and only localhost can reach the service."""
 import atexit
+import contextlib
 import base64
 import hashlib
 import html.parser
+import io
 import http.client
 import http.server
 import importlib.util
@@ -143,8 +145,11 @@ class CaptureInput(unittest.TestCase):
         (Path(TMP.name) / ".processed.json").write_text("[]")
         (tools / "inbox.jsonl").write_text(json.dumps({"code": "../../repo", "caption": "ai"}) + "\n"
                                            + json.dumps({"code": "DfGood_1-x", "caption": "ai"}) + "\n")
-        t.main("q.json")
-        self.assertEqual([o["code"] for o in json.load(open(tools / "q.json"))], ["DfGood_1-x"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            t.main("q.json")
+        self.assertEqual(out.getvalue(), "1 queued, 0 dropped\n")
+        self.assertEqual([o["code"] for o in json.loads((tools / "q.json").read_text())], ["DfGood_1-x"])
 
     def test_receiver_needs_its_token(self):
         r = load("receive")
@@ -349,7 +354,6 @@ class IndexFailure(unittest.TestCase):
             self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
         live.assert_called_once_with("/no/claude")
         clear.assert_called_once_with([])
-
 
 
 class PageNames(unittest.TestCase):

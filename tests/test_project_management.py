@@ -176,10 +176,6 @@ class IndependenceTest(unittest.TestCase):
                     self.assertNotIn(n.split(".")[0], banned, f"{f.relative_to(REPO)} imports {n}")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class OldWordTest(unittest.TestCase):
     """Check 5 of the core spec: the old word remains only where "Names during the move" allows."""
     WORD = "work" + "space"
@@ -203,3 +199,7 @@ class OldWordTest(unittest.TestCase):
             found += [f"{name}:{i}" for i, line in enumerate(text.splitlines(), 1)
                       if self.WORD in line.lower().replace("nexus-" + self.WORD, "")]
         self.assertEqual(found, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

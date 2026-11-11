@@ -57,6 +57,7 @@ class SettingsApi(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()
         cls.tmp.cleanup()
 
     def setUp(self):

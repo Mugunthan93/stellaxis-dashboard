@@ -11,20 +11,23 @@ CODE = re.compile(r"[\w-]{5,20}")
 
 
 def main(out):
-    items, seen = {}, set(json.load(open(os.path.join(R, ".processed.json"))))
-    for line in open(os.path.join(R, ".tools", "inbox.jsonl"), encoding="utf-8"):
-        o = json.loads(line)
-        if CODE.fullmatch(str(o.get("code"))):  # the receiver takes anything; reel.py builds paths from this
-            items[o["code"]] = o
+    with open(os.path.join(R, ".processed.json")) as f:
+        items, seen = {}, set(json.load(f))
+    with open(os.path.join(R, ".tools", "inbox.jsonl"), encoding="utf-8") as f:
+        for line in f:
+            o = json.loads(line)
+            if CODE.fullmatch(str(o.get("code"))):  # the receiver takes anything; reel.py builds paths from this
+                items[o["code"]] = o
     queue, dropped = [], []
     for c, o in items.items():
         if c in seen or o.get("err") or os.path.exists(os.path.join(R, ".tools", "out", c + ".txt")):
             continue
         cap = o.get("caption", "")
         (queue if not cap.strip() or AI.search(cap) else dropped).append(o)
-    json.dump(queue, open(os.path.join(R, ".tools", out), "w", encoding="utf-8"), ensure_ascii=False)
-    json.dump([{"code": o["code"], "user": o.get("user")} for o in dropped],
-              open(os.path.join(R, ".tools", "dropped.json"), "w"))
+    with open(os.path.join(R, ".tools", out), "w", encoding="utf-8") as f:
+        json.dump(queue, f, ensure_ascii=False)
+    with open(os.path.join(R, ".tools", "dropped.json"), "w") as f:
+        json.dump([{"code": o["code"], "user": o.get("user")} for o in dropped], f)
     print(len(queue), "queued,", len(dropped), "dropped")
 
 
