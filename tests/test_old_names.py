@@ -217,10 +217,9 @@ class RenameTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         test_hardening.fake_home(self, self.home, claude)
-        for patch in (mock.patch.object(C.settings_api, "STX_HOME", self.home), mock.patch.object(C.settings_api, "CLAUDE_DIR", claude),
-                      mock.patch.object(C, "collect")):
-            patch.start()
-            self.addCleanup(patch.stop)
+        patch = mock.patch.object(C, "collect")
+        patch.start()
+        self.addCleanup(patch.stop)
         self.cfg_file = self.home / "config.json"
         self.cfg_file.write_text(json.dumps({**OLD_CFG, "projects": [{"name": "A card", "summary": "\u00e9 \u2014 ok"}], "interval": "1m"}, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
         (self.home / "tasks" / "other.md").write_text("- [ ] kept\n")

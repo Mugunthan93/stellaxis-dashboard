@@ -1,13 +1,13 @@
 """Settings page backend: no-op saves are byte-identical, edits keep layout and unknown keys, backups and
-conflicts behave. Runs against a temp CLAUDE_CONFIG_DIR / STELLAXIS_HOME over real HTTP.
+conflicts behave. Runs against a temp CLAUDE_CONFIG_DIR / STELLAXIS_HOME over real HTTP, served by the core.
 
   python3 -m unittest discover -s tests -v
 """
 import glob
 import http.client
-import http.server
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -16,7 +16,14 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "collector"))
+sys.path.insert(0, str(REPO / "tests"))
+import core.server  # noqa: E402
+from core.app import Core  # noqa: E402
 
+from test_hardening import fake_home  # noqa: E402
+
+COMPS = REPO / "collector" / "components"
 ORIGINAL = ('{\n  "permissions": {\n    "allow": [\n      "Bash(ls:*)"\n    ]\n  },\n  "model": "sonnet",\n'
             '  "futureKey": {\n    "nested": [\n      1,\n      2.5\n    ]\n  },\n  "note": "caf\\u00e9 \\u2014 ok"\n}')
 
@@ -31,26 +38,9 @@ class SettingsApi(unittest.TestCase):
         cls.proj.mkdir()
         (T / "stx").mkdir()
         (T / "stx" / "snapshot.json").write_text(json.dumps({"projects": [{"path": str(cls.proj)}]}))
-        os.environ["CLAUDE_CONFIG_DIR"] = str(cls.cfg)
-        os.environ["STELLAXIS_HOME"] = str(T / "stx")
-        sys.path.insert(0, str(REPO / "collector"))
-        # Another test may have imported settings_api (via prune -> collect) with the real paths bound.
-        sys.modules.pop("settings_api", None)
-        import settings_api
-        assert settings_api.CLAUDE_DIR == cls.cfg, f"settings_api would write to {settings_api.CLAUDE_DIR}"
-        cls.api = settings_api
-
-        class H(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                settings_api.handle(self, "GET")
-
-            def do_POST(self):
-                settings_api.handle(self, "POST")
-
-        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        fake_home(cls, T / "stx", cls.cfg)
+        cls.core = Core(T / "stx", cls.cfg, COMPS)
+        cls.srv = core.server.serve(cls.core, 0, {})
         cls.port = cls.srv.server_address[1]
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
@@ -62,7 +52,7 @@ class SettingsApi(unittest.TestCase):
 
     def setUp(self):
         for f in glob.glob(str(self.cfg / "*")):
-            os.unlink(f)
+            shutil.rmtree(f) if os.path.isdir(f) else os.unlink(f)   # a save leaves its manifest in _archive
         self.path = self.cfg / "settings.json"
         self.path.write_text(ORIGINAL)
         os.chmod(self.path, 0o600)
@@ -72,7 +62,9 @@ class SettingsApi(unittest.TestCase):
         h = {"Content-Type": "application/json", **(headers or {})}
         c.request(method, url, body=None if body is None else json.dumps(body), headers=h)
         r = c.getresponse()
-        return r.status, json.loads(r.read())
+        raw = r.read()
+        c.close()
+        return r.status, json.loads(raw) if r.getheader("Content-Type") == "application/json" else raw
 
     def test_noop_save_is_byte_identical_and_backed_up(self):
         _, f = self.call("GET", "/api/settings")
@@ -110,6 +102,8 @@ class SettingsApi(unittest.TestCase):
         self.assertEqual(s, 422)
         self.assertIn("permissions.allow must be a list of strings", r["errors"])
         s, _ = self.call("POST", "/api/settings/save", {"scope": "user", "data": {}}, {"Origin": "http://evil.example"})
+        self.assertEqual(s, 403)
+        s, _ = self.call("GET", "/api/settings", headers={"Host": "evil.example"})
         self.assertEqual(s, 403)
         s, _ = self.call("GET", "/api/settings?scope=local&project=/etc")
         self.assertEqual(s, 400)

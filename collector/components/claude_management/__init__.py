@@ -1,4 +1,5 @@
-"""Claude management: reads the transcripts and the Claude setup, prices the use, and writes the snapshot."""
+"""Claude management: reads the transcripts and the Claude setup, prices the use, and writes the snapshot. Its actions archive
+and move items of the setup and save Claude's settings files."""
 from __future__ import annotations
 
 import time
@@ -6,7 +7,7 @@ import time
 from core.component import Component
 from core.util import write_json
 
-from . import records, setup, snapshot, usage
+from . import records, settings, setup, snapshot, trim, usage
 
 
 def usage_reader(ctx) -> None:
@@ -38,5 +39,7 @@ def setup_reader(ctx) -> None:
 
 
 COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader], lines=usage.LINES,
-                      records=records.RECORDS, reads=[("project_management", "repos")],
+                      records=records.RECORDS, reads=[("project_management", "repos")], handle=settings.handle,
+                      actions={"archive": trim.archive, "move": trim.move, "save_settings": settings.save_settings},
+                      undo={"claude_management.settings_file": settings.settings_file},
                       offers={"sessions": records.sessions, "items": records.items})

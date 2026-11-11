@@ -2,6 +2,7 @@
 
   python3 -m unittest tests.test_claude_management
 """
+import hashlib
 import json
 import os
 import sqlite3
@@ -16,8 +17,10 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 sys.path.insert(0, str(REPO / "tests"))
+from core import undo
 from core.app import Core
 from core.component import import_folder
+from core.server import ApiError
 from core.util import short_path
 
 import test_hardening
@@ -31,7 +34,8 @@ CFG = {"scan_roots": [], "claude_bin": "/no/claude", "pricing": {"claude-opus-5-
 COST = (1000 * 4.0 + 100 * 20.0) / 1e6
 
 
-class ClaudeManagementTest(unittest.TestCase):
+class FakeHome(unittest.TestCase):
+    """A fake home with one skill, one repo and one transcript; no tests of its own."""
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -60,6 +64,8 @@ class ClaudeManagementTest(unittest.TestCase):
     def status(self):
         return json.loads((self.stx / "status.json").read_text())
 
+
+class ClaudeManagementTest(FakeHome):
     def test_the_component_loads(self):
         core = Core(self.stx, self.claude, COMPS)
         [c] = [c for c in core.components if c.name == "claude_management"]
@@ -217,6 +223,106 @@ class ClaudeManagementTest(unittest.TestCase):
         others = [r for i, r in rows.items() if i != "skill:user:foo"]
         self.assertTrue(others)
         self.assertEqual({r[4] for r in others}, {"marker"})
+
+
+class SettingsActions(FakeHome):
+    def setUp(self):
+        super().setUp()
+        (self.claude / "settings.json").write_text(json.dumps({"model": "opus"}))
+        (self.stx / "snapshot.json").write_text(json.dumps({"projects": [{"path": str(self.app)}], "items": []}))
+        self.cfg = dict(CFG)
+        self.core = Core(self.stx, self.claude, COMPS)
+
+    def restore(self, manifest, out=lambda _: None):
+        undo.restore(Path(manifest).parent.name, True, self.claude / "_archive", handlers=self.core.undo_handlers(self.cfg), out=out)
+
+    def test_a_save_can_be_undone_and_its_data_is_not_logged(self):
+        f = self.claude / "settings.json"
+        before = f.read_bytes()
+        body = {"scope": "user", "data": {"model": "sonnet", "env": {"TOKEN": "s3cret-value"}}, "base_sha": hashlib.sha256(before).hexdigest()}
+        r = self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+        self.assertEqual(json.loads(f.read_text())["model"], "sonnet")
+        self.assertTrue(Path(r["result"]["backup"]).is_file())
+        self.assertNotIn("s3cret-value", (self.stx / "actions.jsonl").read_text())
+        self.assertNotIn("s3cret-value", Path(r["manifest"]).read_text())
+        said = []
+        self.restore(r["manifest"], out=said.append)
+        self.assertEqual(f.read_bytes(), before)
+        self.assertIn(f"  put {short_path(f)} back from {short_path(r['result']['backup'])}", said)
+
+    def test_undoing_the_save_of_a_new_file_removes_it(self):
+        f = self.app / ".claude" / "settings.local.json"
+        body = {"scope": "local", "project": str(self.app), "data": {"model": "haiku"}, "base_sha": None}
+        r = self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+        self.assertIsNone(r["result"]["backup"])
+        self.assertTrue(f.is_file())
+        self.restore(r["manifest"])
+        self.assertFalse(f.exists())
+
+    def test_a_missing_backup_stops_the_undo(self):
+        f = self.claude / "settings.json"
+        body = {"scope": "user", "data": {"model": "sonnet"}, "base_sha": hashlib.sha256(f.read_bytes()).hexdigest()}
+        r = self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+        Path(r["result"]["backup"]).unlink()
+        with self.assertRaises(undo.RestoreError):
+            self.restore(r["manifest"])
+        self.assertEqual(json.loads(f.read_text())["model"], "sonnet")
+
+    def test_a_preview_writes_nothing_and_logs_nothing(self):
+        f = self.claude / "settings.json"
+        before = f.read_bytes()
+        r = self.core.run_action("claude_management", "save_settings", {"body": {"scope": "user", "data": {"model": "sonnet"}}}, False, self.cfg)
+        self.assertIn('+{"model": "sonnet"}', r["result"]["diff"])
+        self.assertEqual(f.read_bytes(), before)
+        self.assertFalse((self.stx / "actions.jsonl").exists())
+        self.assertFalse((self.claude / "_archive").exists())
+
+    def test_a_refused_save_changes_nothing(self):
+        f = self.claude / "settings.json"
+        before = f.read_bytes()
+        body = {"scope": "user", "data": {"model": "sonnet"}, "base_sha": "wrong"}
+        with self.assertRaises(ApiError) as e:
+            self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+        self.assertEqual(e.exception.status, 409)
+        self.assertEqual(f.read_bytes(), before)
+        [row] = [json.loads(l) for l in (self.stx / "actions.jsonl").read_text().splitlines()]
+        self.assertEqual((row["action"], row["ok"], row["args"], row["manifest"]), ("save_settings", False, {}, None))
+
+
+class TrimActions(FakeHome):
+    def setUp(self):
+        super().setUp()
+        self.cfg = dict(CFG)
+        C.collect(self.cfg)
+        self.skill = self.claude / "skills" / "foo"
+
+    def archive(self, core, apply):
+        return core.run_action("claude_management", "archive", {"ids": ["skill:user:foo", "nope:x:y"]}, apply, self.cfg)
+
+    def test_a_dry_run_says_what_it_would_do_and_changes_nothing(self):
+        r = self.archive(C.the_core(), False)
+        self.assertEqual(len(r["steps"]), 1)
+        self.assertTrue(r["steps"][0].startswith(f"move {short_path(self.skill)} -> "), r["steps"])
+        self.assertEqual(r["notes"], ["  unknown id nope:x:y (run `prune.py list`)"])
+        self.assertTrue((self.skill / "SKILL.md").is_file())
+        self.assertFalse((self.claude / "_archive").exists())
+
+    def test_an_archive_is_undone_by_restore(self):
+        core = C.the_core()
+        r = self.archive(core, True)
+        self.assertFalse(self.skill.exists())
+        undo.restore(Path(r["manifest"]).parent.name, True, self.claude / "_archive", handlers=core.undo_handlers(self.cfg), out=lambda _: None)
+        self.assertTrue((self.skill / "SKILL.md").is_file())
+
+    def test_with_the_store_down_the_items_come_from_the_snapshot(self):
+        db = self.stx / "stellaxis.db"
+        db.unlink()
+        db.mkdir()
+        core = Core(self.stx, self.claude, COMPS)
+        self.assertIsNotNone(core.error)
+        r = self.archive(core, False)
+        self.assertEqual(len(r["steps"]), 1)
+        self.assertEqual(r["notes"], ["  unknown id nope:x:y (run `prune.py list`)"])
 
 
 class RunCommandTest(unittest.TestCase):

@@ -254,9 +254,7 @@ class RouteMatrix(unittest.TestCase):
         for d in (stx / "approvals" / "on", claude / "projects" / "p", claude / "sessions", reels / "images", repo):
             d.mkdir(parents=True)
         fake_home(self, stx, claude)
-        for patch in (mock.patch.object(C, "REELS_HOME", reels),
-                      mock.patch.object(C.settings_api, "STX_HOME", stx), mock.patch.object(C.settings_api, "CLAUDE_DIR", claude),
-                      mock.patch.object(C, "collect")):
+        for patch in (mock.patch.object(C, "REELS_HOME", reels), mock.patch.object(C, "collect")):
             patch.start()
             self.addCleanup(patch.stop)
         (reels / "dashboard.html").write_text("<p>x</p>")

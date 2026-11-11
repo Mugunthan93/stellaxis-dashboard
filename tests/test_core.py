@@ -1117,13 +1117,6 @@ class WiringTest(HttpCase):
         self.assertTrue(all(g is got[0] for g in got))
         self.assertIsNone(got[0].error)
 
-    def test_the_http_helpers_have_one_home(self):
-        import settings_api
-        self.assertIs(settings_api.host_ok, server.host_ok)
-        self.assertIs(settings_api.ApiError, server.ApiError)
-        self.assertIs(settings_api.read_body, server.read_body)
-        self.assertIs(settings_api._send, server.send_json)
-
 
 class IndependenceTest(unittest.TestCase):
     def test_the_core_imports_nothing_outside_itself(self):

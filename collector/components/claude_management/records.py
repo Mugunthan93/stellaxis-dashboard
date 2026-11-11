@@ -5,6 +5,7 @@ import json
 from contextlib import closing
 
 from core.app import StoreError
+from core.util import read_json
 
 from .usage import cost_of
 
@@ -81,3 +82,14 @@ def sessions(ctx, hours: bool = False) -> list:
 def items(ctx) -> list:
     with closing(ctx.db()) as db:
         return [json.loads(r["data"]) for r in db.execute("SELECT data FROM claude_management_items ORDER BY pos")]
+
+
+def items_by_id(ctx) -> dict:
+    """id -> item: the store's items; when the store is down or holds none, the items of snapshot.json."""
+    try:
+        rows = items(ctx)
+    except StoreError:
+        rows = []
+    if not rows:
+        rows = (read_json(ctx.home / "snapshot.json", {}) or {}).get("items") or []
+    return {it["id"]: it for it in rows}

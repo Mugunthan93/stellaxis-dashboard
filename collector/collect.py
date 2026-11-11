@@ -24,7 +24,6 @@ import time
 import urllib.parse
 from pathlib import Path
 
-import settings_api
 from core import server as core_server
 from core import util as core_util
 from core.app import Core
@@ -251,8 +250,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if jarvis.handle(self, "GET", load_config(), the_core()):
             return
-        if settings_api.handle(self, "GET"):
-            return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot", "/api/skills"):
             f = SKILLS_HOME / "catalog.json" if self.path.split("?")[0] == "/api/skills" else STX_HOME / "snapshot.json"
             body = f.read_bytes() if f.exists() else b"{}"
@@ -323,8 +320,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if jarvis.handle(self, "POST", load_config(), the_core()):
             return
-        if not settings_api.handle(self, "POST"):
-            self.send_error(404)
+        self.send_error(404)
 
 
 def serve():
