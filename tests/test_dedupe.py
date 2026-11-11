@@ -5,8 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
-import collect as C
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "collector"))
+from core import transcripts
+from core.component import import_folder
+
+CM = import_folder(REPO / "collector" / "components" / "claude_management")
 
 
 def turn(mid, output=10, cread=100, ts="2026-11-01T10:00:00.000Z"):
@@ -25,24 +29,22 @@ class DeferredTools(unittest.TestCase):
     def test_repeated_announcements_count_once(self):
         st = {"context": {}}
         delta = {"type": "deferred_tools_delta", "addedNames": ["mcp__srv__one", "Monitor"]}
-        C._attachment(st, delta)
-        C._attachment(st, delta)
-        C._attachment(st, {"type": "deferred_tools_delta", "removedNames": ["Monitor"]})
-        self.assertEqual(st["context"]["deferred"], {C.norm_mcp("srv"): len("mcp__srv__one") + 1})
+        CM.usage._attachment(st, delta)
+        CM.usage._attachment(st, delta)
+        CM.usage._attachment(st, {"type": "deferred_tools_delta", "removedNames": ["Monitor"]})
+        self.assertEqual(st["context"]["deferred"], {CM.usage.norm_mcp("srv"): len("mcp__srv__one") + 1})
 
 
 class Dedupe(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.old = C.CLAUDE_DIR
-        self.addCleanup(setattr, C, "CLAUDE_DIR", self.old)
-        C.CLAUDE_DIR = Path(self.tmp.name)
-        self.root = C.CLAUDE_DIR / "projects" / "p"
+        self.projects = Path(self.tmp.name) / "projects"
+        self.root = self.projects / "p"
         self.cache = {}
 
     def totals(self):
-        files = C.parse_transcripts(self.cache)
+        files = transcripts.read(self.projects, self.cache, [CM.usage.LINES])
         rows = [r for st in files.values() for r in st["models"].values()]
         hours = [r for st in files.values() for h in st["hourly"].values() for r in h.values()]
         return {"turns": sum(r[5] for r in rows), "read": sum(r[3] for r in rows),

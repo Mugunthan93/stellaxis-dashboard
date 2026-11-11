@@ -43,6 +43,8 @@ def load_items() -> dict:
     snap = C.read_json(C.STX_HOME / "snapshot.json")
     if not snap:
         snap = C.collect()
+    if not snap:
+        sys.exit("no snapshot: Claude management wrote none")
     return {it["id"]: it for it in snap["items"]}
 
 

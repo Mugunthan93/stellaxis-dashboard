@@ -141,7 +141,7 @@
       const busy = st.phase && st.phase !== "idle";
       const failed = !busy && (st.index_error || st.core_error);
       box.dataset.state = failed ? "down" : busy ? "busy" : "ok";
-      text.textContent = failed ? (st.index_error ? "Project index failed: " + String(st.index_error).slice(0, 120) : "Store failed: " + String(st.core_error).slice(0, 120)) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
+      text.textContent = failed ? (st.index_error ? "A component failed: " + String(st.index_error).slice(0, 120) : "Store failed: " + String(st.core_error).slice(0, 120)) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
     } catch {
       box.dataset.state = "down";
       text.textContent = "Collector unreachable";

@@ -11,14 +11,25 @@ from core.util import short_path, write_json
 from . import centre, old_names
 
 
+def _round_one(ctx) -> None:
+    """Nothing yet: the index needs what Claude management writes in round one."""
+
+
 def index_reader(ctx) -> None:
-    """The project index from the pass inputs, and beside it the same index under the old names; a pass without sessions leaves them alone."""
-    if "sessions" not in ctx.inputs:
+    """The project index, and beside it the same index under the old names; a pass that is neither a collection nor
+    given sessions leaves them alone. The sessions and folders come from the inputs when given, else from Claude management."""
+    if "sessions" not in ctx.inputs and "collector" not in ctx.inputs:
         return
+    ctx.status("indexing projects")
+    if "sessions" in ctx.inputs:
+        sessions, folders = ctx.inputs["sessions"], ctx.inputs["folders"]
+    else:
+        got = ctx.read("claude_management", "pass")
+        sessions, folders = (got[0]["sessions"], got[0]["folders"]) if got else ([], [])
     with centre.at(ctx):
         cfg = old_names.config(ctx.cfg)
         centre.clear_stale(centre.live(centre._bin(cfg)))
-        index = centre.build_index(ctx.inputs["sessions"], ctx.inputs["folders"], centre.app_records(centre.app_base()), cfg)
+        index = centre.build_index(sessions, folders, centre.app_records(centre.app_base()), cfg)
         write_json(centre._home() / centre.INDEX_FILE, index)
         write_json(centre._home() / old_names.INDEX_FILE, old_names.answer(index))
 
@@ -141,6 +152,7 @@ def _approvals(ctx) -> list:
 
 centre.index_fallback = old_names.index
 
-COMPONENT = Component(name="project_management", readers=[index_reader], handle=handle,
+COMPONENT = Component(name="project_management", readers=[_round_one, index_reader], handle=handle,
+                      reads=[("claude_management", "pass")],
                       actions={"new_names": new_names}, undo={"project_management.old_config_keys": _old_config_keys},
                       offers={"index": _index, "projects": _projects, "live": _live, "approvals": _approvals})

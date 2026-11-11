@@ -28,6 +28,7 @@ import collect as C
 from core.component import import_folder
 
 CENTRE = import_folder(REPO / "collector" / "components" / "project_management").centre
+CM = import_folder(REPO / "collector" / "components" / "claude_management")
 
 
 def fake_home(case, stx: Path, claude: Path | None = None) -> None:
@@ -334,25 +335,24 @@ class Install(unittest.TestCase):
 
 class IndexFailure(unittest.TestCase):
     def test_index_error_stays_on_the_idle_status(self):
-        snap = {"generated_at": "g", "meta": {"elapsed_ms": 1}, "sessions": [], "projects": []}
-        with tempfile.TemporaryDirectory() as t, mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
-                mock.patch.object(CENTRE, "live", return_value=None), \
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(CENTRE, "live", return_value=None), \
+                mock.patch.object(CENTRE, "app_records", return_value={}), \
                 mock.patch.object(CENTRE, "build_index", side_effect=ValueError("boom")):
             fake_home(self, Path(t))
-            C.collect({"x": 1})
+            C.collect({"scan_roots": [], "claude_bin": "/no/claude"})
             st = json.loads(Path(t, "status.json").read_text())
-        self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
+        self.assertEqual((st["phase"], st["index_error"]), ("idle", "project_management: ValueError: boom"))
         self.assertIn("index_error", (REPO / "dashboard" / "shell.html").read_text())
         self.assertIn("core_error", (REPO / "dashboard" / "shell.html").read_text())
 
     def test_collection_clears_stale_switches(self):
-        snap = {"sessions": [], "projects": []}
         with tempfile.TemporaryDirectory() as t, \
                 mock.patch.object(CENTRE, "live", return_value=[]) as live, \
                 mock.patch.object(CENTRE, "clear_stale") as clear, \
                 mock.patch.object(CENTRE, "app_records", return_value={}):
             fake_home(self, Path(t))
-            self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
+            C.collect({"scan_roots": [], "claude_bin": "/no/claude"})
+            self.assertIsNone(json.loads(Path(t, "status.json").read_text())["index_error"])
         live.assert_called_once_with("/no/claude")
         clear.assert_called_once_with([])
 
@@ -377,8 +377,8 @@ class Probes(unittest.TestCase):
     def test_project_mcp_files_are_never_spawned(self):
         items = [{"kind": "mcp", "name": "e", "scope": "project", "_conf": {"command": "evil"}, "conf_hash": "a"},
                  {"kind": "mcp", "name": "o", "scope": "user", "_conf": {"command": "ok"}, "conf_hash": "b"}]
-        with mock.patch.object(C, "probe_stdio", return_value={"tools": 1}) as run, mock.patch.object(C, "status"):
-            C.run_probes(items, {"probe_mcp": True, "probe_every": "24h"}, {}, force=True)
+        with mock.patch.object(CM.setup, "probe_stdio", return_value={"tools": 1}) as run:
+            CM.setup.run_probes(items, {"probe_mcp": True, "probe_every": "24h"}, {}, lambda *a, **k: None, "t", force=True)
         self.assertEqual([c.args[0]["command"] for c in run.call_args_list], ["ok"])
 
 

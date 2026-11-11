@@ -237,7 +237,8 @@ class RenameTest(unittest.TestCase):
 
     def listed(self):
         with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-            self.assertIsNone(C.write_index(C.load_config(), {"sessions": [ROW], "projects": []}))
+            res = C.the_core().run_pass(C.load_config(), {"sessions": [ROW], "folders": []})
+        self.assertEqual(res["components"]["project_management"]["errors"], [])
         return [p["id"] for p in self.get("/api/projects")[1]["projects"]]
 
     def prune(self, *args):

@@ -47,7 +47,7 @@ class ProjectManagementTest(unittest.TestCase):
 
     def test_the_component_loads(self):
         [c] = [c for c in self.core.components if c.name == "project_management"]
-        self.assertEqual((c.error, len(c.readers), c.handle is not None), (None, 1, True))
+        self.assertEqual((c.error, len(c.readers), c.handle is not None), (None, 2, True))
 
     def test_nothing_outside_the_core_imports_the_component(self):
         self.assertFalse((REPO / "collector" / ("work" + "spaces.py")).exists())
@@ -55,6 +55,7 @@ class ProjectManagementTest(unittest.TestCase):
             src = (REPO / "collector" / name).read_text()
             self.assertNotIn("import " + "work" + "spaces", src, name)
             self.assertNotIn("project_management import", src, name)
+            self.assertNotIn("claude_management import", src, name)
 
     def test_ways_in_read_the_offers(self):
         (self.home / "projects.json").write_text(json.dumps({"projects": [{"id": "x", "name": "X", "repos": []}]}))
@@ -70,7 +71,7 @@ class ProjectManagementTest(unittest.TestCase):
     def test_a_pass_writes_the_index_from_its_inputs(self):
         with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
             res = self.core.run_pass(dict(CFG), {"sessions": [ROW], "folders": []})
-        self.assertEqual(res["components"]["project_management"], {"readers": 1, "errors": []})
+        self.assertEqual(res["components"]["project_management"], {"readers": 2, "errors": []})
         idx = json.loads((self.home / "projects.json").read_text())
         self.assertEqual([w["id"] for w in idx["projects"]], ["unassigned"])
         self.assertEqual(idx["projects"][0]["repos"][0]["branches"][0]["sessions"][0]["id"], "s1")
@@ -118,27 +119,22 @@ class ProjectManagementTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["projects"], [])
 
-    def test_write_index_reports_a_reader_error_and_a_load_error(self):
-        snap = {"sessions": [ROW], "projects": []}
-        with mock.patch.object(C, "_core", self.core):
-            with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
-                self.assertIsNone(C.write_index(dict(CFG), snap))
-            with mock.patch.object(W, "live", side_effect=ValueError("boom")):
-                self.assertEqual(C.write_index(dict(CFG), snap), "ValueError: boom")
-            [c] = [c for c in self.core.components if c.name == "project_management"]
-            with mock.patch.object(c, "error", "ImportError: gone"):
-                self.assertEqual(C.write_index(dict(CFG), snap), "ImportError: gone")
-        with mock.patch.object(C, "_core", Core(self.home, self.home / ".claude", self.home / "no-components")):
-            self.assertEqual(C.write_index(dict(CFG), snap), "the project_management component is missing")
-
-    def test_the_uncapped_session_list_reaches_the_reader(self):
-        cfg = {**CFG, "_sessions_all": [ROW, {**ROW, "id": "s2"}]}
-        with mock.patch.object(C, "_core", self.core), mock.patch.object(W, "live", return_value=[]), \
-                mock.patch.object(W, "app_records", return_value={}):
-            self.assertIsNone(C.write_index(cfg, {"sessions": [ROW], "projects": []}))
-        self.assertNotIn("_sessions_all", cfg)
-        ids = [s["id"] for s in json.loads((self.home / "projects.json").read_text())["projects"][0]["repos"][0]["branches"][0]["sessions"]]
-        self.assertEqual(sorted(ids), ["s1", "s2"])
+    def test_a_pass_reports_a_reader_error_and_a_load_error(self):
+        inputs = {"sessions": [ROW], "folders": []}
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
+            res = self.core.run_pass(dict(CFG), inputs)
+        self.assertIsNone(C.pass_error(self.core, res))
+        with mock.patch.object(W, "live", side_effect=ValueError("boom")):
+            res = self.core.run_pass(dict(CFG), inputs)
+        self.assertEqual(res["components"]["project_management"]["errors"], ["ValueError: boom"])
+        self.assertEqual(C.pass_error(self.core, res), "project_management: ValueError: boom")
+        [c] = [c for c in self.core.components if c.name == "project_management"]
+        with mock.patch.object(c, "error", "ImportError: gone"):
+            res = self.core.run_pass(dict(CFG), inputs)
+            self.assertNotIn("project_management", res["components"])
+            self.assertEqual(C.pass_error(self.core, res), "project_management: ImportError: gone")
+        core = Core(self.home, self.home / ".claude", self.home / "no-components")
+        self.assertIsNone(C.pass_error(core, core.run_pass(dict(CFG), inputs)))
 
 
 class BrokenComponentTest(unittest.TestCase):
@@ -151,8 +147,9 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 def get(path):
     c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
     c.request("GET", path); r = c.getresponse(); return r.status, r.read().decode()
-out = {"core": json.loads(get("/api/core")[1]), "overview": get("/overview")[0], "jarvis": get("/api/jarvis")[0],
-       "index_error": collect.write_index({}, {"sessions": [], "projects": []})}
+out = {"core": json.loads(get("/api/core")[1]), "overview": get("/overview")[0], "jarvis": get("/api/jarvis")[0]}
+collect.collect({"scan_roots": []})
+out["index_error"] = json.loads((collect.STX_HOME / "status.json").read_text())["index_error"]
 srv.shutdown(); print(json.dumps(out))
 '''
 
@@ -178,7 +175,7 @@ srv.shutdown(); print(json.dumps(out))
         [c] = [c for c in out["core"]["components"] if c["name"] == "project_management"]
         self.assertEqual(c["error"], "RuntimeError: boom")
         self.assertEqual((out["overview"], out["jarvis"]), (200, 200))
-        self.assertEqual(out["index_error"], "RuntimeError: boom")
+        self.assertEqual(out["index_error"], "project_management: RuntimeError: boom")
 
 
 class IndependenceTest(unittest.TestCase):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 
 HOME = Path.home()
@@ -28,6 +29,15 @@ def short_path(p) -> str:
     s = str(p)
     h = str(HOME)
     return "~" + s[len(h):] if s == h or s.startswith(h + os.sep) else s
+
+
+def parse_duration(s, default=60) -> int:
+    if isinstance(s, (int, float)):
+        return int(s)
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", str(s or ""))
+    if not m:
+        return default
+    return int(float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)])
 
 
 def now() -> dt.datetime:
