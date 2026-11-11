@@ -73,10 +73,12 @@ throwaway background session, Allow ran the command and Deny blocked it, and the
 the denial.
 
 **Limits of approvals:**
-- Tested on a background session only. Desktop app sessions are not tested, and most of yours run in
-  auto mode with 106 always-allow rules, so they rarely ask.
-- The hook has to go in `~/.claude/settings.json`, which applies to every session. It's a security
-  setting, so it needs the owner's yes.
+- Tested in default mode on a background session (2026-11-06) and a desktop app session (2026-11-09):
+  Allow ran the command, Deny blocked it, and neither session retried. Most of your sessions run in
+  auto mode with 104 always-allow rules, so they rarely ask. In auto mode a command outside the allow
+  list ran with no request at all.
+- The hook is in `~/.claude/settings.json`, which applies to every session. The owner approved it on
+  2026-11-06, and `Bash(curl:*)` and `Bash(nc:*)` were removed from the allow list at the same time.
 - While the hook waits, the app's own prompt doesn't appear. So it stays off per session unless you
   switch on "Approve from page", and if the wait times out the normal prompt appears.
 - The hook stays silent for anything it can't show whole: over-long input, hidden characters, questions
@@ -94,6 +96,7 @@ the denial.
 
 - Task lists live in `~/.stellaxis/tasks/<workspace>.md` as checkbox lines, not in repos, so they
   don't touch branches or worktrees. That folder has no backup.
-- Started sessions use Claude's default permission prompts and default model; nothing bypasses them.
+- Started sessions use Claude's default permission mode and default model. On this Mac that mode is
+  auto (seen on a real started session), so they rarely ask for approval.
 - Test runs use the command set per repo in config, `workspaces[].tests` as `{repo: argv}`, against the
   main checkout.

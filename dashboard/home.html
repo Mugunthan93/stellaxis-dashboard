@@ -1,187 +1,507 @@
-<title>Stellaxis Home</title>
+<title>Stellaxis Jarvis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Home: what needs you across every workspace, from /api/workspaces. */
+/* Home as Jarvis's HUD: a reactor core in the middle that shows what Jarvis is doing, what needs you on the
+   right, your workspaces as gauges on the left, the briefing underneath. Data: /api/workspaces,
+   /api/approvals, /api/jarvis, /api/jarvis/ask. A HUD is dark by nature, so this page keeps its own dark
+   palette in both themes (like /reels/ keeps its own look). */
 :root {
-  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
-  --accent: #2c55c9; --accent-soft: #dfe6f8;
-  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
-  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
-  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --r: 10px;
+  --hud: #4fd8ff; --hud-2: #2a8fb8; --hud-dim: rgba(79, 216, 255, 0.16); --hud-line: rgba(79, 216, 255, 0.28);
+  --alert: #ff9f43; --alert-dim: rgba(255, 159, 67, 0.16); --ok: #4ff0a5; --bad: #ff6b6b;
+  --bg: #040a0f; --panel: rgba(7, 21, 31, 0.88); --ink: #d6f3ff; --muted: #7fb0c4;
+  --tech: "Chakra Petch", "Avenir Next Condensed", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
-  --accent: #7c9cf0; --accent-soft: #24304f;
-  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
-  color-scheme: dark; } }
-:root[data-theme="dark"] {
-  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
-  --accent: #7c9cf0; --accent-soft: #24304f;
-  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
-  color-scheme: dark; }
-
 * { box-sizing: border-box; }
 body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
-.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 60px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
-h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
-h1 { font-size: 1.55rem; }
-h2 { font-size: 1.12rem; }
-.mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.hud { position: relative; max-width: 1400px; margin: 0 auto; padding: 16px 16px 48px; display: grid; gap: 16px;
+  background: radial-gradient(ellipse 60% 45% at 50% 30%, rgba(79, 216, 255, 0.08), transparent 70%); }
 button { font: inherit; color: inherit; cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-a { color: var(--accent); }
-.notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); background: var(--surface); }
-.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
-.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
-.panel-head p { margin: 0; color: var(--muted); font-size: 0.86rem; max-width: 70ch; }
-.pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; font-family: var(--body); }
-.pill.good { background: var(--good-soft); color: var(--good); }
-.pill.warn { background: var(--warn-soft); color: var(--warn); }
-.pill.crit { background: var(--crit-soft); color: var(--crit); }
-.pill.acc { background: var(--accent-soft); color: var(--accent); }
-.empty { padding: 28px; text-align: center; color: var(--muted); }
-.rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.rows li { background: var(--surface); padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
-.rows li:hover { background: var(--sunk); }
-.rows .t { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
-.rows .m { color: var(--muted); font-size: 0.82rem; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 12px; }
-.btn { display: inline-block; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; color: var(--ink); text-decoration: none; }
-.btn:hover { border-color: var(--accent); }
-.btn.small { display: inline-flex; align-items: center; padding: 2px 10px; font-size: 0.82rem; line-height: 1.4; white-space: nowrap; }
-@media (pointer: coarse) { .btn { min-height: 44px; } }
-.ask { flex: 1 1 100%; display: grid; gap: 6px; }
-.ask .cmd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sunk); border-radius: 8px; padding: 8px 10px; font-size: 0.84rem; }
-.ask .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.bad { color: var(--crit); font-size: 0.86rem; }
-.card { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
-.card:hover { border-color: var(--accent); }
-.card b { font-family: var(--display); font-size: 1.05rem; overflow-wrap: anywhere; }
-.card span { color: var(--muted); font-size: 0.84rem; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+:focus-visible { outline: 2px solid var(--hud); outline-offset: 2px; }
+a { color: var(--hud); }
+.mono { font-family: var(--mono); }
+.label { font: 600 0.72rem/1.2 var(--tech); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+/* Top strip: what this is, the finding, and a running clock over a tick ruler. */
+.strip { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 6px 20px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--hud-line); position: relative; }
+.strip::after { content: ""; position: absolute; left: 0; right: 0; bottom: -7px; height: 6px;
+  background: repeating-linear-gradient(90deg, var(--hud-line) 0 1px, transparent 1px 12px); }
+.strip h1 { margin: 0; font: 700 1.6rem/1 var(--tech); letter-spacing: 0.12em; text-transform: uppercase; color: var(--hud); }
+.strip p { margin: 6px 0 0; font-size: 0.95rem; }
+.strip p.alert { color: var(--alert); }
+.clock { text-align: right; }
+@media (max-width: 520px) { .clock { text-align: left; } }
+.clock b { display: block; font: 600 1.6rem/1 var(--tech); letter-spacing: 0.06em; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Three columns on desktop: workspaces | core | needs you. */
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .core-col { grid-column: 1 / -1; order: -1; } }
+@media (max-width: 700px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.col { display: grid; gap: 16px; min-width: 0; }
+
+/* A panel is framed by corner brackets, not a box. */
+.panel { position: relative; background: var(--panel); border: 1px solid var(--hud-line); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.panel::before, .panel::after { content: ""; position: absolute; width: 14px; height: 14px; border: 2px solid var(--hud); pointer-events: none; }
+.panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.panel.alert { border-color: rgba(255, 159, 67, 0.45); }
+.panel.alert::before, .panel.alert::after { border-color: var(--alert); }
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.head h2 { margin: 0; font: 600 0.82rem/1.2 var(--tech); letter-spacing: 0.16em; text-transform: uppercase; color: var(--hud); }
+.panel.alert .head h2 { color: var(--alert); }
+.empty { margin: 0; color: var(--muted); font-size: 0.86rem; }
+
+/* Workspace gauges: the ring is the workspace's share of the last 30 days' cost. */
+.gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 10px; }
+.gauge { display: grid; justify-items: center; gap: 2px; text-align: center; color: var(--ink); text-decoration: none; padding: 4px; }
+.gauge:hover .g-name { color: var(--hud); }
+.gauge svg { width: 86px; height: 86px; }
+.g-name { font: 600 0.86rem/1.2 var(--tech); letter-spacing: 0.06em; text-transform: uppercase; }
+.g-sub { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.list li { display: grid; gap: 1px; padding-left: 10px; border-left: 2px solid var(--hud-dim); min-width: 0; overflow-wrap: anywhere; }
+.list .t { font-weight: 500; }
+.list .m { font-size: 0.78rem; color: var(--muted); }
+.list li.run { border-left-color: var(--ok); }
+
+/* The core: rings turn at their own speeds; the state changes their colour and pace. */
+.core-col { display: grid; gap: 12px; justify-items: center; min-width: 0; }
+.reactor { position: relative; width: min(100%, 420px); aspect-ratio: 1; color: var(--hud); }
+.reactor svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 6px rgba(79, 216, 255, 0.55)); }
+.reactor .r { transform-origin: 200px 200px; transform-box: view-box; }
+.spin-a { animation: spin 40s linear infinite; }
+.spin-b { animation: spin 22s linear infinite reverse; }
+.spin-c { animation: spin 9s linear infinite; }
+.pulse { animation: breathe 4s ease-in-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes breathe { 50% { opacity: 0.55; } }
+.center { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; }
+.center b { font: 700 1.5rem/1 var(--tech); letter-spacing: 0.2em; color: var(--ink); }
+.center span { margin-top: 6px; font: 600 0.72rem/1 var(--tech); letter-spacing: 0.24em; text-transform: uppercase; color: var(--hud); }
+[data-state="listening"] .reactor { color: var(--alert); }
+[data-state="listening"] .reactor svg { filter: drop-shadow(0 0 8px rgba(255, 159, 67, 0.6)); }
+[data-state="listening"] .center span, [data-state="error"] .center span { color: var(--alert); }
+[data-state="thinking"] .spin-a { animation-duration: 6s; }
+[data-state="thinking"] .spin-b { animation-duration: 3s; }
+[data-state="thinking"] .spin-c { animation-duration: 1.2s; }
+[data-state="speaking"] .pulse, [data-state="listening"] .pulse { animation-duration: 0.9s; }
+[data-state="error"] .reactor { color: var(--bad); }
+.wave { width: min(100%, 420px); height: 44px; display: block; }
+.say { margin: 0; min-height: 1.5em; text-align: center; color: var(--muted); }
+
+.hint { margin: 0; max-width: 46ch; text-align: center; font-size: 0.84rem; color: var(--muted); }
+.hint b { color: var(--hud); font-weight: 600; }
+.wake { margin: 0; padding: 12px 16px; border: 1px solid var(--alert); background: var(--alert-dim); color: var(--ink); font-size: 1rem; text-align: center; }
+.gauge.focus .g-name { color: var(--hud); }
+.st { font: 600 0.68rem/1.2 var(--tech); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.st.run { color: var(--ok); } .st.wait { color: var(--alert); }
+.turns { width: 100%; list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.turns li { display: grid; gap: 1px; overflow-wrap: anywhere; }
+.turns .who { font: 600 0.7rem/1.2 var(--tech); letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.turns .jv { font-size: 1rem; color: var(--ink); }
+.turns .err { color: var(--alert); }
+
+/* Needs you: who asks, exactly what would run and where, Allow or Deny. */
+.asks { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.asks > li { display: grid; gap: 6px; }
+.asks .t { font-weight: 600; overflow-wrap: anywhere; }
+.asks .m { font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.asks pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0, 0, 0, 0.45); border-left: 2px solid var(--alert); padding: 8px 10px; font: 0.82rem/1.5 var(--mono); color: var(--ink); }
+.bad { color: var(--bad); font-size: 0.84rem; }
+.log li { grid-template-columns: 3.2em minmax(0, 1fr); display: grid; gap: 8px; border-left: 0; padding-left: 0; }
+.log .at { font: 600 0.75rem/1.5 var(--tech); color: var(--hud); font-variant-numeric: tabular-nums; }
+
+/* The briefing folds per project. */
+.brief details { border-top: 1px solid var(--hud-dim); }
+.brief summary { cursor: pointer; padding: 9px 0; font: 600 0.95rem/1.3 var(--tech); letter-spacing: 0.05em; color: var(--ink); }
+.brief summary:hover { color: var(--hud); }
+.brief .body { padding: 0 0 10px; max-width: 90ch; overflow-wrap: anywhere; }
+.brief .body h3 { font: 600 0.9rem var(--tech); margin: 8px 0 4px; color: var(--hud); }
+.brief .body p { margin: 0 0 6px; }
+.brief .body ul, .brief .body ol { margin: 0 0 8px; padding-left: 20px; display: grid; gap: 3px; }
+.brief code { font: 0.86em var(--mono); color: var(--hud); }
+.lead { color: var(--muted); font-size: 0.86rem; }
+.lead p { margin: 0 0 2px; }
+@media (prefers-reduced-motion: reduce) { .spin-a, .spin-b, .spin-c, .pulse { animation: none !important; } }
 </style>
 
-<div class="wrap">
-  <header><h1>Home</h1></header>
-  <div class="notice" id="live-note" hidden>Live status is unavailable, so waiting and running sessions can't be shown.</div>
-  <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
-  <div class="notice" id="first-note" hidden>Nothing indexed yet. Workspaces appear after the next collection.</div>
-  <section class="panel" id="needs-you" hidden>
-    <div class="panel-head"><h2>Needs you</h2><p>Sessions waiting on an answer or an approval, and failed test runs.</p></div>
-    <div class="bad" id="ap-err" role="alert" hidden></div>
-    <ul class="rows" id="ap-list"></ul>
-    <ul class="rows" id="needs-list" hidden></ul>
-    <ul class="rows" id="test-list" hidden></ul>
-  </section>
-  <section class="panel" id="running" hidden>
-    <div class="panel-head"><h2>Running</h2><p>Sessions working right now.</p></div>
-    <ul class="rows" id="running-list"></ul>
-  </section>
-  <section class="panel" id="unbacked" hidden>
-    <div class="panel-head"><h2>Not backed up</h2><p>Repos with no remote, commits not pushed, or uncommitted changes.</p></div>
-    <ul class="rows" id="unbacked-list"></ul>
-  </section>
-  <section class="panel" id="workspaces" hidden>
-    <div class="panel-head"><h2>Workspaces</h2><p>Sessions and the last 30 days of cost.</p></div>
-    <div class="cards" id="cards"></div>
+<div class="hud" id="jarvis" data-state="idle">
+  <header class="strip">
+    <div><h1>Jarvis</h1><p id="finding">Checking what needs you…</p></div>
+    <div class="clock"><b id="clock">--:--:--</b><span class="label" id="date"></span></div>
+  </header>
+  <p class="bad" id="live-note" hidden>Live status is unavailable, so sessions waiting for you can't be shown.</p>
+  <p class="wake" id="wake" hidden></p>
+
+  <div class="grid">
+    <div class="col">
+      <section class="panel" aria-labelledby="ws-title">
+        <div class="head"><h2 id="ws-title">Workspaces</h2><span class="label" id="ws-sub">30-day cost</span></div>
+        <div class="gauges" id="gauges"><p class="empty">Loading workspaces…</p></div>
+        <p class="bad" id="ws-load" hidden>Couldn't load workspaces. Retrying.</p>
+      </section>
+      <section class="panel" aria-labelledby="run-title">
+        <div class="head"><h2 id="run-title">Running now</h2><span class="label" id="run-count"></span></div>
+        <ul class="list" id="running"></ul>
+        <p class="empty" id="run-empty">Loading sessions…</p>
+      </section>
+    </div>
+
+    <div class="core-col">
+      <div class="reactor" aria-hidden="true">
+        <svg viewBox="0 0 400 400" fill="none" stroke="currentColor">
+          <g class="r spin-a"><circle cx="200" cy="200" r="192" stroke-width="1" stroke-dasharray="2 7" opacity="0.7"/></g>
+          <g class="r" id="ticks" opacity="0.8"></g>
+          <g class="r spin-b"><circle cx="200" cy="200" r="150" stroke-width="7" stroke-dasharray="54 16" opacity="0.55"/></g>
+          <circle cx="200" cy="200" r="132" stroke-width="1" opacity="0.6"/>
+          <g class="r spin-c"><circle cx="200" cy="200" r="116" stroke-width="10" stroke-dasharray="180 549" stroke-linecap="butt"/>
+            <circle cx="200" cy="200" r="116" stroke-width="10" stroke-dasharray="60 669" stroke-dashoffset="-360" opacity="0.6"/></g>
+          <g class="r spin-a"><circle cx="200" cy="200" r="98" stroke-width="2" stroke-dasharray="1 5"/></g>
+          <g class="pulse"><circle cx="200" cy="200" r="84" stroke-width="2"/>
+            <circle cx="200" cy="200" r="84" fill="currentColor" fill-opacity="0.08" stroke="none"/></g>
+        </svg>
+        <div class="center"><b>JARVIS</b><span id="core-word">Ready</span></div>
+      </div>
+      <canvas class="wave" id="wave" width="840" height="88" aria-hidden="true"></canvas>
+      <p class="say" id="jv-state" aria-live="polite">Starting the microphone…</p>
+      <p class="hint" id="hint">Say <b>"Jarvis"</b>, then your question. Try "Jarvis, what's running?", "Jarvis, show PartHub",
+        "Jarvis, read the briefing" or "Jarvis, go home".</p>
+      <ul class="turns" id="jv-turns" aria-live="polite"></ul>
+    </div>
+
+    <div class="col">
+      <section class="panel" id="needs-you" aria-labelledby="ny-title">
+        <div class="head"><h2 id="ny-title">Needs you</h2><span class="label" id="ny-count"></span></div>
+        <ul class="asks" id="ny-list"></ul>
+        <p class="empty" id="ny-empty" hidden>No approvals, waiting sessions or failed tests. Requests from sessions with "Approve from page" on appear here.</p>
+      </section>
+      <section class="panel" aria-labelledby="log-title">
+        <div class="head"><h2 id="log-title">Activity</h2><span class="label">This visit</span></div>
+        <ul class="list log" id="log"></ul>
+        <p class="empty" id="log-empty">Answers and approvals show here as they happen.</p>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel brief" aria-labelledby="br-title">
+    <div class="head"><h2 id="br-title">Briefing</h2><span class="label" id="br-when">Reading…</span></div>
+    <div class="lead" id="br-lead" hidden></div>
+    <div id="br-text"></div>
+    <p class="empty" id="br-none" hidden>No briefing yet. Ask Jarvis for one in Claude with the jarvis agent.</p>
   </section>
 </div>
 <script>
 (() => {
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const money = n => "$" + (n || 0).toFixed(2);
 const ago = iso => {
   if (!iso) return "";
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
   return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 129600 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago";
 };
+const hm = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+const money = n => "$" + Math.round(n || 0).toLocaleString();
 const label = s => s.title || s.id.slice(0, 8);
-const STATUS = { waiting: ["warn", "Waiting for you"], running: ["good", "Running"], open: ["acc", "Open"], closed: ["", "Closed"] };
-const pill = st => STATUS[st] ? `<span class="pill ${STATUS[st][0]}">${STATUS[st][1]}</span>` : "";
 const $ = id => document.getElementById(id);
-async function load() { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; return r.json(); }
-const openUrl = s => s.app_id ? "claude://code/continue?session=" + encodeURIComponent(s.app_id) : "claude://resume?session=" + encodeURIComponent(s.id);
-const wsLink = w => "workspace?id=" + encodeURIComponent(w.id);
-let titles = {}, appr = [], apKey = "", armed = 0;
-// Approvals: the command is shown escaped and in full. Buttons ignore clicks for a moment after the list changes,
-// so a click aimed at one request can't land on another that just took its place.
-function drawAppr(force) {
-  const key = JSON.stringify(appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]));
-  $("needs-you").hidden = !appr.length && $("needs-list").hidden && $("test-list").hidden;
-  $("ap-list").hidden = !appr.length;
-  if (key === apKey && !force) return;
-  if (key !== apKey) armed = Date.now() + 800;
+
+// Clock and the reactor's tick ring.
+function clock() {
+  const d = new Date();
+  $("clock").textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  $("date").textContent = d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+}
+clock(); setInterval(clock, 1000);
+$("ticks").innerHTML = Array.from({ length: 120 }, (_, i) => {
+  const a = i * Math.PI / 60, long = i % 10 === 0, r1 = long ? 162 : 168, r2 = 176;
+  return `<line x1="${200 + r1 * Math.cos(a)}" y1="${200 + r1 * Math.sin(a)}" x2="${200 + r2 * Math.cos(a)}" y2="${200 + r2 * Math.sin(a)}" stroke-width="${long ? 2 : 1}"/>`;
+}).join("");
+
+// The wave under the core: the microphone's level while listening, a low idle line otherwise.
+const wave = $("wave"), wctx = wave.getContext("2d");
+let analyser = null, waveRaf = 0;
+function drawWave() {
+  const W = wave.width, H = wave.height, n = 64, bw = W / n;
+  const css = getComputedStyle(document.documentElement);
+  const col = $("jarvis").dataset.state === "listening" ? css.getPropertyValue("--alert") : css.getPropertyValue("--hud");
+  const data = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
+  if (data) analyser.getByteFrequencyData(data);
+  wctx.clearRect(0, 0, W, H); wctx.fillStyle = col.trim();
+  const t = Date.now() / 600, st = $("jarvis").dataset.state;
+  for (let i = 0; i < n; i++) {
+    let v = data ? data[Math.floor(i * data.length / n / 2)] / 255
+      : st === "thinking" || st === "speaking" ? 0.25 + 0.2 * Math.sin(t * 3 + i / 3) : 0.06 + 0.04 * Math.sin(t + i / 4);
+    const h = Math.max(2, v * H);
+    wctx.globalAlpha = 0.35 + 0.65 * v;
+    wctx.fillRect(i * bw + 2, (H - h) / 2, bw - 4, h);
+  }
+  waveRaf = matchMedia("(prefers-reduced-motion: reduce)").matches && !analyser ? 0 : requestAnimationFrame(drawWave);
+}
+drawWave();
+
+// Activity, newest first.
+const log = [];
+function addLog(what) {
+  log.unshift({ at: hm(), what }); log.length = Math.min(log.length, 12);
+  $("log-empty").hidden = true;
+  $("log").innerHTML = log.map(l => `<li><span class="at">${esc(l.at)}</span><span>${esc(l.what)}</span></li>`).join("");
+}
+
+// Needs you: approvals (oldest first), then sessions waiting, then failed tests.
+let titles = {}, appr = [], waiting = [], failed = [], apKey = "", idxOk = null;
+function drawNeeds() {
+  const n = appr.length + waiting.length + failed.length;
+  $("ny-count").textContent = n ? plural(n, "item") : "";
+  $("ny-empty").hidden = n > 0;
+  $("needs-you").classList.toggle("alert", n > 0);
+  const parts = [appr.length && plural(appr.length, "approval"), waiting.length && plural(waiting.length, "session") + " waiting for you",
+    failed.length && plural(failed.length, "failed test run")].filter(Boolean);
+  $("finding").textContent = parts.length ? parts.join(", ") + "." : idxOk === false ? "Couldn't check sessions." : "All clear. Nothing needs you right now.";
+  $("finding").classList.toggle("alert", parts.length > 0);
+  const key = JSON.stringify([appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]), waiting.map(x => x.s.id), failed.map(x => x.t.repo + x.t.finished)]);
+  if (key === apKey) return;
   apKey = key;
-  $("ap-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || a.session_id.slice(0, 8))}</span><span class="m">${esc(ago(a.at))}</span>`
-    + `<div class="ask"><span class="m">This session asks to run <b>${esc(a.tool)}</b>:</span><pre class="cmd mono">${esc(a.summary)}</pre>`
-    + (a.cwd ? `<span class="m">In <span class="mono">${esc(a.cwd)}</span></span>` : "")
-    + (Object.keys(a.extra || {}).length ? `<span class="m">With these settings:</span><pre class="cmd mono">${esc(JSON.stringify(a.extra, null, 1))}</pre>` : "")
-    + `<div class="actions"><button class="btn small" type="button" data-allow="1" data-id="${esc(a.id)}">Allow</button>`
-    + `<button class="btn small" type="button" data-allow="0" data-id="${esc(a.id)}">Deny</button></div></div></li>`).join("");
+  $("ny-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || "Session " + a.session_id.slice(0, 8))} wants to run ${esc(a.tool)}</span>`
+      + `<pre>${esc(a.summary)}</pre>`
+      + `<span class="m">${a.cwd ? "In <span class=\"mono\">" + esc(a.cwd) + "</span> · " : ""}${esc(ago(a.at))}</span>`
+      + (Object.keys(a.extra || {}).length ? `<pre>${esc(JSON.stringify(a.extra, null, 1))}</pre>` : "")
+      + `<span class="m">Answer it in the session for now; voice approvals come next.</span></li>`).join("")
+    + waiting.map(({ s, w, b }) => `<li><span class="t">${esc(label(s))} is waiting for you</span>`
+      + `<span class="m">${esc(w.name)} · ${esc(b.name)} · ${esc(ago(s.last_ts))}</span></li>`).join("")
+    + failed.map(({ w, t }) => `<li><span class="t">Tests failed in ${esc(w.name)}</span>`
+      + `<span class="m"><span class="mono">${esc(t.repo)}</span> · ${esc(ago(t.finished))}</span></li>`).join("");
 }
 async function tickAppr() {
-  try {
-    const r = await fetch("/api/approvals", { cache: "no-store" });
-    if (!r.ok) throw 0;
-    appr = await r.json();
-  } catch { return; }
-  drawAppr(false);
+  try { const r = await fetch("/api/approvals", { cache: "no-store" }); if (!r.ok) throw 0; appr = await r.json(); } catch { return; }
+  drawNeeds();
 }
-$("ap-list").addEventListener("click", async e => {
-  const b = e.target.closest("button[data-id]");
-  if (!b || Date.now() < armed) return;
-  for (const x of $("ap-list").querySelectorAll("button")) x.disabled = true;
-  const err = $("ap-err"); err.hidden = true;
-  try {
-    const r = await fetch("/api/approvals/" + encodeURIComponent(b.dataset.id), { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ allow: b.dataset.allow === "1" }) });
-    if (!r.ok) { const j = await r.json().catch(() => ({})); err.textContent = j.error || "Request failed (" + r.status + ")"; err.hidden = false; }
-  } catch { err.textContent = "Couldn't reach Stellaxis."; err.hidden = false; }
-  await tickAppr(); drawAppr(true);
-});
-function render(d) {
-  const sess = [], bad = [];
-  for (const w of d.workspaces) for (const r of w.repos) {
-    for (const b of r.branches) for (const s of b.sessions) if (!s.archived) sess.push({ s, w, b });
-    const st = r.state || {};
-    if (r.exists && !st.error) {
-      const why = [!st.remote && "no remote", st.ahead > 0 && st.ahead + " unpushed", st.dirty > 0 && st.dirty + " changed"].filter(Boolean);
-      if (why.length) bad.push({ w, r, why });
-    }
-  }
-  $("live-note").hidden = d.live_ok !== false;
-  const row = ({ s, w, b }) => `<li><span class="t"><a href="${wsLink(w)}">${esc(label(s))}</a></span>`
-    + `<span class="m">${esc(w.name)} · ${esc(b.name)}</span><span class="m">${esc(ago(s.last_ts))}</span>${pill(s.status)}<a class="btn small" href="${openUrl(s)}">Open</a></li>`;
-  const needs = sess.filter(x => x.s.status === "waiting"), run = sess.filter(x => x.s.status === "running");
-  titles = {}; for (const x of sess) titles[x.s.id] = label(x.s) + " · " + x.w.name;
-  $("needs-list").hidden = !needs.length; $("needs-list").innerHTML = needs.map(row).join("");
-  const failed = d.workspaces.flatMap(w => (w.tests_failed || []).map(t => ({ w, t })));
-  $("test-list").hidden = !failed.length;
-  $("test-list").innerHTML = failed.map(({ w, t }) => `<li><span class="t"><a href="${wsLink(w)}">Tests failed</a></span><span class="m mono">${esc(t.repo)}</span>`
-    + `<span class="m">${esc(w.name)} · ${esc(ago(t.finished))}</span><span class="pill crit">Failed</span></li>`).join("");
-  drawAppr(false);
-  $("running").hidden = !run.length; $("running-list").innerHTML = run.map(row).join("");
-  $("unbacked").hidden = !bad.length;
-  $("unbacked-list").innerHTML = bad.map(({ w, r, why }) => `<li><span class="t mono">${esc(r.path)}</span>`
-    + `<span class="m">${esc(w.name)}</span><span class="pill warn">${esc(why.join(", "))}</span></li>`).join("");
-  const ws = d.workspaces.filter(w => w.repos.length);
-  $("workspaces").hidden = !ws.length;
-  $("first-note").hidden = ws.length > 0;
-  $("cards").innerHTML = ws.map(w => {
-    const n = w.repos.reduce((a, r) => a + r.branches.reduce((c, b) => c + b.sessions.length, 0), 0);
-    return `<a class="card" href="${wsLink(w)}"><b>${esc(w.name)}</b><span>${n} session${n === 1 ? "" : "s"}</span><span class="num">${money(w.cost_30d)} in 30 days</span></a>`;
-  }).join("");
+
+// Workspace gauges and running sessions.
+function gauge(share) {
+  const r = 34, c = 2 * Math.PI * r, on = Math.max(0.02, share) * c;
+  return `<svg viewBox="0 0 86 86" fill="none" aria-hidden="true">`
+    + `<circle cx="43" cy="43" r="40" stroke="var(--hud-line)" stroke-dasharray="1 4"/>`
+    + `<circle cx="43" cy="43" r="${r}" stroke="var(--hud-dim)" stroke-width="6"/>`
+    + `<circle cx="43" cy="43" r="${r}" stroke="var(--hud)" stroke-width="6" stroke-dasharray="${on} ${c}" transform="rotate(-90 43 43)"/>`
+    + `<text x="43" y="48" text-anchor="middle" fill="var(--ink)" font-family="Chakra Petch, sans-serif" font-size="15" font-weight="600">${Math.round(share * 100)}%</text></svg>`;
 }
 async function tick() {
-  try { render(await load()); $("load-note").hidden = true; } catch { $("load-note").hidden = false; }
+  let d;
+  try { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; d = await r.json(); idxOk = true; $("ws-load").hidden = true; }
+  catch { idxOk = false; $("ws-load").hidden = false; drawNeeds(); return; }
+  const sess = [];
+  for (const w of d.workspaces) for (const r of w.repos)
+    for (const b of r.branches) for (const s of b.sessions) if (!s.archived) sess.push({ s, w, b });
+  titles = {}; for (const x of sess) titles[x.s.id] = label(x.s) + " · " + x.w.name;
+  waiting = sess.filter(x => x.s.status === "waiting");
+  failed = d.workspaces.flatMap(w => (w.tests_failed || []).map(t => ({ w, t })));
+  const run = sess.filter(x => x.s.status === "running");
+  $("live-note").hidden = d.live_ok !== false;
+  idx = { ws: d.workspaces.filter(w => w.repos.length), sess, run };
+  drawLeft();
+  $("run-count").textContent = run.length ? String(run.length) : "";
+  $("run-empty").hidden = run.length > 0;
+  $("run-empty").textContent = "No session is working right now.";
+  $("running").innerHTML = run.slice(0, 6).map(({ s, w, b }) => `<li class="run"><span class="t">${esc(label(s))}</span>`
+    + `<span class="m">${esc(w.name)} · ${esc(b.name)} · ${esc(ago(s.last_ts))}</span></li>`).join("");
+  drawNeeds();
 }
-tick(); tickAppr();
-setInterval(() => { if (!document.hidden) tick(); }, 10000);
+// The left panel: every workspace as a gauge, or one workspace's latest sessions after "Jarvis, show <name>".
+let idx = { ws: [], sess: [], run: [] }, focus = null;
+function drawLeft() {
+  const w = idx.ws.find(x => x.id === focus);
+  if (w) {
+    const rows = idx.sess.filter(x => x.w === w).sort((a, b) => String(b.s.last_ts).localeCompare(String(a.s.last_ts))).slice(0, 8);
+    $("ws-title").textContent = w.name; $("ws-sub").textContent = money(w.cost_30d) + " in 30 days";
+    $("gauges").innerHTML = `<ul class="list" style="grid-column:1/-1">` + rows.map(({ s, b }) => {
+      const st = s.status === "running" ? "run" : s.status === "waiting" ? "wait" : "";
+      return `<li class="${st === "run" ? "run" : ""}"><span class="t">${esc(label(s))}</span>`
+        + `<span class="m">${esc(b.name)} · ${esc(ago(s.last_ts))} <span class="st ${st}">${esc(s.status || "closed")}</span></span></li>`;
+    }).join("") + `</ul>`;
+    return;
+  }
+  const total = idx.ws.reduce((a, x) => a + (x.cost_30d || 0), 0) || 1;
+  $("ws-title").textContent = "Workspaces"; $("ws-sub").textContent = "30-day cost";
+  $("gauges").innerHTML = idx.ws.map(x => {
+    const n = idx.sess.filter(y => y.w === x && y.s.status === "running").length;
+    return `<div class="gauge">${gauge((x.cost_30d || 0) / total)}<span class="g-name">${esc(x.name)}</span>`
+      + `<span class="g-sub">${money(x.cost_30d)}${n ? " · " + n + " running" : ""}</span></div>`;
+  }).join("");
+}
+
+// The briefing: escaped Markdown, folded at each "## ".
+const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+function md(lines) {
+  let out = "", list = "";
+  const close = () => { if (list) { out += `</${list}>`; list = ""; } };
+  for (const line of lines) {
+    const h = line.match(/^#{3,6}\s+(.*)/), li = line.match(/^\s*(?:[-*]|(\d+)\.)\s+(.*)/);
+    if (h) { close(); out += `<h3>${inline(h[1])}</h3>`; }
+    else if (li) { const k = li[1] ? "ol" : "ul"; if (list !== k) { close(); out += `<${k}>`; list = k; } out += `<li>${inline(li[2])}</li>`; }
+    else if (line.trim()) { close(); out += `<p>${inline(line)}</p>`; }
+    else close();
+  }
+  close();
+  return out;
+}
+let brText = null;
+async function tickJarvis() {
+  let j;
+  try { const r = await fetch("/api/jarvis", { cache: "no-store" }); if (!r.ok) throw 0; j = await r.json(); }
+  catch { $("br-when").textContent = "Offline"; return; }
+  $("br-none").hidden = !!j.text;
+  $("br-when").textContent = j.text ? "Written " + ago(j.written) : "";
+  if (!j.text || j.text === brText) return;
+  brText = j.text;
+  const lead = [], secs = [];
+  for (const line of j.text.split("\n")) {
+    const h2 = line.match(/^##\s+(.*)/);
+    if (h2) secs.push({ title: h2[1], body: [] });
+    else if (!/^#\s/.test(line)) (secs.length ? secs[secs.length - 1].body : lead).push(line);
+  }
+  const open = new Set([...document.querySelectorAll("#br-text details[open] summary")].map(s => s.textContent));
+  $("br-lead").innerHTML = md(lead); $("br-lead").hidden = !lead.some(l => l.trim());
+  $("br-text").innerHTML = secs.map(s => `<details${open.has(s.title) || (!open.size && /needs you/i.test(s.title)) ? " open" : ""}>`
+    + `<summary>${inline(s.title)}</summary><div class="body">${md(s.body)}</div></details>`).join("");
+}
+
+// Jarvis listens all the time. A sound above the room's level is recorded until a pause, Whisper turns it into
+// text, and only text that starts with "Jarvis" (or follows within a few seconds of Jarvis speaking) is acted on.
+// It never hears itself: the microphone is ignored while it thinks or speaks.
+const STATES = { idle: ["Ready", 'Listening for "Jarvis".'], listening: ["Listening", "Go on…"], thinking: ["Thinking", "Thinking…"],
+  speaking: ["Speaking", "Speaking. I don't listen while I talk, so I never hear myself."], error: ["Error", ""] };
+function setState(st, text) {
+  $("jarvis").dataset.state = st;
+  $("core-word").textContent = STATES[st][0];
+  $("jv-state").textContent = text || STATES[st][1];
+  if (!waveRaf) drawWave();
+}
+const turns = [];
+function addTurn(who, text, cls) {
+  turns.push({ who, text, cls }); turns.splice(0, turns.length - 4);
+  $("jv-turns").innerHTML = turns.map(t => `<li><span class="who">${esc(t.who)}</span><span class="${t.cls || ""}">${esc(t.text)}</span></li>`).join("");
+}
+let busy = false, awakeUntil = 0;
+async function speak(text) {
+  setState("speaking");
+  try { await fetch("/api/jarvis/say", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text.slice(0, 3900) }) }); }
+  catch { /* the answer is on screen either way */ }
+  awakeUntil = Date.now() + 8000;  // a follow-up needs no "Jarvis"
+  setState("idle", "Go on, or wait for \"Jarvis\".");
+}
+const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
+async function command(text) {
+  const t = norm(text);
+  if (/^(stop|quiet|be quiet|cancel|never mind)$/.test(t)) { setState("idle"); return; }
+  if (/^(go )?(home|back)( please)?$/.test(t)) { focus = null; drawLeft(); addLog("Showed home"); return speak("Home."); }
+  if (/briefing/.test(t)) {
+    const today = [...document.querySelectorAll("#br-text details")].find(d => /needs you/i.test(d.querySelector("summary").textContent));
+    return speak(today ? today.querySelector(".body").innerText.replace(/\n+/g, ". ") : "There's no briefing yet.");
+  }
+  if (/^what (needs|is waiting for) (me|you)/.test(t)) return speak($("finding").textContent);
+  const m = t.match(/^(?:show|open|go to|switch to) ?(?:me )?(.+)$/);  // Whisper sometimes runs words together
+  if (m) {
+    const sq = s => norm(s).replace(/ /g, ""), want = sq(m[1].replace(/^the /, "").replace(/ ?workspace$/, ""));
+    const w = idx.ws.find(x => sq(x.name) === want) || idx.ws.find(x => sq(x.name).includes(want) || want.includes(sq(x.name)));
+    if (w) {
+      focus = w.id; drawLeft(); addLog("Showed " + w.name);
+      const n = idx.sess.filter(x => x.w === w && x.s.status === "running").length;
+      return speak(`${w.name}. ${plural(n, "session")} running, ${money(w.cost_30d)} in the last 30 days.`);
+    }
+  }
+  setState("thinking");
+  try {
+    const r = await fetch("/api/jarvis/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: text }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { addTurn("Jarvis", j.error || "Couldn't answer.", "err"); return speak("Sorry, I couldn't answer that."); }
+    addTurn("Jarvis", j.answer, "jv"); addLog("Answered: " + text.slice(0, 120));
+    return speak(j.answer);
+  } catch { addTurn("Jarvis", "Couldn't reach Stellaxis.", "err"); setState("error", "Couldn't reach Stellaxis."); }
+}
+async function heard(blob) {
+  busy = true; setState("thinking", "Hearing…");
+  let text = "";
+  try {
+    const r = await fetch("/api/jarvis/hear", { method: "POST", headers: { "Content-Type": blob.type || "audio/webm" }, body: blob });
+    if (r.ok) text = (await r.json()).heard || "";
+  } catch { /* treat as silence */ }
+  const wake = text.match(/^\W*(?:hey |ok |okay )?(?:jarvis|jervis|javis|travis)\b[\s,.!?:-]*/i);
+  const awake = Date.now() < awakeUntil;
+  if (!wake && !awake) {  // not for Jarvis: act on nothing, but say what was heard so a misheard name shows
+    busy = false; setState("idle", text ? `Heard “${text.slice(0, 80)}”. Start with “Jarvis”.` : undefined); return;
+  }
+  const rest = wake ? text.slice(wake[0].length).trim() : text.trim();
+  if (!rest) { busy = false; awakeUntil = Date.now() + 8000; await speak("Yes?"); return; }
+  addTurn("You", rest);
+  try { await command(rest); } finally { busy = false; }
+  if ($("jarvis").dataset.state === "thinking") setState("idle");
+}
+
+// The ear: the microphone's raw sound, in chunks of about 40ms. The last 0.7s is always kept, so a recording starts
+// before the first sound that set it off and "Jarvis" is not cut short. Speech rises and falls, so two loud chunks
+// out of five start a recording; 0.9s of quiet ends it. The recording is sent as a plain WAV file.
+const PRE_SECS = 0.7;
+let rec = null, pre = [], hits = [], quiet = 0, voiced = 0, floor = 0.006;
+function wav(chunks, rate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0), b = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o, t) => [...t].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); b.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt "); b.setUint32(16, 16, true);
+  b.setUint16(20, 1, true); b.setUint16(22, 1, true); b.setUint32(24, rate, true); b.setUint32(28, rate * 2, true);
+  b.setUint16(32, 2, true); b.setUint16(34, 16, true); str(36, "data"); b.setUint32(40, n * 2, true);
+  // A laptop mic across the room is quiet; Whisper hears nothing in it. Turn it up so the loudest point is near full.
+  const peak = chunks.reduce((m, c) => c.reduce((m2, v) => Math.max(m2, Math.abs(v)), m), 1e-4), gain = Math.min(30, 0.9 / peak);
+  let o = 44;
+  for (const c of chunks) for (const v of c) { b.setInt16(o, Math.max(-1, Math.min(1, v * gain)) * 0x7fff, true); o += 2; }
+  return new Blob([b], { type: "audio/wav" });
+}
+async function startEar() {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch { $("wake").textContent = "Jarvis can't hear you: allow the microphone for this page (the Jarvis launcher asks once)."; $("wake").hidden = false; setState("error", "No microphone."); return; }
+  const ac = new AudioContext();
+  analyser = ac.createAnalyser(); analyser.fftSize = 512;
+  const src = ac.createMediaStreamSource(stream), proc = ac.createScriptProcessor(2048, 1, 1);
+  src.connect(analyser); src.connect(proc); proc.connect(ac.destination);  // its output stays silent
+  const resume = () => ac.resume().then(() => { $("wake").hidden = true; setState("idle"); });
+  if (ac.state !== "running") {
+    // A normal browser tab may not start sound until it is touched once; the launcher opens Chrome so it doesn't need this.
+    $("wake").textContent = "Touch the screen once to wake Jarvis (open it with the Jarvis launcher to skip this).";
+    $("wake").hidden = false;
+    addEventListener("pointerdown", resume, { once: true }); addEventListener("keydown", resume, { once: true });
+  } else setState("idle");
+  proc.onaudioprocess = e => {
+    const x = new Float32Array(e.inputBuffer.getChannelData(0)), secs = x.length / ac.sampleRate;
+    const rms = Math.sqrt(x.reduce((a, v) => a + v * v, 0) / x.length);
+    const st = $("jarvis").dataset.state;
+    if (busy || st === "speaking" || st === "thinking") { rec = null; pre = []; hits = []; return; }
+    const th = Math.max(0.008, floor * 2.5);
+    if (!rec) {
+      floor = floor * 0.98 + Math.min(rms, 0.05) * 0.02;  // the room's level, followed slowly
+      pre.push(x); if (pre.length * secs > PRE_SECS) pre.shift();
+      hits.push(rms > th); if (hits.length > 5) hits.shift();
+      if (hits.filter(Boolean).length >= 2) {
+        rec = pre; pre = []; hits = []; quiet = 0; voiced = 0;
+        if (Date.now() < awakeUntil) setState("listening");
+      }
+      return;
+    }
+    rec.push(x);
+    if (rms > th) { quiet = 0; voiced++; } else quiet++;
+    if (quiet * secs >= 0.9 || rec.length * secs > 15) {  // a pause, or 15s at most
+      const r = rec; rec = null;
+      if (voiced * secs >= 0.25) heard(wav(r, ac.sampleRate)); else setState("idle");  // a knock or a click
+    }
+  };
+}
+startEar();
+
+tick(); tickAppr(); tickJarvis();
+setInterval(() => { if (!document.hidden) { tick(); tickJarvis(); } }, 10000);
 setInterval(() => { if (!document.hidden) tickAppr(); }, 3000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); tickAppr(); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); tickAppr(); tickJarvis(); } });
 })();
 </script>

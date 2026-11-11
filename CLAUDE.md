@@ -73,7 +73,19 @@ API routes (`workspaces.handle`, all behind `settings_api.host_ok`; POSTs need `
 `GET /api/workspaces`; `GET` and `POST /api/workspaces/<id>/tasks`; `GET /api/workspaces/<id>/work` (plans,
 routines, tests); `POST /api/workspaces/<id>/tests/run`; `POST /api/sessions/new`;
 `POST /api/sessions/<uuid>/message`; `GET /api/sessions/<uuid>/reply`; `GET /api/approvals`;
-`POST /api/approvals/<id>`; `POST /api/approvals/session/<uuid>`.
+`POST /api/approvals/<id>`; `POST /api/approvals/session/<uuid>`; `GET /api/jarvis` (the briefing the
+`agents/jarvis.md` agent writes to `jarvis/briefing.md`); `POST /api/jarvis/ask` (a recording as `audio/*`,
+or JSON `{"question"}`: ffmpeg, then `whisper-cli`, then a headless Claude limited to Read/Grep/Glob; one at a
+time); `POST /api/jarvis/hear` (a recording: text only), `/api/jarvis/say` (`{"text"}`, spoken by macOS `say`,
+returns when done) and `/api/jarvis/hush`. Their binaries are config keys `ffmpeg_bin`, `whisper_bin`,
+`whisper_model`, `say_bin` (defaults under `/opt/homebrew/bin`, `~/.stellaxis/models/ggml-base.en.bin` and
+`/usr/bin/say`).
+
+Home (`/`) is the voice-only Jarvis portal: served without the shell (`FULL_SCREEN` in `collect.py`), no buttons
+or inputs. It listens all the time, records whatever is louder than the room until a pause, and acts only on text
+starting with "Jarvis" (or within 8s after Jarvis spoke). It ignores the mic while thinking or speaking.
+`collector/jarvis_portal.sh` opens it full-screen in a Chrome profile of its own, with autoplay allowed so it
+starts without a touch.
 
 ### Item ids and token sources
 

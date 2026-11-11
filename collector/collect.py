@@ -1323,13 +1323,16 @@ def reels_scripts(body: bytes) -> str:
     return f"script-src 'sha256-{base64.b64encode(hashlib.sha256(body[start + 8:end]).digest()).decode()}'; "
 
 
-def shell_page(page: str) -> bytes:
+FULL_SCREEN = {"/"}  # Home is the voice-only Jarvis portal: no sidebar, nothing to click
+
+
+def shell_page(page: str, shell: bool = True) -> bytes:
     """A page body inside the localhost app shell (sidebar), with the skeleton the artifact host would add."""
-    shell = (REPO_DIR / "dashboard" / "shell.html").read_text(encoding="utf-8")
+    if shell:
+        page = (REPO_DIR / "dashboard" / "shell.html").read_text(encoding="utf-8").replace("<!--PAGE-->", page, 1)
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             'content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}'
-            '[hidden]{display:none!important}</style></head><body>' + shell.replace("<!--PAGE-->", page, 1)
-            + "</body></html>").encode()
+            '[hidden]{display:none!important}</style></head><body>' + page + "</body></html>").encode()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -1379,7 +1382,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if page_file:
             # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
             page = (REPO_DIR / "dashboard" / page_file).read_text(encoding="utf-8")
-            return self.send_body(shell_page(page), "text/html; charset=utf-8")
+            return self.send_body(shell_page(page, path not in FULL_SCREEN), "text/html; charset=utf-8")
         if self.path.split("?")[0] == "/api/status":
             body = (STX_HOME / "status.json").read_bytes() if (STX_HOME / "status.json").exists() else b"{}"
             self.send_response(200)

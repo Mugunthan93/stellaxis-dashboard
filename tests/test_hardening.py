@@ -184,7 +184,8 @@ class Service(unittest.TestCase):
         self.assertIn('id="refresh"', self.req("/index.html").body)
         self.assertEqual(self.req("/workspace?id=x").status, 200)
         self.assertIn('id="new-session"', self.req("/workspace?id=x").body)
-        self.assertIn('href="/overview"', self.req("/").body)
+        self.assertNotIn('class="sx-side"', self.req("/").body)  # Home is the full-screen voice portal
+        self.assertIn('href="/overview"', self.req("/workspace?id=x").body)  # every other page keeps the sidebar
 
     def test_own_host_works_with_headers(self):
         r = self.req("/snapshot.json")
