@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,7 @@ from core.app import Core
 COMPS = REPO / "collector" / "components"
 MM = component.import_folder(COMPS / "memory_management")
 W = MM.walk
+R = MM.records
 
 
 def place(path, name="t", depth=1, repos=False, owner="none"):
@@ -291,6 +293,80 @@ class WalkTest(unittest.TestCase):
         p = {}
         W.measure([place(a)], W.Guard([]), time.monotonic() + 30, p)
         self.assertEqual(p, {"place": "t", "files": 3})
+
+
+class RecordsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        home = Path(self.tmp)
+        self.core = Core(home, home / ".claude", COMPS)
+        self.assertIsNone(self.core.error)
+        self.db = lambda: self.core.ctx("memory_management", {}).db()
+
+    def row(self, path, parent=None, n=1):
+        return {"path": path, "parent": parent, "place": "t", "kind": "folder", "owner": "none", "state": "ok",
+                "bytes": n, "logical_bytes": n + 1, "linked_bytes": 0, "files": n, "changed_at": "2026-01-01"}
+
+    def result(self, *paths):
+        rows = [self.row(p, None if i == 0 else paths[0], i + 1) for i, p in enumerate(paths)]
+        return {"rows": rows, "skipped": [{"path": "/s", "reason": "guarded"}], "skipped_count": 5, "files": 7,
+                "complete": False, "note": "time limit"}
+
+    def run_(self, ts=1000.5, disk=None):
+        return {"started_at": "a", "finished_at": "b", "finished_ts": ts, "seconds": 2.5, "disk": disk}
+
+    def save(self, run, result):
+        with closing(self.db()) as db, db:
+            R.save(db, run, result)
+
+    def last(self):
+        with closing(self.db()) as db:
+            return R.last(db)
+
+    def test_the_component_creates_its_three_tables(self):
+        with closing(self.db()) as db:
+            names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'memory_management_%'")}
+        self.assertEqual(names, {"memory_management_runs", "memory_management_folders", "memory_management_skipped"})
+        self.assertEqual([c.error for c in self.core.components if c.name == "memory_management"], [None])
+
+    def test_nothing_saved_gives_none(self):
+        with closing(self.db()) as db:
+            self.assertIsNone(R.last(db))
+            self.assertIsNone(R.last_finished_ts(db))
+
+    def test_save_then_last_gives_the_same_measurement(self):
+        result = self.result("/p", "/p/a")
+        self.save(self.run_(disk={"path": "/x", "total": 100, "free": 40}), result)
+        got = self.last()
+        self.assertEqual(got["rows"], result["rows"])
+        self.assertEqual(got["skipped"], result["skipped"])
+        self.assertEqual(got["run"], {"started_at": "a", "finished_at": "b", "seconds": 2.5, "complete": False,
+                                      "note": "time limit", "disk": {"path": "/x", "total": 100, "free": 40},
+                                      "files": 7, "skipped": 5})
+        with closing(self.db()) as db:
+            self.assertEqual(R.last_finished_ts(db), 1000.5)
+
+    def test_a_run_without_disk_numbers(self):
+        self.save(self.run_(disk=None), self.result("/p"))
+        self.assertIsNone(self.last()["run"]["disk"])
+
+    def test_only_the_last_runs_folders_are_kept_but_every_run_row(self):
+        self.save(self.run_(1.0), self.result("/p", "/p/a"))
+        second = self.result("/q")
+        self.save(self.run_(2.0), second)
+        with closing(self.db()) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM memory_management_runs").fetchone()[0], 2)
+            self.assertEqual([r[0] for r in db.execute("SELECT path FROM memory_management_folders")], ["/q"])
+            self.assertEqual(db.execute("SELECT count(*) FROM memory_management_skipped").fetchone()[0], 1)
+        self.assertEqual(self.last()["rows"], second["rows"])
+
+    def test_a_failed_save_writes_nothing(self):
+        result = self.result("/p", "/p/a")
+        del result["rows"][1]["bytes"]
+        with self.assertRaises(KeyError):
+            self.save(self.run_(), result)
+        self.assertIsNone(self.last())
 
 
 if __name__ == "__main__":
