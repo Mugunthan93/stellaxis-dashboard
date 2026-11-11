@@ -51,13 +51,17 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   registered only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It
   asks the running `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting
   inline, because inline collection inside the app can hang on a macOS folder-permission prompt.
-- `collector/components/project_management/centre.py` is the command centre (`collector/workspaces.py` is now an alias:
-  `import workspaces` returns the same module). The component's reader writes `workspaces.json` from the pass inputs
-  (`write_index` passes the sessions and folders to the core's pass) and its routes are served through the core. `build_index` writes `workspaces.json`: every session
-  (not just the capped snapshot ones) grouped workspace > repo > branch, plus configured folders with no
-  sessions as repos with no branches. It also starts and messages sessions, and holds the task lists,
-  approvals, plans, routines and test runs. It must not import `collect` (that would be circular),
-  and nothing under `components/` may import `workspaces`, `collect` or `unplaced`; `collect.py` passes it `load_config()`.
+- `collector/components/project_management/centre.py` is the command centre (`collector/workspaces.py` is an alias:
+  `import workspaces` returns the same module). Its component's reader writes `workspaces.json` from the pass inputs
+  (`write_index` in `collect.py` passes the sessions and folders to the core's pass); `build_index` makes the
+  content: every session (not just the capped snapshot ones) grouped workspace > repo > branch, plus configured
+  folders with no sessions as repos with no branches. Its routes are served through the core. It also starts and
+  messages sessions, and holds the task lists, approvals, plans, routines and test runs. It must not import `collect`
+  (that would be circular), and nothing under `components/` may import `workspaces`, `collect` or `unplaced`;
+  `collect.py` passes it `load_config()`.
+- `collector/unplaced/jarvis.py` serves the Jarvis routes (briefing, ask, hear, say, hush). It runs today and is in no
+  component yet; it reaches the command centre through `import workspaces as W`. `Handler` calls its `handle` right
+  after the core's, before `settings_api.handle`.
 - `collector/approval_hook.py` is the `PermissionRequest` hook. It runs on the system Python, stays silent
   unless the session's switch is on and it can show the request whole, writes `<id>.req` and waits for
   `<id>.ans`. `approve_ready` looks for it in `settings.json`; Stellaxis never installs it.
@@ -67,7 +71,7 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   applied); `util.py` `read_json`, `write_json`, `short_path`, `now_iso`; `undo.py` `Plan` and `restore` (used
   by `prune.py`); `server.py` `host_ok`, `handle()` and `serve()`. `collect.py` makes it on first use
   (`the_core()`), runs `run_pass` after each collection and offers it every request before `settings_api`.
-  `collector/components/` holds component folders and is empty until step 2. Under `$STELLAXIS_HOME`: the store
+  `collector/components/` holds the component folders. Under `$STELLAXIS_HOME`: the store
   `stellaxis.db` and the action log `actions.jsonl`. Route: `GET /api/core`. If the store cannot be opened,
   `status.json` carries `core_error`; components still run and answer, and only what calls `ctx.db()` fails (`StoreError`). The spec has the rest.
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
@@ -80,7 +84,8 @@ Config keys for the command centre (`config.json`): `claude_bin` (default `~/.lo
 `workspaces`, a list of `{"id", "name", "folders": [path], "tests": {repo: argv}, "routines": [name]}`.
 An entry with no id is skipped. Test commands come from config only, never from a request.
 
-API routes (`workspaces.handle`, all behind `settings_api.host_ok`; POSTs need `application/json`):
+API routes (`workspaces.handle`, and `unplaced/jarvis.py` for the `/api/jarvis` ones, all behind
+`settings_api.host_ok`; POSTs need `application/json`):
 `GET /api/workspaces`; `GET` and `POST /api/workspaces/<id>/tasks`; `GET /api/workspaces/<id>/work` (plans,
 routines, tests); `POST /api/workspaces/<id>/tests/run`; `POST /api/sessions/new`;
 `POST /api/sessions/<uuid>/message`; `GET /api/sessions/<uuid>/reply`; `GET /api/approvals`;

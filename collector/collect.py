@@ -34,6 +34,7 @@ import workspaces
 from core import server as core_server
 from core.app import Core
 from core.util import read_json, write_json, short_path
+from unplaced import jarvis
 
 VERSION = "0.2.2"
 HOME = Path.home()
@@ -1354,6 +1355,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "GET", load_config()):
             return
+        if jarvis.handle(self, "GET", load_config()):
+            return
         if settings_api.handle(self, "GET"):
             return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot", "/api/skills"):
@@ -1423,6 +1426,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not settings_api.host_ok(self):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "POST", load_config()):
+            return
+        if jarvis.handle(self, "POST", load_config()):
             return
         if not settings_api.handle(self, "POST"):
             self.send_error(404)

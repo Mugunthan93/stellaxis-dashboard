@@ -540,7 +540,7 @@ class WiringTest(HttpCase):
 
 class IndependenceTest(unittest.TestCase):
     def test_the_core_imports_nothing_outside_itself(self):
-        outside = {p.stem for p in (REPO / "collector").glob("*.py")} | {"components"}
+        outside = {p.stem for p in (REPO / "collector").glob("*.py")} | {"components", "unplaced"}
         for f in (REPO / "collector" / "core").glob("*.py"):
             for node in ast.walk(ast.parse(f.read_text())):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0 else []
