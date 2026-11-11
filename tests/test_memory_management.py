@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -61,6 +62,32 @@ def recorder():
         calls.append(str(path))
         return real(path)
     return calls, scandir
+
+
+class Listing:      # what walk.scandir returns: a context that gives the entries
+    def __init__(self, entries):
+        self.entries = entries
+
+    def __enter__(self):
+        return iter(self.entries)
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeEntry:
+    def __init__(self, entry, **st):
+        self.name, self.path = entry.name, entry.path
+        real = entry.stat(follow_symlinks=False)
+        self.st = types.SimpleNamespace(**dict({k: getattr(real, k) for k in (
+            "st_mode", "st_dev", "st_ino", "st_mtime", "st_blocks", "st_nlink", "st_size")}, **st))
+
+    def stat(self, follow_symlinks=True):
+        return self.st
+
+
+def case_sensitive(path):
+    return not os.path.exists(str(path).swapcase())
 
 
 class WalkTest(unittest.TestCase):
@@ -168,6 +195,113 @@ class WalkTest(unittest.TestCase):
         self.assertIn(str(a / "Library" / "Caches" / "pip"), calls)
         for p in (a / "Documents", a / "Library" / "Caches" / "com.apple.x"):
             self.assertIn({"path": str(p), "reason": "guarded by macOS"}, r["skipped"])
+        self.assertEqual(r["skipped_count"], 2)
+        self.assertIs(r["complete"], True)
+        self.assertEqual({x["state"] for x in r["rows"]}, {"ok"})
+
+    def test_a_guarded_sub_folder_in_another_case_is_not_opened(self):
+        a = self.tree()
+        if case_sensitive(a):
+            self.skipTest("case-sensitive disk")
+        put(a / "documents" / "secret", 1)
+        calls, fake = recorder()
+        with mock.patch.object(W, "scandir", fake):
+            r = run([place(a)], W.Guard([str(a / "Documents")]))
+        self.assertNotIn(str(a / "documents"), calls)
+        self.assertEqual(r["skipped"], [{"path": str(a / "documents"), "reason": "guarded by macOS"}])
+
+    def test_a_guarded_folder_under_another_spelling_is_not_opened(self):
+        a = self.tree()
+        put(a / "Documents" / "secret", 1)
+        put(a / "Library" / "Caches" / "com.apple.x" / "f", 1)
+        put(a / "ok" / "f", 1)
+        alias = self.tmp / "alias"
+        os.symlink(a, alias)
+        guard = W.Guard([str(alias / "Documents"), str(alias / "Library" / "Caches" / "com.apple.*")])
+        calls, fake = recorder()
+        with mock.patch.object(W, "scandir", fake):
+            r = run([place(a, depth=3)], guard)
+        self.assertNotIn(str(a / "Documents"), calls)
+        self.assertNotIn(str(a / "Library" / "Caches" / "com.apple.x"), calls)
+        self.assertIn(str(a / "ok"), calls)
+        for p in (a / "Documents", a / "Library" / "Caches" / "com.apple.x"):
+            self.assertIn({"path": str(p), "reason": "guarded by macOS"}, r["skipped"])
+
+    def test_a_place_inside_a_guarded_folder_under_another_spelling_is_refused(self):
+        a = self.tree()
+        put(a / "Documents" / "x" / "f", 1)
+        alias = self.tmp / "alias"
+        os.symlink(a, alias)
+        calls, fake = recorder()
+        with mock.patch.object(W, "scandir", fake):
+            r = run([place(a / "Documents" / "x")], W.Guard([str(alias / "Documents")]))
+        self.assertEqual(calls, [])
+        self.assertEqual([x["state"] for x in r["rows"]], ["refused"])
+        self.assertEqual(r["skipped"], [{"path": str(a / "Documents" / "x"), "reason": "guarded by macOS"}])
+
+    def test_a_folder_swapped_for_a_link_during_the_walk_is_not_opened(self):
+        a, other = self.tree(), self.tree("other")
+        put(other / "big", 50000)
+        put(a / "sub" / "f", 10)
+        real = os.scandir
+
+        def swap(path):
+            with real(path) as it:
+                entries = list(it)
+            if str(path) == str(a):
+                for e in entries:
+                    e.stat(follow_symlinks=False)     # the listing has seen sub as a folder
+                shutil.rmtree(a / "sub")
+                os.symlink(other, a / "sub")
+            return Listing(entries)
+        with mock.patch.object(W, "scandir", swap):
+            r = run([place(a)])
+        self.assertEqual(row(r, a)["logical_bytes"], 0)
+        self.assertEqual(row(r, a)["state"], "partial")
+        self.assertIn({"path": str(a / "sub"), "reason": "changed during the walk"}, r["skipped"])
+        self.assertIs(r["complete"], False)
+
+    def test_another_volume_is_not_entered(self):
+        a = self.tree()
+        put(a / "mnt" / "f", 1)
+        put(a / "ok" / "f", 1)
+        calls, real = [], os.scandir
+
+        def fake(path):
+            calls.append(str(path))
+            with real(path) as it:
+                entries = [FakeEntry(e, st_dev=os.lstat(a).st_dev + 1) if e.name == "mnt" else e for e in it]
+            return Listing(entries)
+        with mock.patch.object(W, "scandir", fake):
+            r = run([place(a)])
+        self.assertNotIn(str(a / "mnt"), calls)
+        self.assertIn(str(a / "ok"), calls)
+        self.assertIn({"path": str(a / "mnt"), "reason": "another volume"}, r["skipped"])
+        self.assertEqual(row(r, a)["state"], "partial")
+        self.assertIs(r["complete"], False)
+
+    def test_one_place_that_fails_does_not_lose_the_others(self):
+        p1, p2 = self.tree("p1"), self.tree("p2")
+        put(p1 / "f", 10)
+        put(p2 / "f", 20)
+        real = os.scandir
+
+        def fake(path):
+            if str(path) == str(p1):
+                raise ValueError("boom")
+            return real(path)
+        with mock.patch.object(W, "scandir", fake):
+            r = run([place(p1, "one"), place(p2, "two")])
+        bad = row(r, p1)
+        self.assertEqual((bad["state"], bad["bytes"], bad["logical_bytes"], bad["files"]), ("failed", 0, 0, 0))
+        self.assertEqual([x for x in r["rows"] if x["place"] == "one"], [bad])
+        self.assertEqual((row(r, p2)["state"], row(r, p2)["logical_bytes"]), ("ok", 20))
+        self.assertEqual(r["skipped"], [{"path": str(p1), "reason": "ValueError: boom"}])
+        self.assertIs(r["complete"], False)
+
+    def test_an_odd_change_time_gives_no_date(self):
+        n = types.SimpleNamespace(bytes=1, logical=1, linked=0, files=1, changed=1e300)
+        self.assertIsNone(W._row("/x", None, place("/x"), "folder", "ok", n)["changed_at"])
 
     def test_a_place_that_is_guarded_by_another_spelling_is_refused(self):
         a = self.tree()
@@ -195,6 +329,15 @@ class WalkTest(unittest.TestCase):
                          [("one", "place", "ok"), ("two", "place", "refused"), ("three", "place", "missing"),
                           ("four", "place", "refused")])
         self.assertEqual(sorted(x["reason"] for x in r["skipped"]), ["not a folder", "overlaps one"])
+
+    def test_the_overlap_check_ignores_case(self):
+        a = self.tree()
+        if case_sensitive(a):
+            self.skipTest("case-sensitive disk")
+        (a / "proj" / "Sub").mkdir(parents=True)
+        r = run([place(a / "proj", "one"), place(a / "PROJ" / "Sub", "two")])
+        self.assertEqual([x["state"] for x in r["rows"] if x["kind"] == "place"], ["ok", "refused"])
+        self.assertEqual(r["skipped"], [{"path": str(a / "PROJ" / "Sub"), "reason": "overlaps one"}])
 
     def test_kinds_in_a_repos_place(self):
         code = self.tree("code")
@@ -354,6 +497,26 @@ class RecordsTest(unittest.TestCase):
         with closing(self.db()) as db:
             self.assertEqual(R.last_finished_ts(db), 1000.5)
 
+    def test_last_reads_in_one_transaction(self):
+        self.save(self.run_(), self.result("/p", "/p/a"))
+
+        class Spy:
+            def __init__(self, db):
+                self.db, self.sql = db, []
+
+            def execute(self, sql, *a):
+                self.sql.append(sql.split()[0])
+                return self.db.execute(sql, *a)
+
+            def rollback(self):
+                self.sql.append("ROLLBACK")
+                self.db.rollback()
+        with closing(self.db()) as db:
+            spy = Spy(db)
+            self.assertEqual(R.last(spy)["rows"][1]["path"], "/p/a")
+            self.assertFalse(db.in_transaction)
+        self.assertEqual(spy.sql, ["BEGIN", "SELECT", "SELECT", "SELECT", "ROLLBACK"])
+
     def test_a_run_without_disk_numbers(self):
         self.save(self.run_(disk=None), self.result("/p"))
         self.assertIsNone(self.last()["run"]["disk"])
@@ -377,7 +540,9 @@ class RecordsTest(unittest.TestCase):
 
 
 ISO = r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$"
-IDLE = "no places to measure: the Stellaxis data folder is outside the home folder and config names no places"
+IDLE = ("no places to measure: the Stellaxis data folder is not .stellaxis in the account's home folder, "
+        "and config names no places")
+ALL_OFF = "no places to measure: config turned every place off"
 KEYS = {"state", "measured_at", "started_at", "seconds", "complete", "note", "measuring", "disk", "places", "folders",
         "elsewhere_bytes", "not_measured", "not_measured_count", "idle", "error"}
 
@@ -400,12 +565,26 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(s["idle"], IDLE)
         self.assertEqual((s["every"], s["max_seconds"]), (21600, 900))
 
+    def test_defaults_are_off_anywhere_else_inside_the_home_folder(self):
+        self.inside()
+        for out in (self.home / "sub" / ".stellaxis", self.home / "stx", self.home):
+            s = MM.settings({}, out)
+            self.assertEqual((s["places"], s["idle"]), ([], IDLE))
+
+    def test_every_place_turned_off_has_its_own_sentence(self):
+        self.inside()
+        cfg = {"memory": {"places": [{"name": p[0], "off": True} for p in MM.DEFAULT_PLACES]}}
+        s = MM.settings(cfg, self.home / ".stellaxis")
+        self.assertEqual((s["places"], s["idle"]), ([], ALL_OFF))
+
     def test_defaults_are_on_inside_the_home_folder(self):
         self.inside()
         s = MM.settings({}, self.home / ".stellaxis")
         names = [p["name"] for p in s["places"]]
         self.assertEqual(names[:4], ["code", "claude", "claude_app", "stellaxis"])
-        self.assertIn("homebrew", names)
+        self.assertEqual(names[names.index("homebrew") + 1], "applications")
+        self.assertEqual(s["places"][names.index("applications")], {
+            "name": "applications", "path": "/Applications", "owner": "none", "depth": 1, "repos": False})
         self.assertEqual(s["places"][0], {"name": "code", "path": str(self.home / "code"),
                                           "owner": "project_management", "depth": 1, "repos": True})
         self.assertEqual(s["places"][1]["path"], str(self.home / ".claude"))
@@ -418,12 +597,13 @@ class SettingsTest(unittest.TestCase):
         self.inside()
         cfg = {"memory": {"places": [
             {"name": "chrome", "path": "~/Library/Application Support/Google"},
-            {"name": "code", "path": "~/work", "depth": 2, "repos": True, "owner": "project_management"},
+            {"name": "code", "path": "~/work", "depth": 2},
             {"name": "homebrew", "off": True}], "guarded": ["~/Private"]}}
         s = MM.settings(cfg, self.home / ".stellaxis")
         names = [p["name"] for p in s["places"]]
         self.assertEqual(names[0], "code")
-        self.assertEqual((s["places"][0]["path"], s["places"][0]["depth"]), (str(self.home / "work"), 2))
+        self.assertEqual(s["places"][0], {"name": "code", "path": str(self.home / "work"),
+                                          "owner": "project_management", "depth": 2, "repos": True})
         self.assertEqual(s["places"][-1], {"name": "chrome", "path": str(self.home / "Library/Application Support/Google"),
                                            "owner": "none", "depth": 1, "repos": False})
         self.assertNotIn("homebrew", names)
@@ -437,6 +617,29 @@ class SettingsTest(unittest.TestCase):
         s = MM.settings({"memory": {"places": [3, {"name": "a"}, {"path": "/x"},
                                                {"name": "ok", "path": str(self.home), "depth": "x"}]}}, out)
         self.assertEqual([(p["name"], p["depth"]) for p in s["places"]], [("ok", 1)])
+
+    def test_a_config_path_must_be_absolute(self):
+        self.inside()
+        bad = ["", "code", "~bob/x", "./x"]
+        cfg = {"memory": {"places": [{"name": f"bad{i}", "path": p} for i, p in enumerate(bad)]
+                          + [{"name": "code", "path": "work"}, {"name": "ok", "path": "~/ok"}],
+                          "guarded": bad + ["/abs"]}}
+        s = MM.settings(cfg, self.home / ".stellaxis")
+        by = {p["name"]: p["path"] for p in s["places"]}
+        self.assertEqual(by["ok"], str(self.home / "ok"))
+        self.assertEqual(by["code"], str(self.home / "code"))
+        self.assertFalse([n for n in by if n.startswith("bad")])
+        self.assertTrue(all(os.path.isabs(p) for p in s["guard"].paths))
+        self.assertIn("/abs", s["guard"].paths)
+
+    def test_the_guard_holds_both_spellings_of_the_home_folder(self):
+        alias = self.home / "alias"
+        os.symlink(self.home, alias)
+        with mock.patch.object(MM, "account_home", return_value=alias):
+            g = MM.settings({}, self.home / "stx")["guard"]
+        for h in (alias, self.home):
+            self.assertTrue(g.hit(str(h / "Documents")))
+        self.assertEqual(len(g.paths), len(set(g.paths)))
 
     def test_a_fake_HOME_does_not_turn_the_defaults_on(self):
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
@@ -458,7 +661,7 @@ class ComponentTest(unittest.TestCase):
         self.tree = base / "tree"
         put(self.tree / "f1", 1000)
         put(self.tree / "sub" / "f2", 5000)
-        self.cfg = {"workspaces": [], "claude_bin": "/no/claude", "memory": {"places": [{"name": "t", "path": str(self.tree)}]}}
+        self.cfg = {"memory": {"places": [{"name": "t", "path": str(self.tree)}]}}
         self.core = Core(self.home, self.home / ".claude", COMPS)
         self.addCleanup(MM._JOBS.pop, str(self.home), None)
         self.addCleanup(self.join)
@@ -515,6 +718,12 @@ class ComponentTest(unittest.TestCase):
         with closing(self.core.ctx("memory_management", {}).db()) as db:
             return db.execute("SELECT count(*) FROM memory_management_runs").fetchone()[0]
 
+    def passes(self, cfg=None):
+        """The first pass of a process only makes the job; a measurement can start from the second."""
+        for _ in range(2):
+            res = self.core.run_pass(dict(self.cfg if cfg is None else cfg))
+        return res
+
     def test_the_component_loads_in_a_real_core_and_api_core_lists_it(self):
         want = {"name": "memory_management", "readers": 1, "actions": [], "offers": [], "reads": [], "error": None}
         self.assertIn(want, self.core.describe()["components"])
@@ -524,7 +733,7 @@ class ComponentTest(unittest.TestCase):
         self.assertIsNone(self.core.error)
 
     def test_a_pass_measures_in_the_background_and_the_route_shows_it(self):
-        res = self.core.run_pass(dict(self.cfg))
+        res = self.passes()
         self.assertEqual(res["components"]["memory_management"], {"readers": 1, "errors": []})
         self.wait()
         status, a = self.get("/api/memory")
@@ -544,7 +753,7 @@ class ComponentTest(unittest.TestCase):
     def test_a_slow_walk_does_not_block_the_pass_and_the_route_answers_before_it_is_ready(self):
         gate = self.gate()
         t = time.monotonic()
-        self.core.run_pass(dict(self.cfg))
+        self.passes()
         self.assertLess(time.monotonic() - t, 1.0)
         self.assertTrue(self.job()["thread"].is_alive())
         status, a = self.get("/api/memory")
@@ -568,7 +777,7 @@ class ComponentTest(unittest.TestCase):
         self.assertEqual(self.runs(), 1)
 
     def test_it_measures_again_only_when_the_last_one_is_older_than_every(self):
-        self.core.run_pass(dict(self.cfg))
+        self.passes()
         self.wait()
         self.job()["last_try"] -= 5 * 3600
         self.core.run_pass(dict(self.cfg))
@@ -580,23 +789,23 @@ class ComponentTest(unittest.TestCase):
         self.assertEqual(self.runs(), 2)
 
     def test_a_new_process_reads_the_age_from_the_store(self):
-        self.core.run_pass(dict(self.cfg))
+        self.passes()
         self.wait()
         MM._JOBS.pop(str(self.home))
-        self.core.run_pass(dict(self.cfg))
+        self.passes()
         self.assertIsNone(self.job()["thread"])
         self.assertLess(abs(self.job()["last_try"] - time.time()), 60)
 
     def test_no_places_means_no_measurement_and_the_route_says_why(self):
-        cfg = self.cfg = {"workspaces": [], "claude_bin": "/no/claude"}
-        self.core.run_pass(cfg)
+        self.cfg = {}
+        self.passes()
         self.assertTrue(str(self.home) not in MM._JOBS or MM._JOBS[str(self.home)]["thread"] is None)
         status, a = self.get("/api/memory")
         self.assertEqual((status, a["state"], a["idle"], a["measuring"]), (200, "never", IDLE, None))
 
     def test_a_measurement_that_fails_is_reported_and_not_retried_at_once(self):
         with mock.patch.object(W, "measure", side_effect=RuntimeError("boom")):
-            self.core.run_pass(dict(self.cfg))
+            self.passes()
             self.wait()
             self.assertEqual(self.get("/api/memory")[1]["error"], "RuntimeError: boom")
             starts = self.starts()
@@ -608,7 +817,7 @@ class ComponentTest(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             gate = self.gate()
-            self.core.run_pass(dict(self.cfg))
+            self.passes()
             shutil.rmtree(self.home)
             gate.set()
             self.wait()
@@ -625,7 +834,8 @@ class ComponentTest(unittest.TestCase):
             self.assertIsNotNone(core.error)
             status, body = self.get("/api/memory", core=core)
             starts = self.starts()
-            res = core.run_pass(dict(self.cfg))
+            for _ in range(2):
+                res = core.run_pass(dict(self.cfg))
         self.assertEqual(status, 503)
         self.assertIsInstance(body["error"], str)
         [errors] = [res["components"]["memory_management"]["errors"]]
@@ -640,8 +850,70 @@ class ComponentTest(unittest.TestCase):
         self.addCleanup(MM._JOBS.pop, str(home), None)
         core = Core(home, home / ".claude", COMPS)
         with mock.patch.dict(os.environ, {"HOME": str(home.parent)}):
-            core.run_pass({"workspaces": [], "claude_bin": "/no/claude"})
+            for _ in range(2):
+                core.run_pass({})
         self.assertTrue(str(home) not in MM._JOBS or MM._JOBS[str(home)]["thread"] is None)
+
+    def test_the_first_pass_of_a_process_never_measures(self):
+        starts = self.starts()
+        self.core.run_pass(dict(self.cfg))
+        self.assertEqual((starts, self.job()["thread"], self.runs()), ([], None, 0))
+        self.core.run_pass(dict(self.cfg))
+        self.assertEqual(len(starts), 1)
+        self.wait()
+        self.assertEqual(self.runs(), 1)
+
+    def test_a_thread_that_cannot_start_is_shown(self):
+        class NoStart(threading.Thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        self.core.run_pass(dict(self.cfg))
+        with mock.patch.object(MM.threading, "Thread", NoStart):
+            res = self.core.run_pass(dict(self.cfg))
+        self.assertEqual(res["components"]["memory_management"]["errors"], [])
+        a = self.get("/api/memory")[1]
+        self.assertEqual((a["error"], a["measuring"], a["state"]), ("RuntimeError: can't start new thread", None, "never"))
+        starts = self.starts()
+        self.core.run_pass(dict(self.cfg))
+        self.assertEqual(starts, [])
+
+    def test_a_save_that_fails_is_reported(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.object(R, "save", side_effect=RuntimeError("disk full")):
+            self.passes()
+            self.wait()
+        a = self.get("/api/memory")[1]
+        self.assertEqual((a["error"], a["state"]), ("RuntimeError: disk full", "never"))
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+    def test_a_measurement_changes_nothing_on_disk(self):
+        t, base = self.tree, self.home.parent
+        put(t / "r" / ".git" / "HEAD", 1)
+        put(t / "r" / "wt" / ".git", text="gitdir: /x/r/.git/worktrees/wt\n")
+        os.symlink(t / "f1", t / "sub" / "link")
+        os.link(t / "f1", t / "sub" / "hard")
+        put(t / "locked" / "f", 1)
+        os.chmod(t / "locked", 0)
+        self.addCleanup(os.chmod, t / "locked", 0o700)
+        self.cfg = {"memory": {"places": [{"name": "t", "path": str(t), "depth": 3, "repos": True}]}}
+
+        def look():
+            got = {}
+            for d, dirs, files in os.walk(base):
+                dirs[:] = [x for x in dirs if Path(d, x) != self.home]
+                for name in dirs + files:
+                    st = os.lstat(os.path.join(d, name))
+                    got[os.path.join(d, name)] = (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ino, st.st_nlink)
+            return got
+        before = look()
+        self.passes()
+        self.wait()
+        self.assertEqual(look(), before)
+        self.assertEqual(len(before), 12)      # the file in the locked folder cannot be listed
+        a = self.get("/api/memory")[1]
+        self.assertIn(("worktree", str(t / "r" / "wt")), [(f["kind"], f["path"]) for f in a["folders"]])
+        self.assertIn({"path": str(t / "locked"), "reason": "permission denied"}, a["not_measured"])
 
     def test_other_paths_and_methods_are_not_ours(self):
         self.assertEqual(self.get("/api/memoryx")[0], 404)
@@ -662,7 +934,9 @@ class ComponentTest(unittest.TestCase):
         for f in (COMPS / "memory_management").glob("*.py"):
             text = f.read_text().replace("os.open(", "")
             for bad in ("os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "shutil", "os.chmod", "open(",
-                        ".write_text", ".unlink(", ".mkdir(", "subprocess"):
+                        ".write_text", ".unlink(", ".mkdir(", "subprocess", "os.truncate", "os.utime", "os.symlink",
+                        "os.link(", "os.mkdir", "os.makedirs", ".touch(", ".rename(", ".replace(", "O_WRONLY",
+                        "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"):
                 self.assertNotIn(bad, text, f.name)
 
 

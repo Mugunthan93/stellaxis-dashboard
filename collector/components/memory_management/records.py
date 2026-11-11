@@ -34,19 +34,24 @@ def save(db: sqlite3.Connection, run: dict, result: dict) -> None:
 
 
 def last(db: sqlite3.Connection) -> dict | None:
-    r = db.execute("SELECT * FROM memory_management_runs ORDER BY id DESC LIMIT 1").fetchone()
-    if r is None:
-        return None
-    disk = None if r["disk_path"] is None else {"path": r["disk_path"], "total": r["disk_total"], "free": r["disk_free"]}
-    return {
-        "run": {"started_at": r["started_at"], "finished_at": r["finished_at"], "seconds": r["seconds"],
-                "complete": bool(r["complete"]), "note": r["note"], "disk": disk, "files": r["files"],
-                "skipped": r["skipped"]},
-        "rows": [dict(x) for x in db.execute(
-            f"SELECT {', '.join(ROW)} FROM memory_management_folders WHERE run = ? ORDER BY rowid", (r["id"],))],
-        "skipped": [dict(x) for x in db.execute(
-            "SELECT path, reason FROM memory_management_skipped WHERE run = ? ORDER BY rowid", (r["id"],))],
-    }
+    db.execute("BEGIN")             # one read transaction: a save between the reads cannot split a run from its rows
+    try:
+        r = db.execute("SELECT * FROM memory_management_runs ORDER BY id DESC LIMIT 1").fetchone()
+        if r is None:
+            return None
+        disk = None if r["disk_path"] is None else {"path": r["disk_path"], "total": r["disk_total"],
+                                                    "free": r["disk_free"]}
+        return {
+            "run": {"started_at": r["started_at"], "finished_at": r["finished_at"], "seconds": r["seconds"],
+                    "complete": bool(r["complete"]), "note": r["note"], "disk": disk, "files": r["files"],
+                    "skipped": r["skipped"]},
+            "rows": [dict(x) for x in db.execute(
+                f"SELECT {', '.join(ROW)} FROM memory_management_folders WHERE run = ? ORDER BY rowid", (r["id"],))],
+            "skipped": [dict(x) for x in db.execute(
+                "SELECT path, reason FROM memory_management_skipped WHERE run = ? ORDER BY rowid", (r["id"],))],
+        }
+    finally:
+        db.rollback()
 
 
 def last_finished_ts(db: sqlite3.Connection) -> float | None:

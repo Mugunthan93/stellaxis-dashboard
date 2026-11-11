@@ -28,13 +28,16 @@ DEFAULT_PLACES = [
     ("android", "~/.android", "none", 1, False),
     ("caches", "~/Library/Caches", "none", 1, False),
     ("homebrew", "/opt/homebrew", "none", 1, False),
+    ("applications", "/Applications", "none", 1, False),
     ("local", "~/.local", "none", 2, False),
 ] + [(n, p, "none", 1, False) for n, p in [
     ("pnpm", "~/Library/pnpm"), ("npm", "~/.npm"), ("bun", "~/.bun"), ("yarn", "~/.yarn"), ("cache", "~/.cache"),
     ("rustup", "~/.rustup"), ("cargo", "~/.cargo"), ("m2", "~/.m2"), ("gradle", "~/.gradle"),
     ("cocoapods", "~/.cocoapods"), ("nvm", "~/.nvm"), ("ollama", "~/.ollama"), ("docker", "~/.docker"),
     ("vscode", "~/.vscode")]]
-IDLE = "no places to measure: the Stellaxis data folder is outside the home folder and config names no places"
+IDLE = ("no places to measure: the Stellaxis data folder is not .stellaxis in the account's home folder, "
+        "and config names no places")
+ALL_OFF = "no places to measure: config turned every place off"
 _JOBS: dict = {}
 _LOCK = threading.Lock()
 
@@ -55,36 +58,43 @@ def settings(cfg: dict, stx_home) -> dict:
     m = m if isinstance(m, dict) else {}
     home = account_home()
 
-    def expand(p: str) -> str:
-        return os.path.abspath(str(home / p[2:]) if p.startswith("~/") else str(home) if p == "~" else p)
+    def expand(p: str):
+        """An absolute path, or None: a path that is not absolute after ~ is expanded is dropped."""
+        p = str(home / p[2:]) if p.startswith("~/") else str(home) if p == "~" else p
+        return os.path.normpath(p) if os.path.isabs(p) else None
 
-    top, here = os.path.realpath(home).rstrip(os.sep), os.path.realpath(stx_home)
-    inside = here == top or here.startswith(top + os.sep)
+    on = os.path.realpath(stx_home) == os.path.realpath(home / ".stellaxis")
     places: dict = {}
-    if inside:
+    if on:
         for name, path, owner, depth, repos in DEFAULT_PLACES:
-            path = (os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude" if name == "claude"
-                    else str(stx_home) if name == "stellaxis" else path)
-            places[name] = {"name": name, "path": expand(path), "owner": owner, "depth": depth, "repos": repos}
+            path = expand(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude" if name == "claude"
+                          else str(stx_home) if name == "stellaxis" else path)
+            if path:
+                places[name] = {"name": name, "path": path, "owner": owner, "depth": depth, "repos": repos}
     given = m.get("places")
     for e in given if isinstance(given, list) else []:
         if not isinstance(e, dict) or not isinstance(e.get("name"), str):
             continue
         if e.get("off") is True:
             places.pop(e["name"], None)
-        elif isinstance(e.get("path"), str):
-            depth = e.get("depth")
+        elif isinstance(e.get("path"), str) and expand(e["path"]):
+            was, depth = places.get(e["name"], {"owner": "none", "depth": 1, "repos": False}), e.get("depth")
             places[e["name"]] = {
                 "name": e["name"], "path": expand(e["path"]),
-                "owner": e["owner"] if isinstance(e.get("owner"), str) else "none",
-                "depth": depth if isinstance(depth, int) and not isinstance(depth, bool) and 0 <= depth <= 6 else 1,
-                "repos": e.get("repos") is True}
+                "owner": e["owner"] if isinstance(e.get("owner"), str) else was["owner"],
+                "depth": depth if isinstance(depth, int) and not isinstance(depth, bool) and 0 <= depth <= 6
+                else was["depth"],
+                "repos": e["repos"] if isinstance(e.get("repos"), bool) else was["repos"]}
     extra = m.get("guarded")
-    guard = walk.Guard([str(home / g) for g in walk.GUARDED_HOME] + walk.GUARDED_ABS
-                       + [expand(g) for g in (extra if isinstance(extra, list) else []) if isinstance(g, str)])
+    homes = dict.fromkeys([str(home), os.path.realpath(home)])
+    guard = walk.Guard(list(dict.fromkeys([os.path.join(h, g) for h in homes for g in walk.GUARDED_HOME]
+                                          + walk.GUARDED_ABS
+                                          + [expand(g) for g in (extra if isinstance(extra, list) else [])
+                                             if isinstance(g, str) and expand(g)])))
     return {"every": max(60.0, duration(m.get("every"), 6 * 3600)),
             "max_seconds": max(1.0, duration(m.get("max_seconds"), 900)),
-            "places": list(places.values()), "guard": guard, "idle": None if places else IDLE}
+            "places": list(places.values()), "guard": guard,
+            "idle": None if places else ALL_OFF if on else IDLE}
 
 
 def _measure(ctx, s: dict, job: dict) -> None:
@@ -113,8 +123,10 @@ def measure_reader(ctx) -> None:
     if not s["places"]:
         return
     with _LOCK:
-        job = _JOBS.setdefault(str(ctx.home), {"thread": None, "started_at": None, "progress": {},
-                                               "last_try": None, "error": None})
+        job = _JOBS.get(str(ctx.home))
+        if job is None:     # the first pass of a process only makes the job: a one-pass process never measures
+            _JOBS[str(ctx.home)] = {"thread": None, "started_at": None, "progress": {}, "last_try": None, "error": None}
+            return
         if job["thread"] is not None and job["thread"].is_alive():
             return
         if job["last_try"] is None:
@@ -123,8 +135,12 @@ def measure_reader(ctx) -> None:
         if job["last_try"] is not None and time.time() - job["last_try"] < s["every"]:
             return
         job["last_try"], job["started_at"], job["progress"] = time.time(), now_iso(), {}
-        job["thread"] = threading.Thread(target=_measure, args=(ctx, s, job), name="memory-measure", daemon=True)
-        job["thread"].start()
+        t = threading.Thread(target=_measure, args=(ctx, s, job), name="memory-measure", daemon=True)
+        try:
+            t.start()
+            job["thread"] = t
+        except Exception as e:      # shown on the route; tried again after `every`
+            job["error"] = f"{type(e).__name__}: {e}"
 
 
 def answer(ctx) -> dict:

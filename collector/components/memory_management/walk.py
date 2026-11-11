@@ -1,5 +1,6 @@
 """The walker: measures folder sizes, read only. It never follows a symlink, never enters another volume and never
-opens a guarded folder. No recursion (a thread on macOS has a small C stack); one lstat per entry."""
+opens a guarded folder. No recursion (a thread on macOS has a small C stack); one lstat per entry, and one more per
+folder just before it is opened."""
 from __future__ import annotations
 
 import fnmatch
@@ -19,14 +20,20 @@ DEPS = {"node_modules", "Pods", "bower_components"}
 BUILD = {"dist", "build", ".next", ".nuxt", ".output", "out", "target", ".turbo", ".parcel-cache", ".svelte-kit",
          ".expo", ".angular", "DerivedData", ".gradle", "coverage"}
 MAX_SKIPPED = 200
+GUARDED = "guarded by macOS"     # left out by design: not a failure, the folders above stay "ok"
 LABELLED = {"deps", "venv", "build", "git"}      # nothing below these gets a kind of its own
 scandir = os.scandir            # the walker calls walk.scandir(path); tests replace it
 
 
 class Guard:
+    """By path text (touches no disk), and after resolve() also by folder identity (st_dev, st_ino)."""
+
     def __init__(self, paths: list[str]):
+        self.paths = list(paths)
         self.exact: set = set()
         self.patterns: dict = {}
+        self.ids: set = set()
+        self.names: dict = {}           # (dev, ino) of a folder: the casefolded name patterns guarded inside it
         for p in paths:
             parent, name = os.path.split(p.casefold().rstrip("/") or "/")
             if "*" in name or "?" in name:
@@ -48,27 +55,73 @@ class Guard:
             p = parent
         return True
 
+    def resolve(self) -> None:
+        """lstat each guarded folder (and each pattern's parent) once; never one inside a folder guarded by text."""
+        self.ids, self.names = set(), {}
+        for p in self.paths:
+            parent, name = os.path.split(p.rstrip("/") or "/")
+            pattern = "*" in name or "?" in name
+            if self.under(parent):
+                continue
+            try:
+                st = os.lstat(parent if pattern else p)
+            except OSError:
+                continue
+            if pattern:
+                self.names.setdefault((st.st_dev, st.st_ino), []).append(name.casefold())
+            else:
+                self.ids.add((st.st_dev, st.st_ino))
+
+    def same(self, st, parent, name: str) -> bool:
+        """By identity: st is the folder's lstat, parent the (dev, ino) of the folder it is in."""
+        return ((st.st_dev, st.st_ino) in self.ids
+                or any(fnmatch.fnmatchcase(name.casefold(), pat) for pat in self.names.get(parent, ())))
+
+    def inside(self, path: str) -> bool:
+        """By identity, for a place: lstat / and each folder down to path, stopping at the first guarded one."""
+        chain = [path]
+        while os.path.dirname(chain[-1]) != chain[-1]:
+            chain.append(os.path.dirname(chain[-1]))
+        parent = None
+        for p in reversed(chain):
+            try:
+                st = os.lstat(p)
+            except OSError:
+                return False
+            if self.same(st, parent, os.path.basename(p)):
+                return True
+            parent = (st.st_dev, st.st_ino)
+        return False
+
 
 class _Node:
-    __slots__ = ("path", "depth", "kind", "labelled", "above", "bytes", "logical", "linked", "files", "changed",
-                 "partial", "pending")
+    __slots__ = ("path", "depth", "kind", "labelled", "above", "key", "bytes", "logical", "linked", "files",
+                 "changed", "partial", "pending")
 
     def __init__(self, path: str, depth: int, st, kind, labelled: bool, above):
         self.path, self.depth, self.kind, self.labelled, self.above = path, depth, kind, labelled, above
+        self.key = (st.st_dev, st.st_ino)
         self.bytes, self.logical, self.linked, self.files = st.st_blocks * 512, 0, 0, 0
         self.changed, self.partial, self.pending = st.st_mtime, False, None
+
+
+def _when(t: float):
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _row(path: str, parent, place: dict, kind: str, state: str, n=None) -> dict:
     return {"path": path, "parent": parent, "place": place["name"], "kind": kind, "owner": place["owner"],
             "state": state, "bytes": n.bytes if n else 0, "logical_bytes": n.logical if n else 0,
             "linked_bytes": n.linked if n else 0, "files": n.files if n else 0,
-            "changed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(n.changed)) if n else None}
+            "changed_at": _when(n.changed) if n else None}
 
 
 def _worktree_file(path: str) -> bool:
     try:
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             return b"/worktrees/" in os.read(fd, 512)
         finally:
@@ -83,12 +136,14 @@ class _Run:
         self.seen: set = set()
         self.skipped: list = []
         self.skipped_count = 0
+        self.troubles = 0               # skips for any reason but GUARDED
         self.files = 0
         self.timeout = False
         self.dev = self.depth = self.repos = None       # of the place being walked
 
     def skip(self, path: str, reason: str) -> None:
         self.skipped_count += 1
+        self.troubles += reason != GUARDED
         if len(self.skipped) < MAX_SKIPPED:
             self.skipped.append({"path": path, "reason": reason})
 
@@ -104,8 +159,13 @@ class _Run:
             n.partial = True
         else:
             try:
-                with scandir(n.path) as it:
-                    entries = sorted(it, key=lambda e: e.name)
+                now = os.lstat(n.path) if n.depth else None      # the folder its parent listed, still?
+                if now is not None and (not stat.S_ISDIR(now.st_mode) or (now.st_dev, now.st_ino) != n.key):
+                    self.skip(n.path, "changed during the walk")
+                    n.partial = True
+                else:
+                    with scandir(n.path) as it:
+                        entries = sorted(it, key=lambda e: e.name)
             except FileNotFoundError:
                 pass
             except PermissionError:
@@ -133,9 +193,8 @@ class _Run:
                 if st.st_dev != self.dev:
                     self.skip(e.path, "another volume")
                     n.partial = True
-                elif self.guard.hit(e.path):
-                    self.skip(e.path, "guarded by macOS")
-                    n.partial = True
+                elif self.guard.hit(e.path) or self.guard.same(st, n.key, name):
+                    self.skip(e.path, GUARDED)
                 else:
                     n.pending.append((e.path, st))
                 continue
@@ -201,33 +260,45 @@ class _Run:
 
 def measure(places: list[dict], guard: Guard, deadline: float, progress: dict) -> dict:
     run, rows, taken = _Run(guard, deadline, progress), [], []
+    guard.resolve()
     for p in places:
-        real = os.path.realpath(p["path"])
-        if not os.path.exists(p["path"]):
-            rows.append(_row(real, None, p, "place", "missing"))
-            continue
+        real, start = p["path"], len(rows)
         try:
-            st = os.lstat(real)
-        except OSError:
-            st = None
-        overlap = next((name for path, name in taken if real == path or real.startswith(path + os.sep)
-                        or path.startswith(real + os.sep)), None)
-        reason = ("guarded by macOS" if guard.under(real) or guard.under(p["path"])
-                  else "not a folder" if st is None or not stat.S_ISDIR(st.st_mode)
-                  else f"overlaps {overlap}" if overlap else None)
-        if reason:
-            run.skip(real, reason)
-            rows.append(_row(real, None, p, "place", "refused"))
-            continue
-        taken.append((real, p["name"]))
-        if run.late():
-            rows.append(_row(real, None, p, "place", "not_reached"))
-            continue
-        progress["place"] = p["name"]
-        run.dev, run.depth, run.repos = st.st_dev, p["depth"], p["repos"]
-        for n in run.walk(_Node(real, 0, st, "place", False, None)):
-            rows.append(_row(n.path, n.above, p, n.kind, "partial" if n.partial else "ok", n))
-        if run.timeout:
-            run.skip(real, "time limit")
+            if guard.under(real):           # by text, before anything on disk is touched
+                run.skip(real, GUARDED)
+                rows.append(_row(real, None, p, "place", "refused"))
+                continue
+            real = os.path.realpath(p["path"])
+            if not os.path.exists(p["path"]):
+                rows.append(_row(real, None, p, "place", "missing"))
+                continue
+            try:
+                st = os.lstat(real)
+            except OSError:
+                st = None
+            low = real.casefold()
+            overlap = next((name for path, name in taken if any(a == b or a.startswith(b.rstrip(os.sep) + os.sep)
+                                                                for a, b in ((low, path), (path, low)))), None)
+            reason = (GUARDED if guard.under(real) or guard.inside(real)
+                      else "not a folder" if st is None or not stat.S_ISDIR(st.st_mode)
+                      else f"overlaps {overlap}" if overlap else None)
+            if reason:
+                run.skip(real, reason)
+                rows.append(_row(real, None, p, "place", "refused"))
+                continue
+            taken.append((low, p["name"]))
+            if run.late():
+                rows.append(_row(real, None, p, "place", "not_reached"))
+                continue
+            progress["place"] = p["name"]
+            run.dev, run.depth, run.repos = st.st_dev, p["depth"], p["repos"]
+            for n in run.walk(_Node(real, 0, st, "place", False, None)):
+                rows.append(_row(n.path, n.above, p, n.kind, "partial" if n.partial else "ok", n))
+            if run.timeout:
+                run.skip(real, "time limit")
+        except Exception as e:          # one place that fails does not lose the others
+            del rows[start:]
+            run.skip(real, f"{type(e).__name__}: {e}")
+            rows.append(_row(real, None, p, "place", "failed"))
     return {"rows": rows, "skipped": run.skipped, "skipped_count": run.skipped_count, "files": run.files,
-            "complete": not run.timeout and run.skipped_count == 0, "note": "time limit" if run.timeout else None}
+            "complete": not run.timeout and run.troubles == 0, "note": "time limit" if run.timeout else None}
