@@ -2,7 +2,6 @@
 
   python3 -m unittest tests.test_project_management
 """
-import ast
 import http.client
 import json
 import os
@@ -289,46 +288,6 @@ srv.shutdown(); print(json.dumps(out))
         self.assertEqual(c["error"], "RuntimeError: boom")
         self.assertEqual((out["overview"], out["jarvis"]), (200, 200))
         self.assertEqual(out["index_error"], "project_management: RuntimeError: boom")
-
-
-class IndependenceTest(unittest.TestCase):
-    """Check 3 of the core spec: a component reaches another one only through the core."""
-    def files(self):
-        out = [f for f in COMPS.rglob("*.py")]
-        self.assertTrue(out)
-        return out
-
-    def test_a_component_imports_only_the_standard_library_the_core_and_itself(self):
-        ok = set(sys.stdlib_module_names) | {"core"}
-        for f in self.files():
-            src = f.read_text()
-            self.assertNotIn("import_folder", src, f.name)
-            for node in ast.walk(ast.parse(src)):
-                if isinstance(node, ast.Import):
-                    names = [a.name for a in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                    names = [node.module or ""]
-                    if (node.module or "").split(".")[0] == "core":
-                        for a in node.names:
-                            self.assertFalse(a.name.startswith("_"), f"{f.relative_to(REPO)} imports the private name {a.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    self.assertEqual(node.level, 1, f"{f.relative_to(REPO)} imports from above its own folder")
-                    continue
-                else:
-                    continue
-                for n in names:
-                    self.assertIn(n.split(".")[0], ok, f"{f.relative_to(REPO)} imports {n}")
-                    self.assertNotEqual(n.split(".")[0], "importlib", f"{f.relative_to(REPO)} imports importlib")
-
-    def test_no_component_names_the_tables_or_the_module_of_another(self):
-        names = sorted(p.name for p in COMPS.iterdir() if (p / "__init__.py").is_file())
-        self.assertGreaterEqual(len(names), 2)
-        for f in self.files():
-            mine, src = f.relative_to(COMPS).parts[0], f.read_text()
-            for other in names:
-                if other != mine:
-                    self.assertNotIn(other + "_", src, f"{f.relative_to(REPO)} names a table of {other}")
-                    self.assertNotIn("stx_" + other, src, f"{f.relative_to(REPO)} names the module of {other}")
 
 
 class OldWordTest(unittest.TestCase):

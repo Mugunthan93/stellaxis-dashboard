@@ -1,24 +1,48 @@
 # Stellaxis
 
-Measures what Claude loads into every session, what actually gets used, and what it costs. Then it
-helps you trim it safely.
+Stellaxis runs on this Mac. It measures what Claude loads into every session, what gets used, and what
+it costs. It helps you trim that setup safely. It also manages every project in `~/code` and measures
+the disk space of this Mac.
+
+## How it is built
+
+Stellaxis is one **core** and a few **components**. The words come from `CONTEXT.md`.
+
+- The core runs the readers, keeps the store, runs the actions and serves the pages.
+- A component is one idea of the owner. Each component has three parts:
+  - **readers** read a source on the Mac and never change it;
+  - **records** are what the component knows, kept in the store; only the owner writes them;
+  - **actions** are what it can do; an action shows a dry run first, and every applied action is logged.
+- One component reads another's records only through what the other offers. It never reads the other's source.
+- The **store** is one SQLite file, `~/.stellaxis/stellaxis.db`. Each component has its own tables.
+- The **ways in** reach the core: the pages on localhost, `prune.py`, the desktop MCP tool, Jarvis.
+- The core runs with no component. Remove one component folder and the rest still runs.
+
+The components today:
+
+| Component | What it does | What it reads from another component |
+|---|---|---|
+| Claude management | Reads the transcripts and the Claude setup, prices the use, writes `snapshot.json`. Archives and moves items, saves settings files. | The list of repos, from Project management. |
+| Project management | Finds the repos and sessions, groups them into projects, writes `projects.json`. Runs the command centre (tasks, approvals, sessions, tests). Moves a project folder (`relocate`). | The cost of each session, from Claude management. |
+| Memory management | Measures where the disk space goes, in the background. Read only. | Nothing. |
 
 ```
  Mac
- ┌────────────────────────────────────────────┐
- │ collect.py serve   (launchd, every 1m)     │
- │   ~/.claude  ~/.claude.json  repos/.claude │
- │   ~/.claude/projects/**/*.jsonl  (incr.)   │
- │        │                                   │
- │        ▼                                   │
- │   ~/.stellaxis/snapshot.json + history     │
- │        │                    │              │
- │        ▼                    ▼              │
- │ localhost:7777       mcp_server.py ──────► Claude desktop app
- │ (any browser)        (desktop only)        └─► Stellaxis artifact (live)
- │                                            │
- │ prune.py  archive · move · restore ◄── stellaxis-auditor agent / skill
- └────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────┐
+ │ collect.py serve   (launchd, every 1m)                 │
+ │   core: one pass, in rounds, runs every reader         │
+ │     Claude management   ─► snapshot.json, history      │
+ │     Project management  ─► projects.json               │
+ │     Memory management   ─► disk sizes (every 6h)       │
+ │   store: ~/.stellaxis/stellaxis.db                     │
+ │        │                                               │
+ │        ▼                                               │
+ │ localhost:7777       mcp_server.py ──► Claude desktop app
+ │ (any browser)        (desktop only)    └─► Stellaxis artifact
+ │                                                        │
+ │ prune.py  list · archive · move · relocate · restore   │
+ │      ◄── stellaxis-auditor agent / skill               │
+ └────────────────────────────────────────────────────────┘
 ```
 
 ## Install (macOS)
@@ -77,28 +101,66 @@ runs inside the folder or while the desktop app is open (quit it and run from Te
 files that still mention the old path without editing them.
 
 Archives live in `~/.claude/_archive/<stamp>/` with a manifest. Plugins are disabled, not uninstalled.
-JSON configs are backed up before edits.
+JSON configs are backed up before edits. A save on the Settings page also writes a manifest there, so
+`prune.py archives` lists it and `restore` can undo it.
 
 ## Layout
 
 ```
-collector/collect.py     inventory + incremental usage parser + snapshot + local server
-collector/prune.py       archive / move / restore / purge (dry run by default)
-collector/mcp_server.py  stdio MCP server, one read-only tool: stellaxis_snapshot
-collector/install.sh     macOS service + desktop MCP registration
-collector/settings_api.py  /api/settings: read, diff, back up and save Claude settings.json files
-collector/components/project_management/  command centre: project index, sessions, tasks, approvals, plans, tests
-collector/approval_hook.py  PermissionRequest hook behind "Approve from page"
-dashboard/index.html     dashboard (same file is the artifact and the localhost page)
-dashboard/home.html      Home: what needs you, what is running, what isn't backed up (localhost only)
-dashboard/project.html  Project: sessions, tasks, plans, routines, tests (localhost only)
-dashboard/hierarchy.html  Hierarchy page (same file is the artifact and the localhost page)
-dashboard/settings.html  Settings page: edit user / project / local settings.json (localhost only)
-dashboard/shell.html     sidebar every localhost page sits in
-reels/                   Reel Brain code, shown at /reels/
-skills/stellaxis/        plugin skill
-agents/                  plugin agent: stellaxis-auditor
-tests/                   fake-HOME tests, end to end (python3 -m unittest discover -s tests)
+collector/core/           the core; it imports nothing outside itself
+  app.py                  Core and Ctx: run a pass, run an action, read an offer
+  component.py            the Component contract; loads every component folder
+  store.py                the one SQLite file; a component makes only its own tables
+  transcripts.py          the shared transcript helper; keeps cache.json
+  undo.py                 Plan (dry run and manifest) and restore
+  server.py               the routes of the core, and how a component's route is reached
+  util.py                 small helpers and the one clock
+collector/components/claude_management/
+  __init__.py             the component: readers, records, offers, actions, routes
+  usage.py                what each transcript line adds; one row per session
+  setup.py                the Claude setup: skills, agents, commands, plugins, MCP servers, CLAUDE.md
+  snapshot.py             joins setup and use, prices them, writes the totals
+  records.py              its tables: sessions and items
+  trim.py                 the actions archive and move
+  settings.py             the /api/settings routes and the action save_settings
+collector/components/project_management/
+  __init__.py             the component: readers, records, offers, actions, routes
+  repos.py                finds the repos of this Mac
+  records.py              its tables: repos and the project index
+  centre.py               the command centre: index, tasks, approvals, sessions, plans, tests
+  relocate.py             the action relocate: move a project folder
+  old_names.py            the old names that still answer, until the rename is applied
+collector/components/memory_management/
+  __init__.py             the component: the reader, records and GET /api/memory
+  walk.py                 measures folder sizes, read only
+  records.py              its tables: runs, folders, skipped
+collector/collect.py      a way in: runs a collection, serves the pages on localhost
+collector/prune.py        a way in: the command line for list, archive, move, relocate, restore, purge
+collector/mcp_server.py   a way in: stdio MCP server for the desktop app, one read-only tool
+collector/install.sh      macOS service and desktop MCP registration
+dashboard/index.html      Overview (same file is the artifact and the localhost page)
+dashboard/hierarchy.html  Hierarchy (same file is the artifact and the localhost page)
+dashboard/home.html       Home: the voice-only Jarvis portal (localhost only)
+dashboard/project.html    Project: sessions, tasks, plans, routines, tests (localhost only)
+dashboard/settings.html   Settings: edit user, project and local settings.json (localhost only)
+dashboard/skills.html     Skill Library catalog
+dashboard/shell.html      the sidebar every localhost page sits in
+skills/stellaxis/         plugin skill
+agents/                   plugin agents: stellaxis-auditor, jarvis
+tests/                    fake-HOME tests (python3 -m unittest discover -s tests)
+```
+
+These files run today and are in no component yet:
+
+```
+collector/unplaced/jarvis.py   the Jarvis routes: briefing, ask, hear, say, hush
+collector/approval_hook.py     the PermissionRequest hook behind "Approve from page"
+collector/cloud_import.py      turns a cloud session listing into cloud.json
+collector/settings_remote.py   Mac side of the Claude Settings Remote artifact
+collector/perm_usage.py        maps each permission rule to the sessions it covers
+collector/jarvis_portal.sh     opens the Jarvis portal full-screen
+reels/                         Reel Brain code, shown at /reels/
+skills_library/                the Skill Library: harvest and install skills
 ```
 
 ## Decisions (2026-10-08)
