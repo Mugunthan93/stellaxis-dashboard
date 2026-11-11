@@ -2,12 +2,19 @@
 
   python3 -m unittest tests.test_memory_management
 """
+import ast
+import contextlib
+import http.client
 import inspect
+import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -367,6 +374,282 @@ class RecordsTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.save(self.run_(), result)
         self.assertIsNone(self.last())
+
+
+ISO = r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$"
+IDLE = "no places to measure: the Stellaxis data folder is outside the home folder and config names no places"
+KEYS = {"state", "measured_at", "started_at", "seconds", "complete", "note", "measuring", "disk", "places", "folders",
+        "elsewhere_bytes", "not_measured", "not_measured_count", "idle", "error"}
+
+
+class SettingsTest(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def inside(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        env["HOME"] = str(self.home)
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_defaults_are_off_when_the_data_folder_is_outside_the_home_folder(self):
+        s = MM.settings({}, self.home / "stx")
+        self.assertEqual(s["places"], [])
+        self.assertEqual(s["idle"], IDLE)
+        self.assertEqual((s["every"], s["max_seconds"]), (21600, 900))
+
+    def test_defaults_are_on_inside_the_home_folder(self):
+        self.inside()
+        s = MM.settings({}, self.home / ".stellaxis")
+        names = [p["name"] for p in s["places"]]
+        self.assertEqual(names[:4], ["code", "claude", "claude_app", "stellaxis"])
+        self.assertIn("homebrew", names)
+        self.assertEqual(s["places"][0], {"name": "code", "path": str(self.home / "code"),
+                                          "owner": "project_management", "depth": 1, "repos": True})
+        self.assertEqual(s["places"][1]["path"], str(self.home / ".claude"))
+        self.assertEqual(s["places"][3]["path"], str(self.home / ".stellaxis"))
+        self.assertIsNone(s["idle"])
+        for p in (self.home / "Documents", self.home / "Library" / "Caches" / "com.apple.Safari", "/Volumes"):
+            self.assertTrue(s["guard"].hit(str(p)))
+
+    def test_config_places_add_replace_and_remove(self):
+        self.inside()
+        cfg = {"memory": {"places": [
+            {"name": "chrome", "path": "~/Library/Application Support/Google"},
+            {"name": "code", "path": "~/work", "depth": 2, "repos": True, "owner": "project_management"},
+            {"name": "homebrew", "off": True}], "guarded": ["~/Private"]}}
+        s = MM.settings(cfg, self.home / ".stellaxis")
+        names = [p["name"] for p in s["places"]]
+        self.assertEqual(names[0], "code")
+        self.assertEqual((s["places"][0]["path"], s["places"][0]["depth"]), (str(self.home / "work"), 2))
+        self.assertEqual(s["places"][-1], {"name": "chrome", "path": str(self.home / "Library/Application Support/Google"),
+                                           "owner": "none", "depth": 1, "repos": False})
+        self.assertNotIn("homebrew", names)
+        self.assertTrue(s["guard"].hit(str(self.home / "Private")))
+
+    def test_bad_config_falls_back(self):
+        out = self.home / "stx"
+        for cfg in ({"memory": 5}, {"memory": {"every": "soon", "max_seconds": [], "places": "x", "guarded": 7}}):
+            s = MM.settings(cfg, out)
+            self.assertEqual((s["every"], s["max_seconds"], s["places"]), (21600, 900, []))
+        s = MM.settings({"memory": {"places": [3, {"name": "a"}, {"path": "/x"},
+                                               {"name": "ok", "path": str(self.home), "depth": "x"}]}}, out)
+        self.assertEqual([(p["name"], p["depth"]) for p in s["places"]], [("ok", 1)])
+
+    def test_durations(self):
+        for text, want in (("90s", 90), ("15m", 900), ("6h", 21600), ("2d", 172800), (120, 120), ("x", 7), (None, 7)):
+            self.assertEqual(MM.duration(text, 7), want)
+        self.assertEqual(MM.settings({"memory": {"every": "1s"}}, self.home / "stx")["every"], 60)
+
+
+class ComponentTest(unittest.TestCase):
+    def setUp(self):
+        base = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        self.home = base / "stx"
+        self.home.mkdir()
+        self.tree = base / "tree"
+        put(self.tree / "f1", 1000)
+        put(self.tree / "sub" / "f2", 5000)
+        self.cfg = {"workspaces": [], "claude_bin": "/no/claude", "memory": {"places": [{"name": "t", "path": str(self.tree)}]}}
+        self.core = Core(self.home, self.home / ".claude", COMPS)
+        self.addCleanup(MM._JOBS.pop, str(self.home), None)
+        self.addCleanup(self.join)
+        self.srv = None
+
+    def job(self):
+        return MM._JOBS[str(self.home)]
+
+    def join(self):
+        job = MM._JOBS.get(str(self.home))
+        if job and job["thread"]:
+            job["thread"].join(20)
+
+    def wait(self):
+        self.job()["thread"].join(20)
+        self.assertFalse(self.job()["thread"].is_alive())
+
+    def gate(self):
+        gate, real = threading.Event(), W.scandir
+        patch = mock.patch.object(W, "scandir", lambda p: (gate.wait(20), real(p))[1])
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(gate.set)    # runs before the join in setUp
+        return gate
+
+    def serve(self, core):
+        srv = server.serve(core, 0, self.cfg)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    def get(self, path, method="GET", core=None):
+        if core is not None or self.srv is None:
+            srv = self.serve(core or self.core)
+            self.srv = srv if core is None else self.srv
+        else:
+            srv = self.srv
+        with closing(http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)) as conn:
+            conn.request(method, path)
+            r = conn.getresponse()
+            body = r.read()
+            return r.status, json.loads(body) if r.getheader("Content-Type") == "application/json" else body
+
+    def starts(self):
+        starts, real = [], threading.Thread
+        patch = mock.patch.object(MM.threading, "Thread", side_effect=lambda *a, **k: (
+            starts.append(1) if k.get("name") == "memory-measure" else None, real(*a, **k))[1])
+        patch.start()
+        self.addCleanup(patch.stop)
+        return starts
+
+    def runs(self):
+        with closing(self.core.ctx("memory_management", {}).db()) as db:
+            return db.execute("SELECT count(*) FROM memory_management_runs").fetchone()[0]
+
+    def test_the_component_loads_in_a_real_core_and_api_core_lists_it(self):
+        want = {"name": "memory_management", "readers": 1, "actions": [], "offers": [], "reads": [], "error": None}
+        self.assertIn(want, self.core.describe()["components"])
+        status, body = self.get("/api/core")
+        self.assertEqual(status, 200)
+        self.assertIn(want, body["components"])
+        self.assertIsNone(self.core.error)
+
+    def test_a_pass_measures_in_the_background_and_the_route_shows_it(self):
+        res = self.core.run_pass(dict(self.cfg))
+        self.assertEqual(res["components"]["memory_management"], {"readers": 1, "errors": []})
+        self.wait()
+        status, a = self.get("/api/memory")
+        self.assertEqual((status, a["state"], a["complete"]), (200, "measured", True))
+        [p] = a["places"]
+        self.assertEqual((p["path"], p["logical_bytes"], p["files"], p["state"]), (str(self.tree), 6000, 2, "ok"))
+        self.assertEqual([f["path"] for f in a["folders"]], [str(self.tree / "sub")])
+        self.assertIsNone(a["measuring"])
+        self.assertIsNone(a["error"])
+        self.assertIsNone(a["idle"])
+        self.assertEqual(a["disk"]["used"], a["disk"]["total"] - a["disk"]["free"])
+        self.assertEqual(a["elsewhere_bytes"], a["disk"]["used"] - p["bytes"])
+        self.assertEqual(a["not_measured"], [])
+        self.assertRegex(a["measured_at"], ISO)
+        self.assertEqual(set(a), KEYS)
+
+    def test_a_slow_walk_does_not_block_the_pass_and_the_route_answers_before_it_is_ready(self):
+        gate = self.gate()
+        t = time.monotonic()
+        self.core.run_pass(dict(self.cfg))
+        self.assertLess(time.monotonic() - t, 1.0)
+        self.assertTrue(self.job()["thread"].is_alive())
+        status, a = self.get("/api/memory")
+        self.assertEqual((status, a["state"], a["measured_at"], a["places"]), (200, "never", None, []))
+        self.assertRegex(a["measuring"]["started_at"], ISO)
+        self.assertEqual(a["measuring"]["files"], 0)
+        gate.set()
+        self.wait()
+        self.assertEqual(self.get("/api/memory")[1]["state"], "measured")
+
+    def test_a_second_pass_does_not_start_a_second_measurement(self):
+        gate = self.gate()
+        starts = self.starts()
+        for _ in range(3):
+            self.core.run_pass(dict(self.cfg))
+        self.assertEqual(len(starts), 1)
+        gate.set()
+        self.wait()
+        self.core.run_pass(dict(self.cfg))
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(self.runs(), 1)
+
+    def test_it_measures_again_only_when_the_last_one_is_older_than_every(self):
+        self.core.run_pass(dict(self.cfg))
+        self.wait()
+        self.job()["last_try"] -= 5 * 3600
+        self.core.run_pass(dict(self.cfg))
+        self.assertFalse(self.job()["thread"].is_alive())
+        self.assertEqual(self.runs(), 1)
+        self.job()["last_try"] -= 2 * 3600
+        self.core.run_pass(dict(self.cfg))
+        self.wait()
+        self.assertEqual(self.runs(), 2)
+
+    def test_a_new_process_reads_the_age_from_the_store(self):
+        self.core.run_pass(dict(self.cfg))
+        self.wait()
+        MM._JOBS.pop(str(self.home))
+        self.core.run_pass(dict(self.cfg))
+        self.assertIsNone(self.job()["thread"])
+        self.assertLess(abs(self.job()["last_try"] - time.time()), 60)
+
+    def test_no_places_means_no_measurement_and_the_route_says_why(self):
+        cfg = self.cfg = {"workspaces": [], "claude_bin": "/no/claude"}
+        self.core.run_pass(cfg)
+        self.assertTrue(str(self.home) not in MM._JOBS or MM._JOBS[str(self.home)]["thread"] is None)
+        status, a = self.get("/api/memory")
+        self.assertEqual((status, a["state"], a["idle"], a["measuring"]), (200, "never", IDLE, None))
+
+    def test_a_measurement_that_fails_is_reported_and_not_retried_at_once(self):
+        with mock.patch.object(W, "measure", side_effect=RuntimeError("boom")):
+            self.core.run_pass(dict(self.cfg))
+            self.wait()
+            self.assertEqual(self.get("/api/memory")[1]["error"], "RuntimeError: boom")
+            starts = self.starts()
+            self.core.run_pass(dict(self.cfg))
+            self.core.run_pass(dict(self.cfg))
+        self.assertEqual(len(starts), 0)
+
+    def test_the_home_is_removed_while_it_measures(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            gate = self.gate()
+            self.core.run_pass(dict(self.cfg))
+            shutil.rmtree(self.home)
+            gate.set()
+            self.wait()
+        self.assertFalse(self.home.exists())
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+    def test_the_route_with_the_store_down(self):
+        broken = self.home.parent / "broken"
+        (broken / "stellaxis.db").mkdir(parents=True)
+        self.addCleanup(lambda: MM._JOBS.pop(str(broken), None))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            core = Core(broken, broken / ".claude", COMPS)
+            self.assertIsNotNone(core.error)
+            status, body = self.get("/api/memory", core=core)
+            starts = self.starts()
+            res = core.run_pass(dict(self.cfg))
+        self.assertEqual(status, 503)
+        self.assertIsInstance(body["error"], str)
+        [errors] = [res["components"]["memory_management"]["errors"]]
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith("StoreError"))
+        self.assertEqual(starts, [])
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+    def test_other_paths_and_methods_are_not_ours(self):
+        self.assertEqual(self.get("/api/memoryx")[0], 404)
+        self.assertEqual(self.get("/api/memory", method="POST")[0], 404)
+
+    def test_the_component_imports_only_the_core_and_itself(self):
+        for f in (COMPS / "memory_management").glob("*.py"):
+            for node in ast.walk(ast.parse(f.read_text())):
+                names = ([a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import)
+                         else [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.level == 0
+                         else [])
+                for n in names:
+                    self.assertNotIn(n, {"collect", "workspaces", "unplaced", "prune"}, f.name)
+                    if hasattr(sys, "stdlib_module_names"):
+                        self.assertTrue(n in sys.stdlib_module_names or n == "core", f"{f.name}: {n}")
+
+    def test_no_code_changes_a_file(self):
+        for f in (COMPS / "memory_management").glob("*.py"):
+            text = f.read_text().replace("os.open(", "")
+            for bad in ("os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "shutil", "os.chmod", "open(",
+                        ".write_text", ".unlink(", ".mkdir(", "subprocess"):
+                self.assertNotIn(bad, text, f.name)
 
 
 if __name__ == "__main__":
