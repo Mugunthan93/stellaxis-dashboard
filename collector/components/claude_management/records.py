@@ -9,12 +9,25 @@ from core.util import read_json
 
 from .usage import cost_of
 
+SHARE = [
+    "CREATE TABLE IF NOT EXISTS claude_management_share_plan (id INTEGER PRIMARY KEY CHECK (id = 1), budget REAL, "
+    "start_day INTEGER NOT NULL, start_hour INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS claude_management_share_percents (project TEXT PRIMARY KEY, percent REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS claude_management_share_weeks (starts TEXT PRIMARY KEY, ends TEXT NOT NULL, budget REAL, "
+    "closed INTEGER NOT NULL, updated TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS claude_management_share_use (week TEXT NOT NULL, project TEXT NOT NULL, cost REAL NOT NULL, "
+    "percent REAL, PRIMARY KEY (week, project))",
+    "CREATE TABLE IF NOT EXISTS claude_management_share_warnings (week TEXT NOT NULL, project TEXT NOT NULL, at TEXT NOT NULL, "
+    "cost REAL NOT NULL, allowance REAL NOT NULL, PRIMARY KEY (week, project))",
+]
+
 RECORDS = [
     "CREATE TABLE IF NOT EXISTS claude_management_sessions (id TEXT PRIMARY KEY, project TEXT, first_ts TEXT, last_ts TEXT, "
     "branch TEXT, cost REAL NOT NULL, data TEXT NOT NULL, hours TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS claude_management_items (id TEXT PRIMARY KEY, pos INTEGER NOT NULL, kind TEXT NOT NULL, "
     "scope TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL)",
-]
+] + SHARE
+CHANGES = [SHARE]
 
 
 def _data(row: dict) -> str:

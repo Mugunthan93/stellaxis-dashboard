@@ -1,5 +1,5 @@
 """Claude management: reads the transcripts and the Claude setup, prices the use, and writes the snapshot. Its actions archive
-and move items of the setup and save Claude's settings files."""
+and move items of the setup, save Claude's settings files and set the weekly share."""
 from __future__ import annotations
 
 import time
@@ -7,7 +7,7 @@ import time
 from core.component import Component
 from core.util import write_json
 
-from . import records, settings, setup, snapshot, trim, usage
+from . import records, settings, setup, share, share_set, snapshot, trim, usage
 
 
 def usage_reader(ctx) -> None:
@@ -39,7 +39,11 @@ def setup_reader(ctx) -> None:
 
 
 COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader], lines=usage.LINES,
-                      records=records.RECORDS, reads=[("project_management", "repos")], handle=settings.handle,
-                      actions={"archive": trim.archive, "move": trim.move, "save_settings": settings.save_settings},
-                      undo={"claude_management.settings_file": settings.settings_file},
+                      records=records.RECORDS, changes=records.CHANGES, handle=settings.handle,
+                      reads=[("project_management", "repos"), ("project_management", "sessions"), ("project_management", "projects")],
+                      actions={"archive": trim.archive, "move": trim.move, "save_settings": settings.save_settings,
+                               "set_budget": share_set.set_budget, "set_week_start": share_set.set_week_start,
+                               "set_percent": share_set.set_percent},
+                      undo={"claude_management.settings_file": settings.settings_file,
+                            "claude_management.share_setting": share_set.undo_setting},
                       offers={"sessions": records.sessions, "items": records.items})
