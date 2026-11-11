@@ -339,6 +339,18 @@ class IndexFailure(unittest.TestCase):
         self.assertIn("index_error", (REPO / "dashboard" / "shell.html").read_text())
         self.assertIn("core_error", (REPO / "dashboard" / "shell.html").read_text())
 
+    def test_collection_clears_stale_switches(self):
+        snap = {"sessions": [], "projects": []}
+        with tempfile.TemporaryDirectory() as t, \
+                mock.patch.object(CENTRE, "live", return_value=[]) as live, \
+                mock.patch.object(CENTRE, "clear_stale") as clear, \
+                mock.patch.object(CENTRE, "app_records", return_value={}):
+            fake_home(self, Path(t))
+            self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
+        live.assert_called_once_with("/no/claude")
+        clear.assert_called_once_with([])
+
+
 
 class PageNames(unittest.TestCase):
     def test_pages_and_the_agent_use_the_new_names(self):
@@ -354,18 +366,6 @@ class PageNames(unittest.TestCase):
         self.assertIn("<h2>Projects</h2>", shell)
         self.assertIn("/api/projects", (REPO / "agents" / "jarvis.md").read_text())
         self.assertIn("projects.json", (REPO / "agents" / "jarvis.md").read_text())
-
-
-    def test_collection_clears_stale_switches(self):
-        snap = {"sessions": [], "projects": []}
-        with tempfile.TemporaryDirectory() as t, \
-                mock.patch.object(CENTRE, "live", return_value=[]) as live, \
-                mock.patch.object(CENTRE, "clear_stale") as clear, \
-                mock.patch.object(CENTRE, "app_records", return_value={}):
-            fake_home(self, Path(t))
-            self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
-        live.assert_called_once_with("/no/claude")
-        clear.assert_called_once_with([])
 
 
 class Probes(unittest.TestCase):
