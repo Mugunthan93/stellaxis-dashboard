@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -22,16 +23,34 @@ class Component:
     error: str | None = None
 
 
-def _import(folder: Path) -> Component:
-    mod_name = f"stx_{folder.name}"
-    spec = importlib.util.spec_from_file_location(
-        mod_name, folder / "__init__.py", submodule_search_locations=[str(folder)])
-    mod = importlib.util.module_from_spec(spec)
+def _purge(mod_name: str) -> None:
     for key in [k for k in sys.modules if k == mod_name or k.startswith(mod_name + ".")]:
         del sys.modules[key]
+
+
+def import_folder(folder: Path) -> types.ModuleType:
+    """The package of a component folder, imported once as `stx_<folder name>`."""
+    folder = Path(folder)
+    mod_name = f"stx_{folder.name}"
+    init = folder / "__init__.py"
+    have = sys.modules.get(mod_name)
+    if have is not None and getattr(have, "__file__", None) and Path(have.__file__).resolve() == init.resolve():
+        return have
+    spec = importlib.util.spec_from_file_location(
+        mod_name, init, submodule_search_locations=[str(folder)])
+    mod = importlib.util.module_from_spec(spec)
+    _purge(mod_name)
     sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
-    comp = getattr(mod, "COMPONENT", None)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        _purge(mod_name)
+        raise
+    return mod
+
+
+def _import(folder: Path) -> Component:
+    comp = getattr(import_folder(folder), "COMPONENT", None)
     if not isinstance(comp, Component):
         raise TypeError("COMPONENT is missing or is not a Component")
     if not NAME.fullmatch(comp.name):

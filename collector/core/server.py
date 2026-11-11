@@ -31,8 +31,6 @@ def handle(core: Core, handler, method: str, cfg: dict) -> bool:
     if method == "GET" and handler.path.split("?")[0] == "/api/core":
         _json(handler, 200, core.describe())
         return True
-    if core.error:
-        return False
     for c in sorted(core.components, key=lambda c: c.name):
         if c.handle is None or c.error:
             continue

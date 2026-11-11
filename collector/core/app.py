@@ -14,16 +14,23 @@ def _err(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+class StoreError(RuntimeError):
+    pass
+
+
 class Ctx:
     """What a component sees: its name and config, the store, and the offers it declared in `reads`."""
 
-    def __init__(self, core: Core, name: str, cfg: dict):
+    def __init__(self, core: Core, name: str, cfg: dict, inputs: dict | None = None):
         self._core = core
+        self.inputs = inputs or {}
         self.name = name
         self.cfg = cfg
         self.home = core.home
 
     def db(self) -> sqlite3.Connection:
+        if self._core.store is None:
+            raise StoreError(self._core.error)
         return self._core.store.connect()
 
     def read(self, owner: str, offer: str, **args) -> list:
@@ -57,22 +64,21 @@ class Core:
             except Exception as e:
                 c.error = _err(e)
 
-    def ctx(self, name: str, cfg: dict) -> Ctx:
-        return Ctx(self, name, cfg)
+    def ctx(self, name: str, cfg: dict, inputs: dict | None = None) -> Ctx:
+        return Ctx(self, name, cfg, inputs)
 
-    def run_pass(self, cfg: dict) -> dict:
+    def run_pass(self, cfg: dict, inputs: dict | None = None) -> dict:
         out: dict = {}
-        if self.store is not None:
-            for c in self.components:
-                if c.error:
-                    continue
-                errors = []
-                for reader in c.readers:
-                    try:
-                        reader(self.ctx(c.name, cfg))
-                    except Exception as e:
-                        errors.append(_err(e))
-                out[c.name] = {"readers": len(c.readers), "errors": errors}
+        for c in self.components:
+            if c.error:
+                continue
+            errors = []
+            for reader in c.readers:
+                try:
+                    reader(self.ctx(c.name, cfg, inputs))
+                except Exception as e:
+                    errors.append(_err(e))
+            out[c.name] = {"readers": len(c.readers), "errors": errors}
         self.last_pass = {"at": now_iso(), "components": out}
         return self.last_pass
 

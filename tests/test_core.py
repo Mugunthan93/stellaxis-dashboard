@@ -73,6 +73,30 @@ class LoadTest(unittest.TestCase):
             self.assertTrue(by[n].error)
             self.assertEqual((by[n].readers, by[n].actions, by[n].offers), ([], {}, {}))
 
+    def test_a_component_folder_is_imported_once(self):
+        put(self.comps, "alpha", "from core.component import Component\nSTATE = []\nCOMPONENT = Component(name='alpha')\n")
+        m1 = component.import_folder(self.comps / "alpha")
+        [c] = component.load(self.comps)
+        m2 = component.import_folder(self.comps / "alpha")
+        self.assertIs(m1, m2)
+        self.assertIs(c, m1.COMPONENT)
+        self.assertIs(sys.modules["stx_alpha"], m1)
+
+    def test_a_same_named_folder_elsewhere_replaces_it(self):
+        other = self.home / "elsewhere"
+        for root in (self.comps, other):
+            put(root, "alpha", "from core.component import Component\nCOMPONENT = Component(name='alpha')\n")
+        m1 = component.import_folder(self.comps / "alpha")
+        m2 = component.import_folder(other / "alpha")
+        self.assertIsNot(m1, m2)
+        self.assertIs(sys.modules["stx_alpha"], m2)
+
+    def test_a_failed_import_leaves_nothing_behind(self):
+        put(self.comps, "beta", "from . import helper\nraise RuntimeError('boom')\n", helper="X = 1\n")
+        [c] = component.load(self.comps)
+        self.assertIn("RuntimeError: boom", c.error)
+        self.assertEqual([k for k in sys.modules if k == "stx_beta" or k.startswith("stx_beta.")], [])
+
 
 class StoreTest(unittest.TestCase):
     def setUp(self):
@@ -149,6 +173,13 @@ def good(ctx):
 COMPONENT = Component(name="beta", records=["CREATE TABLE IF NOT EXISTS beta_seen (n INTEGER)"],
                       readers=[bad, good], reads=[("alpha", "things"), ("ghost", "things"), ("broken", "things")])
 '''
+SEES = '''
+from core.component import Component
+SEEN = []
+def look(ctx):
+    SEEN.append(ctx.inputs)
+COMPONENT = Component(name="sees", readers=[look])
+'''
 
 
 class CoreTest(unittest.TestCase):
@@ -218,8 +249,19 @@ class CoreTest(unittest.TestCase):
         c = self.core()
         self.assertTrue(c.error)
         self.assertIsNone(c.store)
-        self.assertEqual(c.run_pass({})["components"], {})
+        [e] = c.run_pass({})["components"]["alpha"]["errors"]
+        self.assertTrue(e.startswith("StoreError: "))
+        self.assertEqual(c.run_pass({})["components"], {"alpha": {"readers": 1, "errors": [e]}})
         self.assertEqual(c.describe()["error"], c.error)
+
+    def test_readers_get_the_inputs_of_the_pass(self):
+        put(self.comps, "sees", SEES)
+        c = self.core()
+        c.run_pass({}, {"sessions": [1, 2]})
+        c.run_pass({})
+        seen = component.import_folder(self.comps / "sees").SEEN
+        self.assertEqual(seen, [{"sessions": [1, 2]}, {}])
+        self.assertEqual(c.ctx("sees", {}).inputs, {})
 
 
 class UndoTest(unittest.TestCase):
@@ -419,12 +461,12 @@ class ServeTest(HttpCase):
         by = {c["name"]: c for c in json.loads(self.get("/api/core")[1])["components"]}
         self.assertIn("RuntimeError", by["beta"]["error"])
 
-    def test_no_component_runs_without_a_store(self):
+    def test_components_still_answer_without_a_store(self):
         put(self.comps, "alpha", WEB)
         (self.home / "stellaxis.db").mkdir()
         self.serve()
         self.assertTrue(json.loads(self.get("/api/core")[1])["error"])
-        self.assertEqual(self.get("/api/alpha")[0], 404)
+        self.assertEqual(self.get("/api/alpha")[0], 200)
 
 
 class WiringTest(HttpCase):

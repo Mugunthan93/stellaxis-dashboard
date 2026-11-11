@@ -67,7 +67,7 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   (`the_core()`), runs `run_pass` after each collection and offers it every request before `settings_api`.
   `collector/components/` holds component folders and is empty until step 2. Under `$STELLAXIS_HOME`: the store
   `stellaxis.db` and the action log `actions.jsonl`. Route: `GET /api/core`. If the store cannot be opened,
-  `status.json` carries `core_error` and no component runs. The spec has the rest.
+  `status.json` carries `core_error`; components still run and answer, and only what calls `ctx.db()` fails (`StoreError`). The spec has the rest.
 - `collector/cloud_import.py` converts a `list_sessions` (claude-code-remote MCP) dump into
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
 
