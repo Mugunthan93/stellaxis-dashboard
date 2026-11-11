@@ -37,10 +37,10 @@ class Ctx:
         me = next((c for c in self._core.components if c.name == self.name), None)
         if me is None or (owner, offer) not in [tuple(r) for r in me.reads]:
             raise LookupError(f"{self.name!r} did not declare reads of {owner}.{offer}")
-        other = next((c for c in self._core.components if c.name == owner), None)
-        if other is None or other.error or offer not in other.offers:
-            return []
-        return other.offers[offer](self._core.ctx(owner, self.cfg), **args)
+        return self._core.read(owner, offer, self.cfg, **args)
+
+    def act(self, action: str, args: dict | None = None, apply: bool = False) -> dict:
+        return self._core.run_action(self.name, action, args or {}, apply, self.cfg)
 
 
 class Core:
@@ -66,6 +66,16 @@ class Core:
 
     def ctx(self, name: str, cfg: dict, inputs: dict | None = None) -> Ctx:
         return Ctx(self, name, cfg, inputs)
+
+    def read(self, owner: str, offer: str, cfg: dict, **args) -> list:
+        """For ways in: what `owner` offers. No declaration needed."""
+        other = next((c for c in self.components if c.name == owner), None)
+        if other is None or other.error or offer not in other.offers:
+            return []
+        return other.offers[offer](self.ctx(owner, cfg), **args)
+
+    def undo_handlers(self) -> dict:
+        return {step: fn for c in self.components if not c.error for step, fn in c.undo.items()}
 
     def run_pass(self, cfg: dict, inputs: dict | None = None) -> dict:
         out: dict = {}

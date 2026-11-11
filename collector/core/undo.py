@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import shutil
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -14,6 +15,24 @@ class RestoreError(Exception):
 
 def stamp() -> str:
     return dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+_LOCK = threading.Lock()
+_HANDED_OUT: set[Path] = set()
+
+
+def _free(archive: Path, label: str, reserve: bool) -> Path:
+    """A manifest folder no other plan has been given. A dry run gets the plain name and reserves nothing."""
+    base = f"{stamp()}-{label}"
+    if not reserve:
+        return archive / base
+    with _LOCK:
+        path, n = archive / base, 1
+        while path in _HANDED_OUT or path.exists():
+            n += 1
+            path = archive / f"{base}-{n}"
+        _HANDED_OUT.add(path)
+        return path
 
 
 def dig(d: dict, keys: list, create=False):
@@ -30,7 +49,7 @@ class Plan:
     def __init__(self, apply: bool, label: str, archive: Path, on_applied=None, undo_hint=None, out=print):
         self.apply, self.steps = apply, []
         self.on_applied, self.undo_hint, self.out = on_applied, undo_hint, out
-        self.dir = archive / f"{stamp()}-{label}"
+        self.dir = _free(archive, label, apply)
         self.manifest = {"created": now_iso(), "label": label, "entries": []}
 
     def say(self, msg: str) -> None:
@@ -115,6 +134,9 @@ def restore(name: str, apply: bool, archive: Path, handlers: dict | None = None,
     man = read_json(d / "manifest.json")
     if not man:
         raise RestoreError(f"no manifest in {d}")
+    for e in man["entries"]:
+        if e["op"] not in table and e["op"] != "json_backup":
+            raise RestoreError(f"no undo for step {e['op']!r}; nothing was changed")
     out(f"Restoring {d.name}:")
     for e in reversed(man["entries"]):
         fn = table.get(e["op"])

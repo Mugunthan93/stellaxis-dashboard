@@ -457,7 +457,7 @@ def restore(name: str, apply: bool):
     def undo_relocate(e, apply, out):
         return relocate(Plan(apply, "undo"), Path(e["to"]), Path(e["from"]), backups=False)
     try:
-        undo.restore(name, apply, ARCHIVE, handlers={"relocate": undo_relocate}, on_applied=C.collect)
+        undo.restore(name, apply, ARCHIVE, handlers={"relocate": undo_relocate, **C.the_core().undo_handlers()}, on_applied=C.collect)
     except undo.RestoreError as e:
         sys.exit(str(e))
 
