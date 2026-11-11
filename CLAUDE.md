@@ -78,12 +78,13 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   `cloud.json` for the dashboard's Cloud tab; cloud-container transcripts never reach the Mac.
 - `collector/components/memory_management/` is Memory management, read side only: it measures disk space and never
   deletes, moves or changes a file. `walk.py` walks the places (never follows a symlink, never enters another volume
-  or a folder macOS guards, counts a hard-linked file once); `records.py` keeps the last measurement in
-  `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and starts one background
-  thread when the last measurement is older than `memory.every` (default 6h). Route: `GET /api/memory`. Config key
-  `memory`: `every`, `max_seconds`, `places` (added to the defaults by name), `guarded` (only adds). The default
-  places are on only when `$STELLAXIS_HOME` is inside the account's home folder (from `pwd`, not `$HOME`), so a
-  test with a fake HOME never walks the real disk. The design, with what cleaning may ever offer, is
+  or a folder macOS guards, by path and by folder identity; counts a hard-linked file once); `records.py` keeps the
+  last measurement in `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and
+  starts one background thread when the last measurement is older than `memory.every` (default 6h), never on the
+  first pass of a process (so `collect.py run`, `prune.py` and tests that make one pass never measure). Route:
+  `GET /api/memory`. Config key `memory`: `every`, `max_seconds`, `places` (added to the defaults by name), `guarded`
+  (only adds). The default places are on only when `$STELLAXIS_HOME` is `.stellaxis` in the account's home folder
+  (from `pwd`, not `$HOME`), so a test never walks the real disk. The design, with what cleaning may ever offer, is
   `docs/superpowers/specs/2026-11-11-memory-management-design.md`.
 
 Other files under `$STELLAXIS_HOME`: `tasks/<workspace id>.md` (checkbox lines), `approvals/` (`<id>.req`,

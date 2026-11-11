@@ -258,6 +258,7 @@ DEFAULT_PLACES = [   # (name, path, owner, depth, repos); "~" is the home folder
     ("android", "~/.android", "none", 1, False),
     ("caches", "~/Library/Caches", "none", 1, False),
     ("homebrew", "/opt/homebrew", "none", 1, False),
+    ("applications", "/Applications", "none", 1, False),   # added after the final review
     ("local", "~/.local", "none", 2, False),
     # then, all ("<name>", "<path>", "none", 1, False):
     # pnpm ~/Library/pnpm, npm ~/.npm, bun ~/.bun, yarn ~/.yarn, cache ~/.cache, rustup ~/.rustup, cargo ~/.cargo,
@@ -278,17 +279,17 @@ COMPONENT = Component(name="memory_management", readers=[measure_reader], record
 - `m = cfg.get("memory")`; anything that is not a dict counts as `{}`.
 - `every = duration(m.get("every"), 6 * 3600)`, but never below 60. `max_seconds = duration(m.get("max_seconds"), 900)`, never below 1.
 - Home is `account_home()`: `Path(pwd.getpwuid(os.getuid()).pw_dir)`, read at call time. Not `Path.home()`, which follows `$HOME` (changed while building; see "Found while building step 5").
-- The defaults are used only when `stx_home` (resolved) is inside the home folder (resolved). Otherwise the list starts empty.
-- `m.get("places")` (a list; anything else counts as `[]`) is merged by `name`: an entry replaces the default of that name, in place; a new name is added at the end; an entry with `"off": true` removes that name. An entry that is not a dict, has no string `name`, or (when not `off`) no string `path` is dropped. `owner` defaults to `"none"`, `depth` to 1 (an int from 0 to 6; anything else is 1), `repos` to `False`.
-- Every `path` is expanded with the home folder (`~` and `~/…`) and made absolute.
+- The defaults are used only when `stx_home` (resolved) is exactly `<home>/.stellaxis` (resolved). Otherwise the list starts empty (changed after the final review; see "Found while building step 5").
+- `m.get("places")` (a list; anything else counts as `[]`) is merged by `name`: an entry replaces the default of that name, in place; a new name is added at the end; an entry with `"off": true` removes that name. An entry that is not a dict, has no string `name`, or (when not `off`) no string `path` is dropped. `owner`, `depth` and `repos` default to the values of the default place it replaces, else `"none"`, 1 (an int from 0 to 6) and `False` (changed after the final review; see "Found while building step 5").
+- Every `path` is expanded with the home folder (`~` and `~/…`); an entry whose path is then not absolute is dropped (changed after the final review; see "Found while building step 5").
 - `guard = walk.Guard(home/each GUARDED_HOME + GUARDED_ABS + each string of m.get("guarded") expanded the same way)`.
-- `idle` is `None` when there is at least one place, else exactly `"no places to measure: the Stellaxis data folder is outside the home folder and config names no places"`.
+- `idle` is `None` when there is at least one place, else exactly `"no places to measure: the Stellaxis data folder is not .stellaxis in the account's home folder, and config names no places"`, or, when the defaults were on, `"no places to measure: config turned every place off"` (changed after the final review; see "Found while building step 5").
 - It never raises on bad config.
 
 **`measure_reader(ctx)`** — runs inside the collection pass, so it must return at once:
 
 1. `s = settings(ctx.cfg, ctx.home)`. No places: return (before the store is touched).
-2. Under a module lock, get or make the job of `str(ctx.home)`. If its thread is alive: return.
+2. Under a module lock, get the job of `str(ctx.home)`; if there is none, make it and return: the first pass of a process never measures (changed after the final review; see "Found while building step 5"). If its thread is alive: return.
 3. If `last_try` is `None`, set it from `records.last_finished_ts` (through `ctx.db()`, closed after). A `StoreError` is not caught here: the core lists it as this reader's error.
 4. If `last_try` is not `None` and `time.time() - last_try < s["every"]`: return.
 5. Set `last_try = time.time()`, `started_at = now_iso()`, `progress = {}`, and start one daemon thread named `memory-measure` that:
@@ -381,12 +382,14 @@ git commit -m "Memory management: measure in the background, GET /api/memory"
 ```
 - `collector/components/memory_management/` is Memory management, read side only: it measures disk space and never
   deletes, moves or changes a file. `walk.py` walks the places (never follows a symlink, never enters another volume
-  or a folder macOS guards, counts a hard-linked file once); `records.py` keeps the last measurement in
-  `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and starts one background
-  thread when the last measurement is older than `memory.every` (default 6h). Route: `GET /api/memory`. Config key
-  `memory`: `every`, `max_seconds`, `places` (added to the defaults by name), `guarded` (only adds). The default
-  places are off when `$STELLAXIS_HOME` is outside the home folder, so tests never walk the real disk. The design,
-  with what cleaning may ever offer, is `docs/superpowers/specs/2026-11-11-memory-management-design.md`.
+  or a folder macOS guards, by path and by folder identity; counts a hard-linked file once); `records.py` keeps the
+  last measurement in `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and
+  starts one background thread when the last measurement is older than `memory.every` (default 6h), never on the
+  first pass of a process (so `collect.py run`, `prune.py` and tests that make one pass never measure). Route:
+  `GET /api/memory`. Config key `memory`: `every`, `max_seconds`, `places` (added to the defaults by name), `guarded`
+  (only adds). The default places are on only when `$STELLAXIS_HOME` is `.stellaxis` in the account's home folder
+  (from `pwd`, not `$HOME`), so a test never walks the real disk. The design, with what cleaning may ever offer, is
+  `docs/superpowers/specs/2026-11-11-memory-management-design.md`.
 ```
 
 - [ ] **Step 2: One read-only check against the real disk**, with the store in a temp folder so nothing real is written. Run from the repo root:
@@ -404,11 +407,12 @@ MM = component.import_folder(Path("collector/components/memory_management"))
 cfg = {"workspaces": [], "claude_bin": "/no/claude",
        "memory": {"places": [{"name": "code", "path": "~/code", "repos": True, "owner": "project_management"},
                              {"name": "claude", "path": "~/.claude", "depth": 2}]}}
+core.run_pass(cfg)     # the first pass of a process only makes the job
 t = time.monotonic(); core.run_pass(cfg); print("pass took %.3fs" % (time.monotonic() - t))
 MM._JOBS[str(home)]["thread"].join(600)
 a = MM.answer(core.ctx("memory_management", cfg))
 print(a["state"], a["seconds"], a["complete"], a["error"], len(a["folders"]), a["not_measured_count"])
-for p in a["places"]: print(p["name"], round(p["bytes"] / 1e9, 2), "GB", p["files"], p["state"])
+for p in a["places"]: print(p["place"], round(p["bytes"] / 1e9, 2), "GB", p["files"], p["state"])
 EOF
 ```
 
@@ -424,19 +428,19 @@ Expected: `OK`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add CLAUDE.md docs/superpowers/plans/2026-11-11-core-step-5-memory-read-side.md
+git add CLAUDE.md docs/superpowers/plans/2026-11-11-core-step-5-memory-read-side.md docs/superpowers/specs/2026-11-11-memory-management-design.md
 git commit -m "Docs: Memory management in CLAUDE.md; what the build of step 5 found"
 ```
 
 ## Found while building step 5
 
 - **The home folder is the account's, not `$HOME`.** The plan first said `Path.home()`. The review of Task 3 found that `tests/test_e2e.py` and `tests/test_relocate.py` run `collect.py` with a false `HOME` and the data folder inside it. The defaults then turned on, and a background thread began to walk the real `/opt/homebrew`. Now `settings` asks macOS for the account's home (`pwd`). A false `HOME` gives no places. Two tests pin this.
-- **`collect.py run` starts a measurement it cannot finish.** It makes one pass, then the process ends, and the thread ends with it. Nothing is saved, so the next `run` starts again. Only the service finishes a measurement. The core has no way to tell a reader "this is a single pass".
+- **`collect.py run` starts a measurement it cannot finish.** It makes one pass, then the process ends, and the thread ends with it. Nothing is saved, so the next `run` starts again. Only the service finishes a measurement. The core has no way to tell a reader "this is a single pass". (Changed after the final review: the first pass of a process never measures.)
 - **The reader reads the store one time while it holds its lock.** It happens once for each data folder in each process, to learn the age of the last measurement. SQLite waits at most 5 seconds. In practice it is a read of one row.
 - **A measurement that hangs cannot be stopped.** It is a thread. If macOS ever showed a permission prompt in spite of the guarded list, that thread would wait until the service restarts. The pass and the routes keep working, and `/api/memory` shows `measuring` with an old start time.
 - **What the core should get for this component:** a rule for changing a table (today tables can only be created); a way for a reader to do slow work (this component brings its own thread); Claude's folder on `Ctx` (this component reads `CLAUDE_CONFIG_DIR` itself); a way to know that a pass is the only one of its process.
 - **What the other components must offer before any cleaning:** Project management: which project owns a folder, and whether it has work in use. Claude management: which transcripts, skills, plugin files and archives are in use.
-- **Not tested:** the "another volume" rule. A test cannot mount a disk.
+- **Not tested:** the "another volume" rule. A test cannot mount a disk. (Changed after the final review: it is tested through `walk.scandir`, with an entry from another device.)
 - **Small things left open** are listed in the final review of this branch, not here.
 - **Measured on this Mac** (real disk, store in a temp folder, 2026-11-11):
   - The pass took 0.003 s. The measurement took 28.4 s. State `measured`, complete, `error` is `None`.
@@ -444,3 +448,33 @@ git commit -m "Docs: Memory management in CLAUDE.md; what the build of step 5 fo
   - `~/.claude`: 4.32 GB on disk (4.28 GB logical), 15,296 files.
   - 808 folder rows. 0 folders could not be measured.
   - The check script in Task 4 Step 2 prints `p["name"]`, but a place row has the key `place`. The script stops with a `KeyError` after printing the first line; the numbers above come from the same run with the key fixed.
+
+### What the final review found
+
+- The review found no way the component changes a file. It found no way it blocks the pass.
+- Fixed after the review:
+  - The guard also compares folder identity (device and inode). So the same folder under another spelling is
+    still guarded. For example `/System/Volumes/Data/Users/<name>/Documents` is the home folder's `Documents`.
+  - A folder that is swapped for a link during the walk is not opened. It is listed as "changed during the walk".
+  - A config path must be absolute after `~` is expanded. `""`, `"code"` and `"~bob/x"` are dropped.
+  - The overlap check ignores case. `…/proj` and `…/PROJ/Sub` overlap.
+  - A guarded folder no longer makes a measurement "incomplete". It is still listed, as left out by design.
+  - One failing place does not lose the others. That place gets the state `failed` and the reason.
+  - A thread that cannot start is shown on the route, in `error`.
+  - The first pass of a process never measures. So `collect.py run` and `prune.py`, which make one pass, never
+    start a walk they cannot finish. The desktop app's MCP server lives longer: a second inline pass there can
+    still start one.
+  - The defaults are on only when the data folder is `<account home>/.stellaxis`. Anywhere else in the home folder
+    they are off.
+  - `/Applications` is a default place.
+- Left open:
+  - Cloned files are counted in full. A clone shares its blocks with the file it was copied from, so removing it
+    frees almost nothing. It can be seen with `ctypes` and `getattrlist`. It is not built here: a mistake in such a
+    call can crash the whole service. The next step is one number: "bytes that removing this folder alone frees".
+  - "Elsewhere" is still more than half of the used space. Next step: let a place hold another place. Then "the
+    rest of the home folder" can be one row.
+  - There is no limit on the number of rows in a repos place.
+  - A folder with very many files needs much memory for a moment. Its whole listing is held and sorted.
+  - Nobody has run the default places under launchd yet. On the first start, watch `GET /api/memory`. If
+    `measuring.place` stays the same and `started_at` gets old, the walk waits on a macOS prompt. Add that folder
+    to `memory.guarded` and restart the service.
