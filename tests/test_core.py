@@ -8,6 +8,7 @@ import http.client
 import http.server
 import io
 import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -79,7 +80,8 @@ class LoadTest(unittest.TestCase):
         [c] = component.load(self.comps)
         m2 = component.import_folder(self.comps / "alpha")
         self.assertIs(m1, m2)
-        self.assertIs(c, m1.COMPONENT)
+        self.assertIsNot(c, m1.COMPONENT)
+        self.assertEqual(c.name, "alpha")
         self.assertIs(sys.modules["stx_alpha"], m1)
 
     def test_a_same_named_folder_elsewhere_replaces_it(self):
@@ -96,6 +98,25 @@ class LoadTest(unittest.TestCase):
         [c] = component.load(self.comps)
         self.assertIn("RuntimeError: boom", c.error)
         self.assertEqual([k for k in sys.modules if k == "stx_beta" or k.startswith("stx_beta.")], [])
+
+    def test_a_failed_import_can_be_fixed_and_loaded_again(self):
+        put(self.comps, "beta", "raise RuntimeError('boom')\n")
+        self.assertTrue(component.load(self.comps)[0].error)
+        (self.comps / "beta" / "__init__.py").write_text("from core.component import Component\nCOMPONENT = Component(name='beta')\n")
+        [c] = component.load(self.comps)
+        self.assertIsNone(c.error)
+
+    def test_threads_importing_one_folder_get_one_finished_module(self):
+        put(self.comps, "slow", "import time\ntime.sleep(0.05)\nLOCK = object()\n")
+        got = []
+        def run():
+            m = component.import_folder(self.comps / "slow")
+            got.append((m, hasattr(m, "LOCK")))
+        threads = [threading.Thread(target=run) for _ in range(8)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(len(got), 8)
+        self.assertTrue(all(m is got[0][0] and ok for m, ok in got))
 
 
 class StoreTest(unittest.TestCase):
@@ -253,6 +274,16 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(e.startswith("StoreError: "))
         self.assertEqual(c.run_pass({})["components"], {"alpha": {"readers": 1, "errors": [e]}})
         self.assertEqual(c.describe()["error"], c.error)
+
+    def test_a_core_never_writes_to_the_module_component(self):
+        put(self.comps, "alpha", ALPHA)
+        first = self.core()
+        first.components[0].error = "ensure failed"
+        self.home = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.home, True)
+        second = Core(self.home, self.home / ".claude", self.comps)
+        self.assertIsNone(second.components[0].error)
+        self.assertEqual(set(second.run_pass({})["components"]), {"alpha"})
+        self.assertIsNone(component.import_folder(self.comps / "alpha").COMPONENT.error)
 
     def test_readers_get_the_inputs_of_the_pass(self):
         put(self.comps, "sees", SEES)

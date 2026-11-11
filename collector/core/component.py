@@ -3,12 +3,15 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import threading
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
 NAME = re.compile(r"[a-z][a-z0-9_]*")
+
+_IMPORT_LOCK = threading.RLock()
 
 
 @dataclass
@@ -31,22 +34,23 @@ def _purge(mod_name: str) -> None:
 def import_folder(folder: Path) -> types.ModuleType:
     """The package of a component folder, imported once as `stx_<folder name>`."""
     folder = Path(folder)
-    mod_name = f"stx_{folder.name}"
-    init = folder / "__init__.py"
-    have = sys.modules.get(mod_name)
-    if have is not None and getattr(have, "__file__", None) and Path(have.__file__).resolve() == init.resolve():
-        return have
-    spec = importlib.util.spec_from_file_location(
-        mod_name, init, submodule_search_locations=[str(folder)])
-    mod = importlib.util.module_from_spec(spec)
-    _purge(mod_name)
-    sys.modules[mod_name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except BaseException:
+    with _IMPORT_LOCK:
+        mod_name = f"stx_{folder.name}"
+        init = folder / "__init__.py"
+        have = sys.modules.get(mod_name)
+        if have is not None and getattr(have, "__file__", None) and Path(have.__file__).resolve() == init.resolve():
+            return have
+        spec = importlib.util.spec_from_file_location(
+            mod_name, init, submodule_search_locations=[str(folder)])
+        mod = importlib.util.module_from_spec(spec)
         _purge(mod_name)
-        raise
-    return mod
+        sys.modules[mod_name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            _purge(mod_name)
+            raise
+        return mod
 
 
 def _import(folder: Path) -> Component:
@@ -57,7 +61,7 @@ def _import(folder: Path) -> Component:
         raise ValueError(f"bad component name {comp.name!r}")
     if comp.name != folder.name:
         raise ValueError(f"component name {comp.name!r} differs from folder name {folder.name!r}")
-    return comp
+    return replace(comp)
 
 
 def load(directory: Path) -> list[Component]:
