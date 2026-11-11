@@ -6,6 +6,10 @@ Stellaxis is the base project of this Mac: it manages every existing and new pro
 (the default home for all projects and Claude sessions, see `~/.claude/CLAUDE.md`). It measures what
 Claude Code loads into every session (skills, agents, plugins, MCP servers, CLAUDE.md), what actually
 gets used, and what it costs, then helps trim it; it also moves projects safely (`prune.py relocate`).
+`skills_library/` is the Skill Library: `library.py harvest` sparse-clones every GitHub repo the reel notes name,
+keeps only the folders holding a `SKILL.md` (data and `catalog.json` in `~/Knowledge/skills`), and `install` copies one
+into a project's `.claude/skills/`. The folder is itself the `skill-library` skill, symlinked from `~/.claude/skills/`
+so every session can search and install; `/skills` (`dashboard/skills.html`, `GET /api/skills`) shows the catalog.
 `reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777; its `summary.json` feeds the snapshot's `reels` field and the Overview panel). Python 3 stdlib only, no
 packages, no build step. Target platform is macOS (launchd service, Claude desktop app config path).
 

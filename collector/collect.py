@@ -1306,9 +1306,11 @@ def collect(cfg=None, probe=False) -> dict:
 # ---------------------------------------------------------------- serve
 
 PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/workspace": "workspace.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
-         "/settings": "settings.html", "/settings.html": "settings.html"}
+         "/settings": "settings.html", "/settings.html": "settings.html", "/skills": "skills.html"}
 # Reel Brain's dashboard (built by reels/build_dashboard.py): /reels/ shows it inside the shell, /reels/raw is the page
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
+# Skill Library's catalog (built by skills_library/library.py), read by /skills through /api/skills
+SKILLS_HOME = Path(os.path.expanduser(os.environ.get("SKILLS_HOME", "~/Knowledge/skills")))
 REELS_FRAME = '<title>Reels · Stellaxis</title><iframe class="sx-frame" src="/reels/raw" title="Reel Brain dashboard"></iframe>'
 
 
@@ -1354,8 +1356,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if workspaces.handle(self, "GET", load_config()):
             return
-        if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot"):
-            body = (STX_HOME / "snapshot.json").read_bytes() if (STX_HOME / "snapshot.json").exists() else b"{}"
+        if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot", "/api/skills"):
+            f = SKILLS_HOME / "catalog.json" if self.path.split("?")[0] == "/api/skills" else STX_HOME / "snapshot.json"
+            body = f.read_bytes() if f.exists() else b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")

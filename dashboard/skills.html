@@ -1,0 +1,196 @@
+<title>Stellaxis Skill Library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Skill Library: skills downloaded from the repos the reel notes name (GET /api/skills, written by skills_library/library.py).
+   Every string here comes from third-party repos, so it is only ever set through textContent. */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
+  --accent: #2c55c9; --accent-soft: #dfe6f8;
+  --good: #23784a; --good-soft: #dcefe3; --warn: #9a6512; --warn-soft: #f6ead2; --crit: #b63a26; --crit-soft: #f7e0da;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --sunk: #222a26; --ink: #e6ebe7; --muted: #9aa69f; --line: #2e3833;
+  --accent: #7c9cf0; --accent-soft: #24304f;
+  --good: #5cc48b; --good-soft: #1d3428; --warn: #e0ad55; --warn-soft: #3a2f1a; --crit: #ef8a76; --crit-soft: #40231d;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 60px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.55rem; }
+h2 { font-size: 1.12rem; }
+h3 { font-size: 1rem; overflow-wrap: anywhere; }
+p { margin: 0; }
+.mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.notice { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 14px; font-size: 0.88rem; color: var(--muted); background: var(--surface); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.kpis { display: flex; flex-wrap: wrap; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.kpi { flex: 1 1 170px; background: var(--surface); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.kpi .v { font-family: var(--mono); font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 0.8rem; color: var(--muted); }
+.pill { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; background: var(--sunk); color: var(--muted); white-space: nowrap; font-weight: 600; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 0.82rem; }
+.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.chip .num { font-size: 0.74rem; color: var(--muted); margin-left: 4px; }
+.inp { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; width: 100%; min-width: 0; font: inherit; color: inherit; }
+.btn { display: inline-flex; align-items: center; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 2px 10px; font-size: 0.82rem; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.card .id { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); overflow-wrap: anywhere; }
+.card .d { color: var(--ink); font-size: 0.88rem; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.card .d.open { -webkit-line-clamp: unset; }
+.card .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.card .src { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.card .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 0.88rem; overflow-wrap: anywhere; }
+@media (pointer: coarse) { .chip, .btn { min-height: 44px; } }
+@media (max-width: 480px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<div class="wrap">
+  <header style="display:grid;gap:4px">
+    <h1>Skill Library</h1>
+    <p class="muted">Claude skills downloaded from the repos your saved reels named. A session in any project can find one here and install it with the <span class="mono">skill-library</span> skill.</p>
+  </header>
+  <div class="notice" id="none" hidden>The library is empty. Build it with <span class="mono">python3 ~/.claude/skills/skill-library/library.py harvest</span>.</div>
+  <section class="kpis" id="kpis" aria-label="Summary" hidden>
+    <div class="kpi"><span class="eyebrow">Skills</span><span class="v" id="k-skills">—</span><span class="s" id="k-skills-s"></span></div>
+    <div class="kpi"><span class="eyebrow">Use cases</span><span class="v" id="k-uses">—</span><span class="s">from the reels' topics</span></div>
+    <div class="kpi"><span class="eyebrow">In your projects</span><span class="v" id="k-inst">—</span><span class="s">skills installed somewhere in ~/code</span></div>
+    <div class="kpi"><span class="eyebrow">Ship scripts</span><span class="v" id="k-scr">—</span><span class="s">third-party code; asked before install</span></div>
+  </section>
+  <section class="panel" id="lib" hidden>
+    <div class="panel-head"><h2>Skills</h2><p class="muted" id="shown"></p></div>
+    <input class="inp" id="q" type="search" placeholder="Search by task, e.g. design, testing, security, video" aria-label="Search skills" autocomplete="off">
+    <div class="chips" id="uses" aria-label="Use case"></div>
+    <div class="chips"><button class="chip" type="button" id="hide-global" aria-pressed="false">Hide ones every session already has</button></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" hidden>No skill matches.</div>
+  </section>
+  <section class="panel" id="missing" hidden>
+    <div class="panel-head"><h2>Not in the library</h2><p class="muted">Reels about skills that showed no repo, and repos that couldn't be downloaded.</p></div>
+    <ul class="list" id="miss-list"></ul>
+  </section>
+</div>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const safeUrl = u => /^https:\/\/(www\.)?(github\.com|instagram\.com)\//.test(u || "") ? u : null;
+const link = (href, text) => { const a = el("a", "", text); if (safeUrl(href)) { a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; } return a; };
+let cat = null, use = "", hideGlobal = false;
+
+function matches(s, words) {
+  const hay = [s.name, s.description, s.repo, ...s.use_cases, ...s.tags, ...s.projects, ...s.reels.map(r => r.title)].join(" ").toLowerCase();
+  return words.every(w => hay.includes(w));
+}
+
+function card(s) {
+  const c = el("article", "card");
+  const head = el("div");
+  head.append(el("h3", "", s.name), el("div", "id", s.id));
+  const d = el("p", "d", s.description || "No description in its SKILL.md.");
+  d.title = "Click to expand";
+  d.addEventListener("click", () => d.classList.toggle("open"));
+  const tags = el("div", "tags");
+  s.use_cases.forEach(u => tags.append(el("span", "pill", u)));
+  if (s.installed_globally) tags.append(el("span", "pill good", "In every session"));
+  s.installed_in.forEach(p => tags.append(el("span", "pill acc", "Installed in " + p.replace(/^~\/code\//, ""))));
+  if (s.has_scripts) { const p = el("span", "pill warn", "Ships scripts"); p.title = s.scripts.join(", "); tags.append(p); }
+  const src = el("div", "src");
+  if (s.reels.length) {
+    src.append("From reel: ");
+    s.reels.slice(0, 2).forEach((r, i) => { if (i) src.append(" · "); src.append(link(r.source, r.title)); });
+    if (s.reels.length > 2) src.append(` +${s.reels.length - 2} more`);
+  }
+  if (s.projects.length) src.append(el("div", "", "Suggested for: " + s.projects.join(", ")));
+  const act = el("div", "actions");
+  act.append(link(s.url, "Source on GitHub"));
+  const copy = el("button", "btn", "Copy install prompt");
+  copy.type = "button";
+  copy.addEventListener("click", async () => {
+    const text = `Use the skill-library skill to install ${s.id} into this project and adapt it.`;
+    try { await navigator.clipboard.writeText(text); copy.textContent = "Copied, paste it in a session"; }
+    catch { copy.textContent = "Copy failed"; }
+    setTimeout(() => copy.textContent = "Copy install prompt", 2400);
+  });
+  act.append(copy);
+  c.append(head, d, tags, src, act);
+  return c;
+}
+
+function render() {
+  const words = $("q").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = cat.skills.filter(s => (!use || s.use_cases.includes(use)) && (!hideGlobal || !s.installed_globally) && matches(s, words));
+  $("grid").replaceChildren(...list.map(card));
+  $("empty").hidden = list.length > 0;
+  $("shown").textContent = list.length === cat.skills.length ? `${list.length} skills` : `${list.length} of ${cat.skills.length} skills`;
+}
+
+function chips() {
+  const counts = {};
+  cat.skills.forEach(s => s.use_cases.forEach(u => counts[u] = (counts[u] || 0) + 1));
+  const btn = (label, value, n) => {
+    const b = el("button", "chip", label); b.type = "button";
+    b.setAttribute("aria-pressed", String(use === value));
+    if (n != null) b.append(el("span", "num", String(n)));
+    b.addEventListener("click", () => { use = value; chips(); render(); });
+    return b;
+  };
+  $("uses").replaceChildren(btn("All", "", cat.skills.length),
+    ...Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([u, n]) => btn(u, u, n)));
+  $("k-uses").textContent = Object.keys(counts).length;
+}
+
+function missing() {
+  const items = [];
+  (cat.no_repo_shown || []).forEach(r => { const li = el("li"); li.append(link(r.source, r.title), el("span", "muted", " (no repo shown in the reel)")); items.push(li); });
+  (cat.repos.failed || []).forEach(r => { const li = el("li"); li.append(el("span", "mono", r.repo), el("span", "muted", " couldn't be downloaded: " + r.error)); items.push(li); });
+  $("miss-list").replaceChildren(...items);
+  $("missing").hidden = !items.length;
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/skills", { cache: "no-store" });
+    cat = r.ok ? await r.json() : null;
+  } catch { cat = null; }
+  if (!cat || !cat.skills || !cat.skills.length) { $("none").hidden = false; return; }
+  $("kpis").hidden = $("lib").hidden = false;
+  $("k-skills").textContent = cat.skills.length;
+  $("k-skills-s").textContent = `from ${cat.repos.with_skills} of ${cat.repos.named} repos the reels named`;
+  $("k-inst").textContent = cat.skills.filter(s => s.installed_in.length).length;
+  $("k-scr").textContent = cat.skills.filter(s => s.has_scripts).length;
+  chips(); missing(); render();
+}
+
+$("q").addEventListener("input", render);
+$("hide-global").addEventListener("click", e => { hideGlobal = !hideGlobal; e.currentTarget.setAttribute("aria-pressed", String(hideGlobal)); render(); });
+load();
+})();
+</script>
