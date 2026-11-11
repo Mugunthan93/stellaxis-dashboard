@@ -156,6 +156,10 @@ def load_reel():
 class Service(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.home = tempfile.TemporaryDirectory()
+        cls.stx = mock.patch.object(C, "STX_HOME", Path(cls.home.name))
+        cls.stx.start()
+        C._core = None
         cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.port = cls.srv.server_address[1]
@@ -164,6 +168,9 @@ class Service(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
         cls.srv.server_close()
+        cls.stx.stop()
+        C._core = None
+        cls.home.cleanup()
 
     def req(self, path, host=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port)
@@ -231,6 +238,8 @@ class RouteMatrix(unittest.TestCase):
                       mock.patch.object(C, "collect")):
             patch.start()
             self.addCleanup(patch.stop)
+        C._core = None
+        self.addCleanup(setattr, C, "_core", None)
         (reels / "dashboard.html").write_text("<p>x</p>")
         (reels / "images" / "a.jpg").write_bytes(b"x")
         fake = root / "claude-bin"
@@ -309,6 +318,8 @@ class IndexFailure(unittest.TestCase):
                 mock.patch.object(C, "build_snapshot", return_value=snap), mock.patch.object(C, "append_history"), \
                 mock.patch.object(C.workspaces, "live", return_value=None), \
                 mock.patch.object(C.workspaces, "build_index", side_effect=ValueError("boom")):
+            C._core = None
+            self.addCleanup(setattr, C, "_core", None)
             C.collect({"x": 1})
             st = json.loads(Path(t, "status.json").read_text())
         self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
@@ -321,6 +332,8 @@ class IndexFailure(unittest.TestCase):
                 mock.patch.object(C.workspaces, "live", return_value=[]) as live, \
                 mock.patch.object(C.workspaces, "clear_stale") as clear, \
                 mock.patch.object(C.workspaces, "app_records", return_value={}):
+            C._core = None
+            self.addCleanup(setattr, C, "_core", None)
             self.assertIsNone(C.write_index({"claude_bin": "/no/claude"}, snap))
         live.assert_called_once_with("/no/claude")
         clear.assert_called_once_with([])

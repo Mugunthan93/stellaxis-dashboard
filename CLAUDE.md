@@ -51,11 +51,13 @@ command centre (Home and Workspace pages) reads a separate index, `workspaces.js
   registered only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It
   asks the running `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting
   inline, because inline collection inside the app can hang on a macOS folder-permission prompt.
-- `collector/workspaces.py` is the command centre. `build_index` writes `workspaces.json`: every session
+- `collector/components/project_management/centre.py` is the command centre (`collector/workspaces.py` is now an alias:
+  `import workspaces` returns the same module). The component's reader writes `workspaces.json` from the pass inputs
+  (`write_index` passes the sessions and folders to the core's pass) and its routes are served through the core. `build_index` writes `workspaces.json`: every session
   (not just the capped snapshot ones) grouped workspace > repo > branch, plus configured folders with no
   sessions as repos with no branches. It also starts and messages sessions, and holds the task lists,
-  approvals, plans, routines and test runs. It must not import `collect` (that would be circular);
-  `collect.py` passes it `load_config()`.
+  approvals, plans, routines and test runs. It must not import `collect` (that would be circular),
+  and nothing under `components/` may import `workspaces`, `collect` or `unplaced`; `collect.py` passes it `load_config()`.
 - `collector/approval_hook.py` is the `PermissionRequest` hook. It runs on the system Python, stays silent
   unless the session's switch is on and it can show the request whole, writes `<id>.req` and waits for
   `<id>.ans`. `approve_ready` looks for it in `settings.json`; Stellaxis never installs it.

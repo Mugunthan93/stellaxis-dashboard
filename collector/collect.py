@@ -1247,14 +1247,16 @@ def write_index(cfg: dict, snap: dict) -> str | None:
     """workspaces.json: every session (not just the capped snapshot ones); never fails a collection, returns the error."""
     sessions = cfg.pop("_sessions_all", None)
     try:
-        import workspaces
-        workspaces.clear_stale(workspaces.live(workspaces._bin(cfg)))
-        write_json(STX_HOME / "workspaces.json", workspaces.build_index(
-            sessions if sessions is not None else snap["sessions"], snap["projects"],
-            workspaces.app_records(workspaces.app_base()), cfg))
+        core = the_core()
+        res = core.run_pass(cfg, {"sessions": sessions if sessions is not None else snap["sessions"], "folders": snap["projects"]})
+        comp = next((c for c in core.components if c.name == "project_management"), None)
+        if comp is None:
+            return "the project_management component is missing"
+        if comp.error:
+            return comp.error
+        return next(iter(res["components"]["project_management"]["errors"]), None)
     except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"
-    return None
 
 
 _core: Core | None = None
@@ -1293,7 +1295,6 @@ def collect(cfg=None, probe=False) -> dict:
         write_json(STX_HOME / "snapshot.json", snap)
         status("indexing workspaces")
         err = write_index(cfg, snap)
-        the_core().run_pass(cfg)
         status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err,
                core_error=the_core().error)
         return snap
@@ -1354,8 +1355,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if core_server.handle(the_core(), self, "GET", load_config()):
             return
         if settings_api.handle(self, "GET"):
-            return
-        if workspaces.handle(self, "GET", load_config()):
             return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot", "/api/skills"):
             f = SKILLS_HOME / "catalog.json" if self.path.split("?")[0] == "/api/skills" else STX_HOME / "snapshot.json"
@@ -1425,7 +1424,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "POST", load_config()):
             return
-        if not settings_api.handle(self, "POST") and not workspaces.handle(self, "POST", load_config()):
+        if not settings_api.handle(self, "POST"):
             self.send_error(404)
 
 
