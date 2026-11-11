@@ -493,3 +493,32 @@ git commit -m "Docs: Memory management in CLAUDE.md; what the build of step 5 fo
   the error); a place that fails keeps its path "taken", so a later place around it is refused as overlapping, and
   its files already counted stay in the total; `prune.py` can make a second pass after `--apply`; and two sentences
   of the design were a little wider than the code (corrected after the re-review).
+
+### After the first live run (2026-11-12): the walk moved into a child process
+
+- **What happened live.** The branch was merged and the service ran its first measurement. It was complete: 27
+  places, 57 folders left out as guarded, no macOS prompt. But it took 528.7 s, and while it ran the every-minute
+  pass took 4.1, 17.9, 7.3, 5.6, 9.3, 11.2 and 4.5 s instead of about 1.6 s. Another session ran tests at the
+  same time.
+- **What was changed.** The walk no longer runs as a thread in the service. The service starts `walk.py` as a child
+  process at macOS background priority. It sends one line (places, guarded folders, time limit), reads progress
+  lines and the result, and saves the result. It kills a child that gives no answer a tenth of the limit plus 30 s
+  past the time limit. The
+  child ends when its stdin closes, so it ends with the service. Only the service measures: the reader asks
+  `ctx.service`, which the core has had since step 3. Claude's folder comes from `ctx.claude_dir`. The default time
+  limit is now 30 minutes, because the walk is slower at background priority.
+- **The cause was not proved.** With nothing else running, the slowdown did not come back: work like a pass took
+  0.47 s alone and 0.46 s with the walk as a thread beside it. This Mac has 8 GB of memory, and 7.8 GB of swap was in
+  use. So the likely cause is a Mac short of memory with a busy disk, not the shared Python process. Background
+  priority is the part of the fix that speaks to that.
+- **Measured after the change** (by hand, read only, no store): the child walked the 27 default places in 266.8 s
+  (84.5 s as a thread at normal priority). 2,475,347 files, 1,108 rows, complete, 57 guarded, no prompt, exit 0,
+  nothing on stderr. Work like a pass beside it took 0.60 s on average against 0.48 s alone (444 runs; the slowest
+  1.30 s).
+- **Why the child's code is at the end of `walk.py`.** A component file may import only the standard library, the
+  core, and its own folder by relative import (`tests/test_components.py`). A script cannot do a relative import. So
+  the child is `python walk.py`, and nothing needs to be imported.
+- **A thread that waits in a buffered read of stdin breaks Python's shutdown** ("could not acquire lock for
+  stdin"). The child reads the raw descriptor instead.
+- **Left open.** If the pass is still slow during a measurement, the next steps are a pause between folders, or to
+  measure only when the Mac is idle. Neither is built or tested.

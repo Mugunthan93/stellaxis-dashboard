@@ -134,7 +134,7 @@ collector/components/project_management/
   old_names.py            the old names that still answer, until the rename is applied
 collector/components/memory_management/
   __init__.py             the component: the reader, records and GET /api/memory
-  walk.py                 measures folder sizes, read only
+  walk.py                 measures folder sizes, read only; the service runs it as a child process
   records.py              its tables: runs, folders, skipped
 collector/collect.py      a way in: runs a collection, serves the pages on localhost
 collector/prune.py        a way in: the command line for list, archive, move, relocate, restore, purge

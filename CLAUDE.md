@@ -126,9 +126,11 @@ pass its own `plan=`, so `prune.py` prints exactly what it printed before. An un
 **Memory management** (`collector/components/memory_management/`), read side only: it measures disk space and never
 deletes, moves or changes a file. `walk.py` walks the places (never follows a symlink, never enters another volume
 or a folder macOS guards, by path and by folder identity; counts a hard-linked file once); `records.py` keeps the
-last measurement in `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and
-starts one background thread when the last measurement is older than `memory.every` (default 6h), never on the
-first pass of a process (so `collect.py run`, `prune.py` and tests that make one pass never measure). Route:
+last measurement in `memory_management_runs`, `_folders` and `_skipped`; the reader only checks the clock and,
+when the last measurement is older than `memory.every` (default 6h), starts `walk.py` as a child process at
+background priority, so the walk shares nothing with the service but the disk. The service follows the child's
+progress, saves its result, and kills one that hangs past `memory.max_seconds` (default 30m); the child ends when its
+stdin closes, so it never outlives the service. Only the service measures (`ctx.service`). Route:
 `GET /api/memory`. Config key `memory`: `every`, `max_seconds`, `places` (added to the defaults by name), `guarded`
 (only adds). The default places are on only when `$STELLAXIS_HOME` is `.stellaxis` in the account's home folder
 (from `pwd`, not `$HOME`), so a test never walks the real disk. The design, with what cleaning may ever offer, is

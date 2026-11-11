@@ -216,25 +216,61 @@ The route answers at once also when no measurement is ready. Then `state` is `ne
 
 ## How measuring runs
 
-The core runs every reader in the collection pass, every minute. A walk of all places takes about one
-minute on this Mac (2 million files). It may not run inside the pass. So:
+The core runs every reader in the collection pass, every minute. A walk of all places takes about a
+minute and a half at full speed on this Mac (2.5 million files). It may not run inside the pass. So:
 
 - The reader only looks at the clock. If the last measurement is older than `every` (default 6 hours,
-  my call), it starts one measurement in the background and returns. This takes less than a
-  millisecond.
+  my call), it starts one measurement and returns. This takes less than a millisecond.
+- The walk runs in a process of its own, a child of the service, at background priority (my call,
+  changed after the first live run; see below). The service tells the child which places to walk,
+  follows its progress, and saves its result. The child never touches the store.
 - Only one measurement runs at a time. A pass that finds one running starts nothing.
-- A measurement stops after `max_seconds` (default 15 minutes, my call). What it has is stored and
-  marked `partial`. The places it did not reach are marked `not_reached`.
-- Nothing is written to the store while it walks. The result is written in one step at the end. If the
-  service stops in the middle, the old result stays and nothing is half written.
+- A measurement stops after `max_seconds` (default 30 minutes, my call). The child stops its own walk
+  at that time and hands over what it has. That is stored and marked `partial`. The places it did not
+  reach are marked `not_reached`.
+- A child that still gives no answer some time after that is killed. The extra time is a tenth of
+  the limit plus 30 seconds: 3.5 minutes with the default. Then nothing is saved, the route says why
+  and in which place it was, and the last good measurement stays. The same holds when the child fails
+  in any other way; then the route shows the last thing the child said.
+- The child ends when the service ends, however the service ends. It watches the pipe the service
+  holds open; when the pipe closes, it stops at once.
+- Nothing is written to the store while the child walks. The result is written in one step at the
+  end. If the service stops in the middle, the old result stays and nothing is half written.
 - A measurement that fails is tried again after `every`, not after one minute.
-- The first pass of a process never starts a measurement (my call). `collect.py run` makes one pass
-  and ends, and `prune.py` nearly always does. A walk started there would be cut off before it could
-  save. So the service measures, from its second pass on, one minute after it starts. The cases this
-  rule does not cover are under "Known limits".
+- Only the service measures (my call). The core tells each reader whether it runs in the service.
+  `collect.py run`, `prune.py`, the desktop MCP tool and the tests are not the service, so they never
+  start a walk.
 
-Measured on this Mac: while the walk ran, other work in the same process was not slower (0.162 s with
-the walk, 0.166 s without).
+### Why the walk runs in a process of its own
+
+The first build ran the walk as a thread inside the service. In the first live run, on 2026-11-12,
+the walk took 529 seconds, and while it ran the every-minute pass took 4 to 18 seconds instead of
+1.6. The owner asked for a fix.
+
+What is known about the cause, plainly:
+
+- Other work ran on the Mac at the same time (another session ran tests). This Mac has 8 GB of
+  memory and nearly all of its swap space was in use.
+- The slowdown could not be made to happen again with nothing else running. Work like a pass (read
+  and parse 9,000 small files) took 0.47 s alone and 0.46 s with the walk as a thread beside it.
+- So the shared Python process is probably not the main cause. More likely the Mac was short of
+  memory and the disk was busy, and the walk made that worse.
+
+What the fix does about it:
+
+- The walk is a child process, so it shares nothing with the service but the disk.
+- The child runs at macOS background priority. It gets the processor and the disk only when nothing
+  else wants them. This is the part that should help when the Mac is busy.
+- The child can be killed. A walk that hangs no longer needs a restart of the service.
+
+What it costs: at background priority the whole walk takes about four and a half minutes instead of
+one and a half (267 s, 27 places, 2.5 million files, run by hand on 2026-11-12). During that run,
+work like a pass was about a quarter slower (0.60 s against 0.48 s). The walk still reads 2.5 million
+files, and other work that reads many files feels that.
+
+How to see if it worked: the next measurement in the service. Compare the pass times in
+`~/.stellaxis/serve.log` during it with the times before it. If the pass is still much slower, the
+next step is to make the walk pause between folders, or to measure only when the Mac is idle.
 
 **The default places are used only when Stellaxis's data folder is `.stellaxis` in the home folder
 (my call).** The home folder here is the home of the Mac account, as macOS knows it. It is not the
@@ -249,7 +285,7 @@ One key, `memory`, in `config.json`. Every part has a default in code.
 ```json
 "memory": {
   "every": "6h",
-  "max_seconds": 900,
+  "max_seconds": 1800,
   "places": [{"name": "chrome", "path": "~/Library/Application Support/Google", "depth": 1}],
   "guarded": ["~/Private"]
 }
@@ -388,9 +424,9 @@ files and archives are in use; whether the desktop app is running.
 - A rule for changing a table. Today a table can only be created. This design chose its columns with
   that in mind, but a later change still has no path.
 - A way for a reader to do slow work. Today each reader runs inside the pass, so this component
-  starts its own background thread. A second slow component would have to copy that.
-- `Ctx` gives the Stellaxis data folder but not Claude's folder. This component reads the
-  `CLAUDE_CONFIG_DIR` setting itself to find `~/.claude`.
+  starts its own child process and watches it. A second slow component would have to copy that.
+- Done since the first build: the core now tells a reader whether it runs in the service, and gives
+  it Claude's folder. This component uses both.
 - For cleaning: the gaps already listed in the step 1 plan (`Ctx.act`, a manifest folder that is
   unique, undo steps owned by a component).
 
@@ -400,20 +436,15 @@ files and archives are in use; whether the desktop app is running.
   number for each folder, "bytes that removing this folder alone frees".
 - **"Elsewhere" is almost half of the used space** (see "Places"). Next step: let a place hold
   another place, with the inner one taken out, so "the rest of the home folder" can be one row.
-- **A measurement that waits on the disk cannot be stopped from outside.** If macOS showed a
-  permission prompt in spite of the guarded list, that measurement would wait until the service
-  restarts. The service and the collection pass keep working.
-- **No one has run the default places under the service yet.** The same walk was run by hand on
-  2026-11-11, outside the service: 27 places, 2.4 million files, 84 seconds, and macOS refused no
-  folder. The service is a different program to macOS, so this is not proof. On the first start, look at
-  `GET /api/memory`. If `measuring.place` stays the same and `started_at` gets old, the walk waits on
-  a prompt in that place. Add the folder to `memory.guarded` and restart the service.
-- **Almost only the service measures.** A process that makes one pass never measures. Two cases are
-  left. The desktop MCP tool collects in its own process when the service is down; if it does that
-  twice in one process, the second pass can start a walk there, and that walk can finish. And
-  `prune.py` makes a second pass after an `--apply` when there was no snapshot before; a walk started
-  then is cut off when the command ends, and nothing is saved. "Only one at a time" holds inside one
-  process, not across two.
+- **The walk still costs something while it runs.** See "Why the walk runs in a process of its own".
+- **A folder that makes macOS ask for permission** has not been met. The service measured all 27
+  default places on 2026-11-12 with no prompt. If one ever came, the child would wait, be killed at
+  the time limit, and the route would name the place. Then add that folder to `memory.guarded`.
+- **Only one at a time holds inside the service.** Nothing else measures, so there is no second
+  process to clash with.
+- **A child that macOS itself cannot stop** (for example one that waits on a dead network disk) would
+  keep the next measurement from starting until the service restarts. The places are all on this
+  Mac's own disk, and the walk never enters another volume, so this is not expected.
 - **The free space is as old as the last measurement**, up to 6 hours.
 - **Nothing limits the number of rows in the code place.** Every folder named like build output gets
   a row. Today there are about 800. One odd repo could add thousands.
@@ -431,12 +462,12 @@ files and archives are in use; whether the desktop app is running.
 | 4 | Sizes are size on disk; a hard-linked file counts once, in the first folder that sees it. | Two folders that share files show different sizes from run to run only if the folder order changes; it does not. Low. |
 | 5 | Each folder keeps the time of its newest change. | One unused column. |
 | 6 | Folder rows are kept for the last measurement only. | "What grew this week, by folder" cannot be shown until history is kept. The whole-disk history is kept. |
-| 7 | Measure again after 6 hours; stop after 15 minutes. | Numbers are staler, or the disk works more often, than the owner likes. One config line. |
+| 7 | Measure again after 6 hours; stop after 30 minutes. | Numbers are staler, or the disk works more often, than the owner likes. One config line. |
 | 8 | The defaults are on only when the data folder is `.stellaxis` in the account's home folder. `HOME` is not looked at. | A Stellaxis set up with its data anywhere else, or run with a different `HOME` on purpose, measures nothing until places are named in config. The route says so. |
 | 9 | The config key is `memory`; `places` adds to the defaults; `guarded` can only add. | A rename later means one more alias. |
 | 10 | Kinds in the code place: deps and build by name, venv by `pyvenv.cfg`, worktree by its `.git` file. | A folder gets the wrong label. Display only today; cleaning checks with git before it offers. |
 | 11 | No file names in the records, only folders. | "Which single file is huge" cannot be answered. |
-| 12 | The measurement runs as a background thread in the service, not as a separate program. | A stuck measurement cannot be killed without a service restart (see known limits). |
+| 12 | The measurement runs in a child process of the service, at macOS background priority. (First it was a thread in the service; changed after the first live run.) | The walk takes about three times longer. If the pass is still slow while it runs, the cause is the Mac being short of memory or the disk being busy, and the walk must be slowed further. |
 | 13 | Cleaning has three classes, and class C uses "set aside" then "empty". | More steps than the owner wants for things he is sure about. |
 | 14 | A repo's deps, venv and build folders are offered only if git ignores them. | A rebuildable folder that git tracks by mistake is never offered. Safe side. |
 | 15 | All of `~/Archive` is never offered, not only the project dump. | The owner must remove an old archive by hand. Safe side. |
@@ -447,9 +478,10 @@ files and archives are in use; whether the desktop app is running.
 | 20 | Cloned files are counted in full. The number "freed by removing this folder alone" is not built yet. | For a cloned folder (a `node_modules` in a worktree) the size shown is far more than a cleanup would free. The owner could pick the wrong thing to remove. Nothing is lost; a rebuild puts it back. |
 | 21 | "In use" means: something runs in it now, a session is live, or its work exists nowhere else. It does not mean "a project I am still working on". | A rebuildable folder of a project the owner works on every day could be offered while nothing runs. He would have to rebuild it. |
 | 22 | Class A and B are deleted with no undo. | If the check "this worktree is also somewhere else" is wrong one time, that work is lost for good. |
-| 23 | The first pass of a process never measures. | The first measurement after a service start comes one minute later. |
+| 23 | Only the service measures; the core says who is the service. (First it was "not on the first pass of a process".) | A measurement cannot be started by hand with `collect.py run`. |
 | 24 | A folder macOS guards does not make a measurement "incomplete". | A place whose size lacks its guarded folders shows as `ok`. The list of folders not measured still names them. |
 | 25 | `/Applications` is a default place. | A longer walk, for sizes the owner may not need. One config line turns it off. |
+| 26 | A child that gives no answer a tenth of the limit plus 30 seconds past the time limit is killed, and nothing of that run is saved. | A walk that was only slow, not stuck, loses its work once. The child's own time limit comes first, so this needs a real hang. |
 
 ## Questions only the owner can answer
 
