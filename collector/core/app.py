@@ -81,11 +81,11 @@ class Core:
         if c is None or c.error or action not in c.actions:
             raise KeyError(f"{component}.{action}")
         plan = Plan(apply, f"{component}-{action}", self.claude_dir / "_archive", out=lambda _: None)
-        ok, error = True, None
+        ok, error = False, None
         try:
-            c.actions[action](plan, self.ctx(component, cfg), **args)
+            ok = bool(c.actions[action](plan, self.ctx(component, cfg), **args))
         except Exception as e:
-            ok, error = False, _err(e)
+            error = _err(e)
             raise
         finally:
             path = plan.finish()
@@ -95,7 +95,7 @@ class Core:
                 self.home.mkdir(parents=True, exist_ok=True)
                 with open(self.home / "actions.jsonl", "a") as f:
                     f.write(json.dumps(row) + "\n")
-        return {"applied": apply, "ok": True, "steps": plan.steps, "manifest": str(path) if path else None}
+        return {"applied": apply, "ok": ok, "steps": plan.steps, "manifest": str(path) if path else None}
 
     def describe(self) -> dict:
         return {

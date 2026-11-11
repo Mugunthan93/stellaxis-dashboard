@@ -292,7 +292,10 @@ def touch(plan, ctx, path, keep=False, fail=False):
     if fail:
         raise RuntimeError("half way")
     return True
-COMPONENT = Component(name="alpha", actions={"touch": touch})
+def refuse(plan, ctx):
+    plan.say("refused")
+    return False
+COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse})
 '''
 
     def setUp(self):
@@ -328,6 +331,15 @@ COMPONENT = Component(name="alpha", actions={"touch": touch})
         [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
         self.assertEqual((row["ok"], row["error"]), (False, "RuntimeError: half way"))
         self.assertTrue(Path(row["manifest"]).is_file())
+
+    def test_an_action_that_returns_false_is_not_ok(self):
+        r = self.core.run_action("alpha", "refuse", {}, False, {})
+        self.assertEqual(r, {"applied": False, "ok": False, "steps": ["refused"], "manifest": None})
+        self.assertFalse(self.log.exists())
+        r = self.core.run_action("alpha", "refuse", {}, True, {})
+        self.assertEqual((r["applied"], r["ok"]), (True, False))
+        [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.assertEqual((row["ok"], row["error"]), (False, None))
 
     def test_unknown_names_are_key_errors(self):
         for comp, act in (("ghost", "touch"), ("alpha", "ghost")):
