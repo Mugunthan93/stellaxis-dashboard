@@ -4,8 +4,10 @@
   python3 -m unittest tests.test_old_names
 """
 import http.client
+import http.server
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,6 +24,8 @@ from core.app import Core
 from core.component import import_folder
 
 import test_hardening
+
+C = test_hardening.C
 
 COMPS = REPO / "collector" / "components"
 PM = import_folder(COMPS / "project_management")
@@ -58,6 +62,24 @@ class NamesTest(unittest.TestCase):
         self.assertEqual(O.answer(new), {"generated_at": "g", "live_ok": True, "workspaces": [
             {"id": "x", "name": "X", "repos": []}, {"id": "other", "name": "Other", "repos": []}]})
         self.assertEqual(new["projects"][1]["id"], "unassigned")
+
+    def test_the_rename_of_the_config_content(self):
+        old = {"interval": "1m", "workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x"], "tests": {"~/code/x": ["true"]}}, {"id": "y", "folders": []}],
+               "projects": [{"name": "A card"}], "port": 7777}
+        new = O.to_new(old)
+        self.assertEqual(list(new), ["interval", "projects", "project_notes", "port"])
+        self.assertEqual(new["projects"], [{"id": "x", "name": "X", "repos": ["~/code/x"], "tests": {"~/code/x": ["true"]}}, {"id": "y", "repos": []}])
+        self.assertEqual(new["project_notes"], [{"name": "A card"}])
+        self.assertEqual(O.to_old(new), old)
+        self.assertEqual(list(O.to_old(new)), list(old))
+        self.assertEqual(O.changes(old), ['config.json: "workspaces" becomes "projects" (2 entries)',
+                                          'config.json: "folders" becomes "repos" in 2 entries',
+                                          'config.json: "projects" becomes "project_notes" (1 notes cards)'])
+        self.assertEqual(O.changes(new), [])
+        self.assertEqual(O.to_new(new), new)
+        self.assertEqual(O.changes({"projects": [{"name": "A card"}]}), ['config.json: "projects" becomes "project_notes" (1 notes cards)'])
+        self.assertEqual(O.to_new({"projects": [{"name": "A card"}]}), {"projects": [], "project_notes": [{"name": "A card"}]})
+        self.assertEqual(O.changes({}), [])
 
 
 class ComponentTest(unittest.TestCase):
@@ -155,6 +177,113 @@ class OldRoutes(test_hardening.RouteMatrix):
                 ("POST", "/api/workspaces/w/tasks", {"add": "x"}, 200),
                 ("POST", "/api/workspaces/w/tests/run", {"repo": self.repo}, 200),
                 ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200)]
+
+
+ROW = {"id": "s1", "project": "~/code/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z", "cost": 1, "branch": "main"}
+
+
+class RenameTest(unittest.TestCase):
+    """The action new_names through the real Handler, on a fake home; prune.py runs as a child process."""
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.root = Path(os.path.realpath(t.name))
+        self.home = self.root / "stx"
+        claude = self.home / ".claude"
+        (self.home / "tasks").mkdir(parents=True)
+        claude.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.root)})
+        env.start()
+        self.addCleanup(env.stop)
+        test_hardening.fake_home(self, self.home, claude)
+        for patch in (mock.patch.object(C.settings_api, "STX_HOME", self.home), mock.patch.object(C.settings_api, "CLAUDE_DIR", claude),
+                      mock.patch.object(C, "collect")):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.cfg_file = self.home / "config.json"
+        self.cfg_file.write_text(json.dumps({**OLD_CFG, "interval": "1m"}, indent=4))
+        (self.home / "tasks" / "other.md").write_text("- [ ] kept\n")
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def call(self, method, path, body=None):
+        with closing(http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=20)) as conn:
+            conn.request(method, path, None if body is None else json.dumps(body),
+                         {} if body is None else {"Content-Type": "application/json"})
+            r = conn.getresponse()
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw and r.getheader("Content-Type") == "application/json" else None), r.headers
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, body):
+        return self.call("POST", path, body)
+
+    def listed(self):
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
+            self.assertIsNone(C.write_index(C.load_config(), {"sessions": [ROW], "projects": []}))
+        return [p["id"] for p in self.get("/api/projects")[1]["projects"]]
+
+    def prune(self, *args):
+        env = {**os.environ, "HOME": str(self.root), "STELLAXIS_HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.home / ".claude")}
+        r = subprocess.run([sys.executable, str(REPO / "collector" / "prune.py"), *args], env=env, capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            raise AssertionError(f"prune {args} failed:\n{r.stdout}\n{r.stderr}")
+        return r.stdout
+
+    def test_the_dry_run_shows_old_and_new_and_changes_nothing(self):
+        before = self.cfg_file.read_bytes()
+        status, body, _ = self.get("/api/projects/new-names")
+        self.assertEqual((status, body["applied"], body["ok"], body["manifest"]), (200, False, True, None))
+        self.assertEqual(body["steps"][:3], ['config.json: "workspaces" becomes "projects" (1 entries)',
+                                             'config.json: "folders" becomes "repos" in 1 entries',
+                                             'config.json: "projects" becomes "project_notes" (1 notes cards)'])
+        self.assertTrue(body["steps"][3].startswith("move ") and body["steps"][3].endswith("unassigned.md"))
+        self.assertEqual(self.post("/api/projects/new-names", {"apply": False})[1]["applied"], False)
+        self.assertEqual(self.post("/api/projects/new-names", {"apply": "yes"})[0], 400)
+        self.assertEqual(self.post("/api/projects/new-names", {})[0], 400)
+        self.assertEqual(self.cfg_file.read_bytes(), before)
+        self.assertTrue((self.home / "tasks" / "other.md").exists())
+        self.assertFalse((self.home / ".claude" / "_archive").exists())
+
+    def test_apply_renames_backs_up_and_the_service_reads_the_same_projects(self):
+        before = self.cfg_file.read_bytes()
+        seen = C.load_config()
+        listed = self.listed()
+        self.assertEqual(listed, ["x", "unassigned"])
+        status, body, _ = self.post("/api/projects/new-names", {"apply": True})
+        self.assertEqual((status, body["applied"], body["ok"]), (200, True, True))
+        user = json.loads(self.cfg_file.read_text())
+        self.assertEqual(user["projects"], [{"id": "x", "name": "X", "repos": ["~/code/x"], "routines": ["r"]}])
+        self.assertEqual(user["project_notes"], [{"name": "A card"}])
+        self.assertNotIn("workspaces", user)
+        self.assertIn(self.home.parent, Path(body["manifest"]).parents)          # under the temp folder, never the real ~/.claude
+        man = json.loads(Path(body["manifest"]).read_text())
+        self.assertEqual([e["op"] for e in man["entries"]], ["json_backup", "project_management.old_config_keys", "move"])
+        self.assertEqual(Path(man["entries"][0]["backup"]).read_bytes(), before)
+        self.assertEqual((self.home / "tasks" / "unassigned.md").read_text(), "- [ ] kept\n")
+        self.assertEqual(self.listed(), listed)                      # the new keys are read as the old ones were
+        self.assertEqual(C.project_notes(C.load_config()), C.project_notes(seen))
+        self.assertEqual([n["name"] for n in C.project_notes(seen)], ["A card"])
+        [row] = [json.loads(l) for l in (self.home / "actions.jsonl").read_text().splitlines()]
+        self.assertEqual((row["component"], row["action"], row["ok"]), ("project_management", "new_names", True))
+        again = self.post("/api/projects/new-names", {"apply": True})[1]
+        self.assertEqual((again["steps"], again["manifest"]), (["nothing to rename: the new names are already in use"], None))
+
+    def test_prune_restore_undoes_it_and_keeps_a_later_edit(self):
+        name = Path(self.post("/api/projects/new-names", {"apply": True})[1]["manifest"]).parent.name
+        user = json.loads(self.cfg_file.read_text())
+        self.cfg_file.write_text(json.dumps({**user, "interval": "5m"}))
+        out = self.prune("restore", name, "--apply")       # prune.py as a child process, on the fake home
+        self.assertIn("put the old keys back in", out)
+        back = json.loads(self.cfg_file.read_text())
+        self.assertEqual((back["workspaces"], back["projects"], back["interval"]), (OLD_CFG["workspaces"], OLD_CFG["projects"], "5m"))
+        self.assertNotIn("project_notes", back)
+        self.assertEqual((self.home / "tasks" / "other.md").read_text(), "- [ ] kept\n")
+        self.assertFalse((self.home / "tasks" / "unassigned.md").exists())
 
 
 if __name__ == "__main__":
