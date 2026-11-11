@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import threading
 import time
@@ -45,10 +46,14 @@ def duration(text, default: float) -> float:
     return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)] if m else default
 
 
+def account_home() -> Path:
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
 def settings(cfg: dict, stx_home) -> dict:
     m = cfg.get("memory") if isinstance(cfg, dict) else None
     m = m if isinstance(m, dict) else {}
-    home = Path.home()
+    home = account_home()
 
     def expand(p: str) -> str:
         return os.path.abspath(str(home / p[2:]) if p.startswith("~/") else str(home) if p == "~" else p)

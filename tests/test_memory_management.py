@@ -389,10 +389,10 @@ class SettingsTest(unittest.TestCase):
 
     def inside(self):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
-        env["HOME"] = str(self.home)
-        patch = mock.patch.dict(os.environ, env, clear=True)
-        patch.start()
-        self.addCleanup(patch.stop)
+        for patch in (mock.patch.dict(os.environ, env, clear=True),
+                      mock.patch.object(MM, "account_home", return_value=self.home)):
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def test_defaults_are_off_when_the_data_folder_is_outside_the_home_folder(self):
         s = MM.settings({}, self.home / "stx")
@@ -437,6 +437,11 @@ class SettingsTest(unittest.TestCase):
         s = MM.settings({"memory": {"places": [3, {"name": "a"}, {"path": "/x"},
                                                {"name": "ok", "path": str(self.home), "depth": "x"}]}}, out)
         self.assertEqual([(p["name"], p["depth"]) for p in s["places"]], [("ok", 1)])
+
+    def test_a_fake_HOME_does_not_turn_the_defaults_on(self):
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            s = MM.settings({}, self.home / ".stellaxis")
+        self.assertEqual((s["places"], s["idle"]), ([], IDLE))
 
     def test_durations(self):
         for text, want in (("90s", 90), ("15m", 900), ("6h", 21600), ("2d", 172800), (120, 120), ("x", 7), (None, 7)):
@@ -628,6 +633,15 @@ class ComponentTest(unittest.TestCase):
         self.assertTrue(errors[0].startswith("StoreError"))
         self.assertEqual(starts, [])
         self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+    def test_a_pass_with_a_fake_HOME_starts_no_thread(self):
+        home = self.home.parent / ".stellaxis"
+        home.mkdir()
+        self.addCleanup(MM._JOBS.pop, str(home), None)
+        core = Core(home, home / ".claude", COMPS)
+        with mock.patch.dict(os.environ, {"HOME": str(home.parent)}):
+            core.run_pass({"workspaces": [], "claude_bin": "/no/claude"})
+        self.assertTrue(str(home) not in MM._JOBS or MM._JOBS[str(home)]["thread"] is None)
 
     def test_other_paths_and_methods_are_not_ours(self):
         self.assertEqual(self.get("/api/memoryx")[0], 404)
