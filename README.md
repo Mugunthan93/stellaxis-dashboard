@@ -9,7 +9,7 @@ the disk space of this Mac.
 Stellaxis is one **core** and a few **components**. The words come from `CONTEXT.md`.
 
 - The core runs the readers, keeps the store, runs the actions and serves the pages.
-- A component is one idea of the owner. Each component has three parts:
+- A component is one area of work, such as the Claude setup or the projects. Each component has three parts:
   - **readers** read a source on the Mac and never change it;
   - **records** are what the component knows, kept in the store; only the owner writes them;
   - **actions** are what it can do; an action shows a dry run first, and every applied action is logged.
@@ -90,6 +90,7 @@ python3 $S/prune.py archive skill:user:old-thing mcp:user:unused-server        #
 python3 $S/prune.py archive skill:user:old-thing mcp:user:unused-server --apply
 python3 $S/prune.py move agent:user:planner --to ~/code/mesell --apply
 python3 $S/prune.py relocate ~/Documents/app ~/code/personal/app --apply      # move a project folder
+python3 $S/prune.py restore last              # dry run: says what it would undo
 python3 $S/prune.py restore last --apply
 ```
 
@@ -100,9 +101,10 @@ records (session folders, worktree registry, presets, scheduled tasks). It refus
 runs inside the folder or while the desktop app is open (quit it and run from Terminal), and lists other
 files that still mention the old path without editing them.
 
-Archives live in `~/.claude/_archive/<stamp>/` with a manifest. Plugins are disabled, not uninstalled.
+Archives live in `~/.claude/_archive/<stamp>-<label>/` with a manifest. Plugins are disabled, not uninstalled.
 JSON configs are backed up before edits. A save on the Settings page also writes a manifest there, so
-`prune.py archives` lists it and `restore` can undo it.
+`prune.py archives` lists it and `restore` can undo it. "last" is the newest archive, and that can be a settings
+save: run `restore last` without `--apply` first to see what it would undo.
 
 ## Layout
 

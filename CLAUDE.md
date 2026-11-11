@@ -56,20 +56,25 @@ serves the routes. A component is one folder under `collector/components/`. The 
   hands it to the `lines` consumer of every component. It keeps the place reached in each file in `cache.json`, in
   the format of before (keys `files`, `ids`, `walk`, `probes`; `"v": "0.2.2"`), so the running service goes on from
   the cache it has. `sessions(files)` gives the plain facts of each session (id, folder, branch, first and last time).
+  To make every transcript be read again after a change in how a line is read, change `VERSION` in
+  `core/transcripts.py` (a file state with another `v` is read again from the start), or add or rename a key in the
+  consumer's `fresh()` (a state without that key is read again too). `VERSION` in `collect.py` is only the version
+  the snapshot shows; changing it reads nothing again.
 - `undo.py`: `Plan` (the dry run, the steps and the manifest) and `restore`. Each applied plan gets its own folder
   under `~/.claude/_archive/<stamp>-<label>/`. `restore` refuses a manifest with a step that has no handler.
-- `server.py`: `host_ok`, `read_body`, `send_json`, `ApiError`, and `handle()`, which answers `GET /api/core` and
-  then offers the request to each component's `handle`, in name order.
-- `util.py`: `read_json`, `write_json`, `short_path`, `parse_duration`, and the one clock `now()` (it obeys
-  `STELLAXIS_NOW`, for tests).
+- `server.py`: `host_ok`, `read_body`, `send_json`, `ApiError`, `handle()`, which answers `GET /api/core` and
+  then offers the request to each component's `handle`, in name order, and `serve()`, an HTTP server of the core
+  alone on 127.0.0.1.
+- `util.py`: `read_json`, `write_json`, `short_path`, `parse_duration`, the one clock `now()` (it obeys
+  `STELLAXIS_NOW`, for tests) and `now_iso()`.
 
 **A pass.** A collection is one call of `run_pass` with the input `collector` (`version`, `probe`, `reels`,
 `project_notes`). The readers of Claude management and Project management return at once without it. The pass runs
 in rounds: round one runs the first reader of every component, round two the second, and so on. Inside a round the
 order is the component name. So a reader in round two sees what every component wrote in round one. The pass state
-(the cache, the transcript files, the memos) belongs to the thread that runs the pass. A failed transcript read
-poisons the pass: no second read, and `cache.json` is not saved. A reader that raises is an error of its component;
-the other readers still run.
+(the cache, the transcript files, the memos) belongs to the thread that runs the pass. When the transcript read fails,
+the pass does not read the transcripts again: every later reader that asks for them gets the same error, and
+`cache.json` is not saved. A reader that raises is an error of its component; the other readers still run.
 
 **An action** is `fn(plan, ctx, **args) -> bool`. With `apply` false it only says what it would do. An applied action
 writes one line to `$STELLAXIS_HOME/actions.jsonl`; the names in `fn.private` are left out of that line. A way in may
@@ -134,21 +139,36 @@ a component. A removed component is not an error: its routes answer 404, `GET /a
 component that reads its offers gets an empty list. With Project management removed, the snapshot lists no items of
 single repos.
 
+A component that is there but fails to load is different. `GET /api/core` lists it with its `error`, and
+`ctx.read` of its offers raises (`<owner> did not load: <error>`). So the component that reads it fails too in that
+pass and keeps its last good files: with Project management broken, `snapshot.json`, `history.jsonl` and the items
+in the store stay as they were; with Claude management broken, `projects.json` stays. `Core.read` (Jarvis and the
+other ways in) still gives an empty list. A component whose tables failed at start (for example a store locked by
+another writer) is tried again at the start of each pass, and its error clears when that works.
+
 **The ways in.** They hold no component code.
-- `collector/collect.py` holds the paths (`STX_HOME`, `CLAUDE_DIR`, `CLAUDE_JSON`), `DEFAULT_CONFIG` and
-  `load_config`, `project_notes` and `reels_summary` (pass inputs), `the_core()` (made on first use), `collect()`
-  (one pass; writes `status.json`), the HTTP `Handler` (the pages, `/snapshot.json`, `/api/snapshot`, `/api/skills`,
-  `/api/status`, `/api/refresh`, Reel Brain) and `serve()`. `Handler` offers each request to the core first, then
-  to `unplaced/jarvis.py`. `collect()` returns the snapshot this pass wrote, else `{}`. `index_error` in
-  `status.json` holds the errors of every component as `name: error; name: error`; a removed component is not one.
-  If the store cannot be opened, `status.json` carries `core_error`; components still run and answer, and actions
-  run too; only what calls `ctx.db()` fails (`StoreError`). `collect.py run` exits 1 and prints
-  `collect failed: …` when a collection fails and there is no snapshot.
+- `collector/collect.py` holds the paths `STX_HOME` and `CLAUDE_DIR`. `the_core()` works out the path of
+  `~/.claude.json` when it makes the core, not at import, so a test that points `CLAUDE_DIR` and the env at a fake
+  home gets the fake one.
+- It also holds `DEFAULT_CONFIG` and `load_config`, and the pass inputs `project_notes` and `reels_summary`.
+- `the_core()` makes the core on first use. `collect()` runs one pass and writes `status.json`. It returns the
+  snapshot this pass wrote, else `{}`.
+- The HTTP `Handler` serves the pages, `/snapshot.json`, `/api/snapshot`, `/api/skills`, `/api/status`,
+  `/api/refresh` and Reel Brain. It offers each request to the core first, then to `unplaced/jarvis.py`. `serve()`
+  runs the loop and the `Handler`.
+- `status.json`: `index_error` holds the errors of every component as `name: error; name: error`; a removed
+  component is not one. `last_snapshot` and `elapsed_ms` keep their last values when a pass wrote no snapshot.
+  If the store cannot be opened, `status.json` carries `core_error`. Components still run and answer, and actions
+  run too; only what calls `ctx.db()` fails (`StoreError`).
+- `collect.py run` exits 1 and prints `collect failed: …` when this pass wrote no snapshot and a component failed.
+  An older snapshot on disk does not change that. When this pass wrote a snapshot and a component failed, it prints
+  the summary, then `collect: …` to stderr, and exits 0.
 - `collector/prune.py` is a command line only. `list`, `archives`, `purge` and `restore` stay in it. `archive` and
   `move` run as actions of Claude management, `relocate` as an action of Project management, each through
   `run_action` with a plan `prune.py` builds. A settings save also writes a manifest, so it shows in
-  `prune.py archives` and `restore last` can pick it. Without Claude management, `list`, `archive` and `move` exit
-  1 with one sentence.
+  `prune.py archives` and `restore last` can pick it. Without Claude management, `archive` and `move` exit 1 with
+  one sentence. `list` lists the last `snapshot.json` when one is on disk and exits 0; it exits 1 only when there
+  is none. Without Project management, `relocate` exits 1 with one sentence.
 - `collector/mcp_server.py` is a stdio MCP server with a single read-only tool (`stellaxis_snapshot`), registered
   only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It asks the running
   `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting inline, because inline
@@ -239,7 +259,7 @@ relative.
 
 ### Pruning rules (from `skills/stellaxis/SKILL.md`)
 
-Every `prune.py` command is a dry run until `--apply`. Archives go to `~/.claude/_archive/<stamp>/`
+Every `prune.py` command is a dry run until `--apply`. Archives go to `~/.claude/_archive/<stamp>-<label>/`
 with a manifest so `restore` is exact; plugins are disabled, not uninstalled; JSON configs are backed
 up before edits. `relocate` records one `project_management.relocate` manifest entry; `restore` undoes it by
 relocating back (an old manifest with the step `relocate` still restores). It rewrites only exact `"cwd":"<path>` / `"project":"<path>` fields, never message text. Desktop
