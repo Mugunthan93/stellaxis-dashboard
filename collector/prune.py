@@ -29,6 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import collect as C  # noqa: E402
+from core import undo  # noqa: E402
+from core.undo import dig  # noqa: E402,F401
 
 ARCHIVE = C.CLAUDE_DIR / "_archive"
 
@@ -44,36 +46,9 @@ def load_items() -> dict:
     return {it["id"]: it for it in snap["items"]}
 
 
-def stamp() -> str:
-    return dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
-class Plan:
-    def __init__(self, apply: bool, label: str):
-        self.apply, self.steps = apply, []
-        self.dir = ARCHIVE / f"{stamp()}-{label}"
-        self.manifest = {"created": C.iso(C.now_utc()), "label": label, "entries": []}
-
-    def say(self, msg):
-        print(("  " if self.apply else "  [dry-run] ") + msg)
-
-    def backup_json(self, path: Path):
-        dest = self.dir / "json-backups" / (str(path).strip("/").replace("/", "__"))
-        if not any(e.get("backup_of") == str(path) for e in self.manifest["entries"]):
-            self.manifest["entries"].append({"op": "json_backup", "backup_of": str(path), "backup": str(dest)})
-            if self.apply:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, dest)
-
-    def finish(self):
-        if self.apply and self.manifest["entries"]:
-            self.dir.mkdir(parents=True, exist_ok=True)
-            C.write_json(self.dir / "manifest.json", self.manifest, indent=2)
-            print(f"\nManifest: {C.short_path(self.dir / 'manifest.json')}")
-            print(f"Undo:     python3 {C.short_path(Path(__file__))} restore {self.dir.name} --apply")
-            C.collect()
-        elif not self.apply:
-            print("\nNothing changed. Re-run with --apply to execute.")
+def Plan(apply: bool, label: str) -> undo.Plan:
+    return undo.Plan(apply, label, ARCHIVE, on_applied=C.collect,
+                     undo_hint=lambda name: f"python3 {C.short_path(Path(__file__))} restore {name} --apply")
 
 
 def edit_json(plan: Plan, path: Path, fn, desc: str):
@@ -95,16 +70,6 @@ def mcp_location(it: dict):
     if scope == "project":
         return expand(it["path"]), ["mcpServers"]
     return None, None
-
-
-def dig(d: dict, keys: list, create=False):
-    for k in keys:
-        if k not in d:
-            if not create:
-                return None
-            d[k] = {}
-        d = d[k]
-    return d
 
 
 def archive_item(plan: Plan, it: dict):
@@ -489,49 +454,12 @@ def relocate(plan: Plan, src: Path, dest: Path, force=False, backups=True) -> bo
 
 
 def restore(name: str, apply: bool):
-    dirs = sorted(d for d in ARCHIVE.iterdir() if (d / "manifest.json").exists()) if ARCHIVE.exists() else []
-    d = dirs[-1] if name == "last" and dirs else ARCHIVE / name
-    man = C.read_json(d / "manifest.json")
-    if not man:
-        sys.exit(f"no manifest in {d}")
-    print(f"Restoring {d.name}:")
-    for e in reversed(man["entries"]):
-        pre = "  " if apply else "  [dry-run] "
-        if e["op"] == "relocate":
-            if not relocate(Plan(apply, "undo"), Path(e["to"]), Path(e["from"]), backups=False):
-                sys.exit("restore stopped; nothing after this step was changed")
-        elif e["op"] == "move":
-            print(f"{pre}move {C.short_path(e['to'])} -> {C.short_path(e['from'])}")
-            if apply and Path(e["to"]).exists():
-                Path(e["from"]).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(e["to"], e["from"])
-        elif e["op"] == "json_del":
-            print(f"{pre}re-add {e['name']} to {C.short_path(e['file'])}")
-            if apply:
-                data = C.read_json(Path(e["file"]), {}) or {}
-                dig(data, e["keys"], create=True)[e["name"]] = e["value"]
-                C.write_json(Path(e["file"]), data, indent=2)
-        elif e["op"] == "json_add":
-            print(f"{pre}remove {e['name']} from {C.short_path(e['file'])}")
-            if apply:
-                data = C.read_json(Path(e["file"]), {}) or {}
-                (dig(data, e["keys"]) or {}).pop(e["name"], None)
-                C.write_json(Path(e["file"]), data, indent=2)
-        elif e["op"] == "json_set":
-            print(f"{pre}reset {e['name']} in {C.short_path(e['file'])} to {e['prev']!r}")
-            if apply:
-                data = C.read_json(Path(e["file"]), {}) or {}
-                tgt = dig(data, e["keys"], create=True)
-                if e["prev"] is None:
-                    tgt.pop(e["name"], None)
-                else:
-                    tgt[e["name"]] = e["prev"]
-                C.write_json(Path(e["file"]), data, indent=2)
-    if apply:
-        (d / "manifest.json").rename(d / "manifest.restored.json")
-        C.collect()
-    else:
-        print("\nNothing changed. Re-run with --apply to execute.")
+    def undo_relocate(e, apply, out):
+        return relocate(Plan(apply, "undo"), Path(e["to"]), Path(e["from"]), backups=False)
+    try:
+        undo.restore(name, apply, ARCHIVE, handlers={"relocate": undo_relocate}, on_applied=C.collect)
+    except undo.RestoreError as e:
+        sys.exit(str(e))
 
 
 def cmd_list(a):

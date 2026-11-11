@@ -2,6 +2,7 @@
 
   python3 -m unittest discover -s tests -k test_core
 """
+import json
 import sys
 import tempfile
 import threading
@@ -11,7 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
-from core import component, store
+from core import component, store, undo
 from core.app import Core
 
 
@@ -203,6 +204,77 @@ class CoreTest(unittest.TestCase):
         self.assertIsNone(c.store)
         self.assertEqual(c.run_pass({})["components"], {})
         self.assertEqual(c.describe()["error"], c.error)
+
+
+class UndoTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.arch = self.home / ".claude" / "_archive"
+
+    def test_a_dry_run_plan_writes_nothing(self):
+        lines = []
+        p = undo.Plan(False, "t", self.arch, out=lines.append)
+        p.say("move a -> b")
+        p.manifest["entries"].append({"op": "move", "from": "a", "to": "b"})
+        self.assertIsNone(p.finish())
+        self.assertFalse(self.arch.exists())
+        self.assertEqual(p.steps, ["move a -> b"])
+        self.assertEqual(lines, ["  [dry-run] move a -> b", "\nNothing changed. Re-run with --apply to execute."])
+
+    def test_an_applied_plan_writes_the_manifest_and_calls_back(self):
+        lines, called = [], []
+        p = undo.Plan(True, "t", self.arch, on_applied=lambda: called.append(1), undo_hint=lambda n: f"undo {n}", out=lines.append)
+        p.manifest["entries"].append({"op": "move", "from": "a", "to": "b"})
+        m = p.finish()
+        self.assertEqual(m, p.dir / "manifest.json")
+        self.assertEqual(json.loads(m.read_text())["entries"], [{"op": "move", "from": "a", "to": "b"}])
+        self.assertEqual(called, [1])
+        self.assertIn(f"Undo:     undo {p.dir.name}", lines)
+
+    def test_an_applied_plan_with_no_entries_writes_nothing(self):
+        self.assertIsNone(undo.Plan(True, "t", self.arch, out=lambda _: None).finish())
+        self.assertFalse(self.arch.exists())
+
+    def old_archive(self):
+        """A manifest exactly as prune.py wrote it before this change, with one entry of every kind."""
+        d = self.arch / "20261101-090000-archive"
+        kept, cfg = d / "files" / "skill", self.home / "cfg.json"
+        kept.mkdir(parents=True)
+        (kept / "SKILL.md").write_text("s")
+        cfg.write_text(json.dumps({"mcpServers": {"added": {}}, "enabledPlugins": {"p": False}}))
+        (d / "manifest.json").write_text(json.dumps({"created": "2026-11-01T09:00:00Z", "label": "archive", "entries": [
+            {"op": "json_backup", "backup_of": str(cfg), "backup": str(d / "json-backups" / "x")},
+            {"op": "move", "id": "skill:user:s", "from": str(self.home / "skills" / "s"), "to": str(kept)},
+            {"op": "json_del", "id": "mcp:user:gone", "file": str(cfg), "keys": ["mcpServers"], "name": "gone", "value": {"command": "x"}},
+            {"op": "json_add", "id": "mcp:user:added", "file": str(cfg), "keys": ["mcpServers"], "name": "added"},
+            {"op": "json_set", "id": "plugin:user:p", "file": str(cfg), "keys": ["enabledPlugins"], "name": "p", "prev": None},
+            {"op": "future_op", "x": 1}]}))
+        return d, cfg
+
+    def test_an_old_archive_still_restores(self):
+        d, cfg = self.old_archive()
+        lines = []
+        undo.restore("last", False, self.arch, out=lines.append)
+        self.assertTrue((d / "manifest.json").exists())
+        self.assertFalse((self.home / "skills" / "s").exists())
+        self.assertEqual(lines[0], f"Restoring {d.name}:")
+        self.assertTrue(all(l.startswith("  [dry-run] ") for l in lines[1:-1]))
+        called = []
+        undo.restore(d.name, True, self.arch, on_applied=lambda: called.append(1), out=lambda _: None)
+        self.assertEqual((self.home / "skills" / "s" / "SKILL.md").read_text(), "s")
+        self.assertEqual(json.loads(cfg.read_text()), {"mcpServers": {"gone": {"command": "x"}}, "enabledPlugins": {}})
+        self.assertTrue((d / "manifest.restored.json").exists())
+        self.assertEqual(called, [1])
+
+    def test_restore_stops_when_a_handler_says_no(self):
+        d, _ = self.old_archive()
+        with self.assertRaisesRegex(undo.RestoreError, "restore stopped; nothing after this step was changed"):
+            undo.restore(d.name, True, self.arch, handlers={"future_op": lambda e, apply, out: False}, out=lambda _: None)
+        self.assertTrue((d / "manifest.json").exists())
+        with self.assertRaisesRegex(undo.RestoreError, "no manifest in"):
+            undo.restore("absent", True, self.arch)
 
 
 if __name__ == "__main__":
