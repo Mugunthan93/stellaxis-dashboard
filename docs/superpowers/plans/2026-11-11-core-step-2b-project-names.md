@@ -25,7 +25,7 @@
 - In tests, get the command centre module with `core.component.import_folder(REPO / "collector" / "components" / "project_management").centre`, never by another import.
 - Read `DESIGN.md` before changing any page.
 - End each commit message with a blank line and `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
-- After Task 3 the old word may be written only in `collector/components/project_management/old_names.py`, `tests/test_old_names.py`, `docs/`, `CONTEXT.md` and `README.md`. Anywhere else, a test that must name it builds it from two parts.
+- The old word may be written only in `collector/components/project_management/old_names.py`, `tests/test_old_names.py`, `docs/`, `CONTEXT.md` and `README.md`. This holds for `collector/` and `tests/` from the end of Task 3, for `dashboard/`, `agents/` and `DESIGN.md` from the end of Task 4, and for `CLAUDE.md` from the end of Task 6. Anywhere else, a test that must name it builds it from two parts.
 
 ## Decisions made by the writer (my calls), with the cost if wrong
 
@@ -245,7 +245,7 @@ Expected: the new tests FAIL (`Ctx` has no `act`, `Core` has no `read`, folder n
 
 - [ ] **Step 3: Implement**
 
-- `core/undo.py`: `Plan.__init__` gets its folder from a new function `_free(archive: Path, label: str, reserve: bool) -> Path`. With `reserve` true it holds a module lock, starts from `f"{stamp()}-{label}"`, adds `-2`, `-3` … while the name is in a module-level set of names handed out or exists on disk, records the name in the set and returns the path. With `reserve` false (a dry run) it returns the plain name. It creates nothing. `restore` checks every entry's `op` against the merged table before the loop.
+- `core/undo.py`: `Plan.__init__` gets its folder from a new function `_free(archive: Path, label: str, reserve: bool) -> Path`. With `reserve` true it holds a module lock, starts from `f"{stamp()}-{label}"`, adds `-2`, `-3` … while the full path is in a module-level set of paths handed out or exists on disk, records the path in the set and returns it. With `reserve` false (a dry run) it returns the plain name. It creates nothing. `restore` checks every entry's `op` against the merged table before the loop.
 - `core/component.py`: the `undo` field; in `_import`, after the name checks, the rule for the keys of `comp.undo`.
 - `core/app.py`: `Ctx.act`, `Core.read`, `Core.undo_handlers`; `Ctx.read` delegates to `Core.read` after its own check.
 - `collector/prune.py`, `restore`: `handlers={"relocate": undo_relocate, **C.the_core().undo_handlers()}`. Nothing else in the file changes.
