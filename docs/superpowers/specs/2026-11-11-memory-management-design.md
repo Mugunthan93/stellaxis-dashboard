@@ -31,8 +31,10 @@ These are agreed. Nothing below may break them.
 
 Rule added by this design (my call):
 
-7. Measuring only reads. It reads the size and the change time of a file, never what is inside it.
-   The records hold folder paths and numbers. They hold no file names and no file contents.
+7. Measuring only reads. It reads the size and the change time of a file, not what is inside it.
+   There is one exception: the small `.git` file of a worktree, to see that the folder is a worktree.
+   The records hold folder paths and numbers. They hold no file contents. They hold no file names,
+   except where one file could not be read and is listed as not measured.
 
 ## What is measured
 
@@ -60,6 +62,7 @@ changed in `config.json`. These are the defaults (my call). The sizes are from t
 | android | `~/.android` | none | 3.2 GB |
 | caches | `~/Library/Caches` | none | more than 6 GB |
 | homebrew | `/opt/homebrew` | none | 9.7 GB |
+| applications | `/Applications` | none | not measured yet |
 | local | `~/.local` | none | 7.2 GB |
 | pnpm, npm, bun, yarn | `~/Library/pnpm`, `~/.npm`, `~/.bun`, `~/.yarn` | none | 2.7 GB |
 | cache | `~/.cache` | none | 0.6 GB |
@@ -72,9 +75,18 @@ changed in `config.json`. These are the defaults (my call). The sizes are from t
 
 A default place that does not exist on the Mac shows as "missing". That is not an error.
 
-Together these places hold about 107 GB. The disk has about 235 GB in use. The rest is macOS, the
-applications, and the folders macOS guards (see below). Memory management shows that rest as one
-number, "elsewhere". It does not guess what is in it.
+Together these places hold about 107 GB (`/Applications` was added after that count and is not in
+it). The disk has about 235 GB in use. The rest, about 128 GB, is shown as one number, "elsewhere".
+Memory management does not guess what is in it. This much is known about it on this Mac:
+
+- About 33 GB is in no folder of the owner. It is the other parts of the same disk: macOS itself, its
+  recovery copy and its swap space.
+- About 95 GB is in folders outside the places. Some of them macOS guards (see below). Many it does
+  not: the applications, the rest of `~/Library/Application Support` (Chrome's data alone is 8 GB),
+  `/Library`, and whatever else lies in the home folder.
+
+So more than half of the used space is still one number. That is the largest gap of the read side.
+The next step for it is under "Known limits".
 
 ### Inside a place
 
@@ -101,16 +113,23 @@ Inside a deps, venv, build or git folder nothing more is labelled. A `node_modul
 
 ### How a size is counted
 
-- **Size on disk.** The number is the space the files take on the disk, which is what a cleanup can
-  free. A second number, the logical size, is kept too. They differ for a file with holes, for example
+- **Size on disk.** The number is the space the files take on the disk, as the `du` command counts
+  it. For most folders that is what a cleanup can free. For files with two names and for cloned files
+  it is not; see the next two points. A second number, the logical size, is kept too. They differ for a file with holes, for example
   a virtual machine disk of the Claude desktop app.
-- **A file with two names is counted one time.** Some tools give one file several names (hard links),
-  for example pnpm. The file is counted in the first folder that sees it. Each folder also keeps the
+- **A file with two names is counted one time.** Some tools give one file several names (hard
+  links). On this Mac that is rare: 0.25 GB under `~/code`. The file is counted in the first folder that sees it. Each folder also keeps the
   number "linked": bytes in files that have another name somewhere. Removing that folder may not free
   those bytes.
-- **Cloned files are counted in full each time.** macOS can make a copy that shares its data with the
-  original until one of them changes. Python's standard library cannot see this. So the sum of all
-  places can be larger than the space really used. This is a known limit.
+- **Cloned files are counted in full each time (my call). This is the largest known error in the
+  numbers.** macOS can make a copy that shares its data with the original until one of them changes.
+  Package managers do this. Example from this Mac: `~/code/budget-app/node_modules` shows 161 MB.
+  Each of its three worktrees shows 161 MB again. But almost all of it is one set of data. Four rows
+  say 646 MB; the disk holds about 161 MB, and removing one of these folders frees almost nothing.
+  This can be seen: macOS can say, for each file, how many bytes belong to that file alone. It takes
+  one more question to macOS for each file, through a low-level call (`getattrlist`, reached with
+  Python's `ctypes`). It is not built here. A mistake in such a call can crash the whole service, and
+  no one watches this first build. It is the next step; see "Known limits".
 - **A link to another folder is never followed.** Example: `~/.stellaxis/bin` is a link to
   `collector/`. It counts as a link, a few bytes, and the walk does not go through it.
 - **Another disk is never entered.** If a folder inside a place is a different volume, it is skipped
@@ -134,7 +153,8 @@ never opens these folders, not as a place and not below a place:
 `/Volumes`, `/Network`.
 
 The list is in code. `config.json` can add to it and cannot shorten it (my call). The check ignores
-upper and lower case, as the disk does.
+upper and lower case, as the disk does. It also knows a guarded folder by what it is, not only by how
+its path is written. So the same folder reached by another path is still never opened.
 
 So these folders are not measured. Their size is part of "elsewhere". If the owner wants them
 measured, that is a question for him (see the end).
@@ -148,7 +168,9 @@ management. Everything under `~/.claude` and the desktop app's data belongs to C
 Memory management does not know which project a repo belongs to. That is a record of Project
 management. Today Project management offers no records yet, so the answer shows the repo folder and
 the owner "project_management", and nothing more. When Project management offers "which project owns
-this folder", Memory management reads it. It never reads Project management's config or source.
+this folder", Memory management reads it. It never reads Project management's config. It does walk
+`~/code`, the same source Project management reads, for different facts (sizes). The main design
+allows two components to read one source that way.
 
 ## Records
 
@@ -173,15 +195,18 @@ today, so it is not built today.
 `GET /api/memory` answers with JSON. It only reads the store and never measures.
 
 - `state`: `never` before the first measurement is stored, then `measured`.
-- `measured_at`, `seconds`, `complete`, `note`: the last measurement.
+- `measured_at`, `started_at`, `seconds`, `complete`, `note`: the last measurement. `complete` is
+  false when the time limit cut it short or a folder could not be read.
 - `measuring`: `null`, or when it started, which place it is in, and how many files it has seen.
 - `disk`: total, free and used bytes at the time of the measurement.
-- `places`: one row for each place, with its state: `ok`, `partial`, `missing`, `refused` or
-  `not_reached`.
+- `places`: one row for each place, with its state: `ok`, `partial`, `missing`, `refused`,
+  `failed` or `not_reached`.
 - `folders`: the rows below the places.
 - `elsewhere_bytes`: used space of the disk minus the sum of the places.
-- `not_measured`: each folder that could not be measured, and why. Example reasons: "permission
-  denied", "guarded by macOS", "another volume", "time limit".
+- `not_measured`: the folders that could not be measured, and why. At most 200 are listed;
+  `not_measured_count` is the full number. Example reasons: "permission denied", "guarded by macOS",
+  "another volume", "changed during the walk", "time limit". A folder macOS guards is listed here, but
+  it does not make the measurement incomplete: it is left out on purpose.
 - `idle`: why nothing is being measured, when that needs saying. Example: no places are set.
 - `error`: the error of the last measurement that failed, if it failed.
 
@@ -201,15 +226,18 @@ minute on this Mac (2 million files). It may not run inside the pass. So:
 - Nothing is written to the store while it walks. The result is written in one step at the end. If the
   service stops in the middle, the old result stays and nothing is half written.
 - A measurement that fails is tried again after `every`, not after one minute.
+- The first pass of a process never starts a measurement (my call). `collect.py run`, `prune.py` and
+  the desktop MCP tool each make one pass in a process of their own. A walk started there could not
+  finish. So the service measures, from its second pass on, one minute after it starts.
 
 Measured on this Mac: while the walk ran, other work in the same process was not slower (0.162 s with
 the walk, 0.166 s without).
 
-**The default places are used only when Stellaxis's data folder is inside the home folder (my call).**
-The home folder here is the home of the Mac account, as macOS knows it. It is not the `HOME` setting,
-which a program can change. In the service the data folder is inside it (`~/.stellaxis`). The tests
-keep their data in a temp folder, and some tests also set a false `HOME`; in both cases the defaults
-are off, so a test never walks the real disk. Places named in `config.json` are always used.
+**The default places are used only when Stellaxis's data folder is `.stellaxis` in the home folder
+(my call).** The home folder here is the home of the Mac account, as macOS knows it. It is not the
+`HOME` setting, which a program can change. In the service this is so (`~/.stellaxis`). The tests keep
+their data in a temp folder, and some tests also set a false `HOME`; in both cases the defaults are
+off, so a test never walks the real disk. Places named in `config.json` are always used.
 
 ### Config
 
@@ -224,8 +252,9 @@ One key, `memory`, in `config.json`. Every part has a default in code.
 }
 ```
 
-- `places` adds to the defaults. An entry with the name of a default replaces it. An entry with
-  `"off": true` removes it (my call). Each entry has `name`, `path`, and may have `owner`, `depth`
+- `places` adds to the defaults. An entry with the name of a default changes what it names (for
+  example the path) and keeps the rest. An entry with `"off": true` removes it (my call). A path must
+  be a full path or start with `~/`. Each entry has `name`, `path`, and may have `owner`, `depth`
   (levels to break down, default 1) and `repos` (label repos, worktrees, deps, venv and build inside
   it).
 - A place inside another place is refused, so nothing is counted twice.
@@ -257,8 +286,9 @@ Three classes (my call). The class decides how the removal works.
 **A. Can be rebuilt.** A tool made it and can make it again.
 
 - Package manager caches: npm, pnpm, bun, pip, Homebrew downloads, CocoaPods, Playwright browsers.
-  Where the tool has its own cleaning command (`brew cleanup`, `pnpm store prune`,
-  `npm cache clean --force`), that command is used (my call).
+  Where the tool has its own cleaning command, it is used only if it can first show what it will
+  remove, as `brew cleanup -n` does (my call). A command that cannot show that first, such as
+  `npm cache clean --force`, is not used; then the folder that was shown is deleted.
 - Xcode: `DerivedData`, simulator caches, simulators that Xcode marks unavailable.
 - Inside a repo: deps, venv and build folders. Only if git ignores the folder (`git check-ignore`),
   so a hand-written `build` folder is never offered. Only if Project management says the repo has no
@@ -289,7 +319,7 @@ Three classes (my call). The class decides how the removal works.
 
 ### How "in use" is detected
 
-"In use" is a fact that can be checked now. It is not an age. "Not changed for 60 days" is not "in
+"In use" is a fact that can be checked now (my call). It is not an age. "Not changed for 60 days" is not "in
 use" or "not in use"; it is a threshold, and thresholds are the owner's.
 
 | Fact | How it is checked | Who checks |
@@ -310,6 +340,11 @@ Rules for the check:
 Known gap: an editor window that is open on a repo, with no terminal and no running program, is not
 seen. That is why class A holds only things a tool can rebuild.
 
+So this design reads "in use" narrowly: something runs in the folder now, or a session is live, or the
+work in it exists nowhere else. A project the owner worked on an hour ago, with all work pushed and
+nothing running, is not in use by this reading. Its deps, venv and build folders could be offered.
+Whether that is what the owner means is question 9.
+
 ### What a cleaning action looks like
 
 1. **The list.** The owner sees every folder that may be offered: path, owner, size, how many of the
@@ -327,8 +362,10 @@ seen. That is why class A holds only things a tool can rebuild.
 
 Freeing space and undo do not go together. A file that can be put back still takes its space.
 
-- **Class A and B: no undo.** The folder is deleted. The dry run shows the command that rebuilds it,
-  for example `pnpm install`, and says it needs time and the network.
+- **Class A and B: no undo (my call).** The folder is deleted. For class A the dry run shows the
+  command that rebuilds it, for example `pnpm install`, and says it needs time and the network. For
+  class B everything hangs on the check "this is also somewhere else". If that check is wrong one
+  time, work is lost for good. See question 9.
 - **Class C: two steps (my call).** Step one, "set aside": the folder is moved into a holding folder
   on the same disk. This can be undone by moving it back, and it frees no space. Step two, "empty":
   the holding folder is deleted. This frees the space and cannot be undone. The owner does step two
@@ -356,27 +393,39 @@ files and archives are in use; whether the desktop app is running.
 
 ## Known limits
 
-- Cloned files are counted in full each time (see above).
-- A measurement that waits on the disk cannot be stopped from outside. If macOS showed a permission
-  prompt in spite of the guarded list, that measurement would wait until the service restarts. The
-  service and the collection pass keep working. `GET /api/memory` would show "measuring" with an old
-  start time and the place it is stuck in.
-- `collect.py run` (one pass, then exit) starts a measurement and exits before it is done. Only the
-  service finishes measurements.
-- The free space is as old as the last measurement, up to 6 hours.
+- **Cloned files are counted in full each time** (see "How a size is counted"). Next step: one more
+  number for each folder, "bytes that removing this folder alone frees".
+- **"Elsewhere" is more than half of the used space** (see "Places"). Next step: let a place hold
+  another place, with the inner one taken out, so "the rest of the home folder" can be one row.
+- **A measurement that waits on the disk cannot be stopped from outside.** If macOS showed a
+  permission prompt in spite of the guarded list, that measurement would wait until the service
+  restarts. The service and the collection pass keep working.
+- **No one has run the default places under the service yet.** On the first start, look at
+  `GET /api/memory`. If `measuring.place` stays the same and `started_at` gets old, the walk waits on
+  a prompt in that place. Add the folder to `memory.guarded` and restart the service.
+- **Only the service measures.** A process that makes one pass (`collect.py run`, `prune.py`) never
+  measures. One case is left: the desktop MCP tool collects in its own process when the service is
+  down. If it does that twice in one process, the second pass can start a walk there. "Only one at a
+  time" holds inside one process, not across two.
+- **The free space is as old as the last measurement**, up to 6 hours.
+- **Nothing limits the number of rows in the code place.** Every folder named like build output gets
+  a row. Today there are about 800. One odd repo could add thousands.
+- **A folder with very many files needs much memory for a moment** (a few hundred MB for 500,000
+  files in one folder). Not seen on this Mac.
+- **Xcode's simulator files for the whole Mac** (`/Library/Developer/CoreSimulator`) are not a place.
 
 ## My calls, and what each costs if wrong
 
 | # | Call | Cost if wrong |
 |---|---|---|
 | 1 | The default places (the table above). | A place the owner cares about is missing until one line is added to `config.json`. No data is lost. |
-| 2 | Guarded folders are never measured, so Documents, Downloads, Pictures, Movies and Docker's disk are inside "elsewhere". | The owner cannot see what may be his biggest folders. Fixing it needs his permission in macOS settings, and then one config line. |
+| 2 | Guarded folders are never measured, so Documents, Downloads, Pictures, Movies and Docker's disk are inside "elsewhere". | The owner cannot see what may be large folders. Xcode's own cache (`~/Library/Caches/com.apple.dt.Xcode`) is hidden by the same rule. Fixing it needs his permission in macOS settings, and then one config line. |
 | 3 | Owner comes from the place, not from each folder. | A folder under `~/code` that is not a project's is still shown as Project management's. Display only. |
 | 4 | Sizes are size on disk; a hard-linked file counts once, in the first folder that sees it. | Two folders that share files show different sizes from run to run only if the folder order changes; it does not. Low. |
 | 5 | Each folder keeps the time of its newest change. | One unused column. |
 | 6 | Folder rows are kept for the last measurement only. | "What grew this week, by folder" cannot be shown until history is kept. The whole-disk history is kept. |
 | 7 | Measure again after 6 hours; stop after 15 minutes. | Numbers are staler, or the disk works more often, than the owner likes. One config line. |
-| 8 | The defaults are on only when the data folder is inside the account's home folder. `HOME` is not looked at. | A Stellaxis set up with its data outside the home folder, or run with a different `HOME` on purpose, measures nothing until places are named in config. The route says so. |
+| 8 | The defaults are on only when the data folder is `.stellaxis` in the account's home folder. `HOME` is not looked at. | A Stellaxis set up with its data anywhere else, or run with a different `HOME` on purpose, measures nothing until places are named in config. The route says so. |
 | 9 | The config key is `memory`; `places` adds to the defaults; `guarded` can only add. | A rename later means one more alias. |
 | 10 | Kinds in the code place: deps and build by name, venv by `pyvenv.cfg`, worktree by its `.git` file. | A folder gets the wrong label. Display only today; cleaning checks with git before it offers. |
 | 11 | No file names in the records, only folders. | "Which single file is huge" cannot be answered. |
@@ -385,15 +434,22 @@ files and archives are in use; whether the desktop app is running.
 | 14 | A repo's deps, venv and build folders are offered only if git ignores them. | A rebuildable folder that git tracks by mistake is never offered. Safe side. |
 | 15 | All of `~/Archive` is never offered, not only the project dump. | The owner must remove an old archive by hand. Safe side. |
 | 16 | Worktree removal is Project management's action, not Memory management's. | If the owner wants one "clean" button for everything, the page must call two components. |
-| 17 | Where a tool has its own cleaning command, cleaning uses it. | The dry run can show the size before, but not exactly what the tool will remove. |
+| 17 | A tool's own cleaning command is used only when it can first show what it will remove. | Some caches are deleted as a folder though the tool has a gentler command. |
 | 18 | The offer `sizes` is named but not built. | Project management cannot show disk use of each project until it is. |
 | 19 | No page is built. The owner sees the numbers as JSON at `/api/memory`. | He has to read JSON until a page exists. |
+| 20 | Cloned files are counted in full. The number "freed by removing this folder alone" is not built yet. | For a cloned folder (a `node_modules` in a worktree) the size shown is far more than a cleanup would free. The owner could pick the wrong thing to remove. Nothing is lost; a rebuild puts it back. |
+| 21 | "In use" means: something runs in it now, a session is live, or its work exists nowhere else. It does not mean "a project I am still working on". | A rebuildable folder of a project the owner works on every day could be offered while nothing runs. He would have to rebuild it. |
+| 22 | Class A and B are deleted with no undo. | If the check "this worktree is also somewhere else" is wrong one time, that work is lost for good. |
+| 23 | The first pass of a process never measures. | The first measurement after a service start comes one minute later. |
+| 24 | A folder macOS guards does not make a measurement "incomplete". | A place whose size lacks its guarded folders shows as `ok`. The list of folders not measured still names them. |
+| 25 | `/Applications` is a default place. | A longer walk, for sizes the owner may not need. One config line turns it off. |
 
 ## Questions only the owner can answer
 
 1. **Guarded folders.** Do you want Documents, Downloads, Pictures, Movies and Music measured? They
-   may hold a large part of the 128 GB that is "elsewhere". It needs you to give the Stellaxis
-   service "Full Disk Access" in the macOS settings, one time.
+   are part of the 128 GB that is "elsewhere". How large a part is not known: about 33 GB of it is
+   macOS itself, and much of the rest is in folders that are not guarded. Measuring them needs you to
+   give the Stellaxis service "Full Disk Access" in the macOS settings, one time.
 2. **Transcripts.** May old session transcripts ever be offered for cleaning? `~/.claude` is 4.3 GB,
    mostly transcripts. They are the only copy of what each session said.
 3. **Old archives.** May the undo data of old Stellaxis actions (`~/.claude/_archive`) ever be
@@ -407,3 +463,9 @@ files and archives are in use; whether the desktop app is running.
 7. **Your rule for "unused".** Do you want to tick folders one by one each time, or give a rule of
    your own that Stellaxis remembers?
 8. **How you will look at it.** A page, Jarvis ("what takes my disk?"), or both?
+9. **What "in use" means to you.** This design says: something is running in the folder right now, or
+   a session is live, or the work exists nowhere else. Or do you mean "a project I am still working
+   on", also when nothing runs? And for a finished worktree whose branch is merged or pushed: is
+   "deleted, no undo" acceptable?
+10. **The rest of the disk.** More than half of the used space is "elsewhere". Should Stellaxis also
+    break down the rest of your home folder, or only the developer places it measures today?
