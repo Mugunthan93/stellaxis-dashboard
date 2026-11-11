@@ -22,6 +22,7 @@ class Component:
     actions: dict = field(default_factory=dict)
     offers: dict = field(default_factory=dict)
     reads: list = field(default_factory=list)
+    undo: dict = field(default_factory=dict)   # step name -> handler(entry: dict, apply: bool, out) -> bool
     handle: Callable | None = None
     error: str | None = None
 
@@ -61,6 +62,9 @@ def _import(folder: Path) -> Component:
         raise ValueError(f"bad component name {comp.name!r}")
     if comp.name != folder.name:
         raise ValueError(f"component name {comp.name!r} differs from folder name {folder.name!r}")
+    for step in comp.undo:
+        if not step.startswith(comp.name + "."):
+            raise ValueError(f"undo step {step!r} must start with {comp.name + '.'!r}")
     return replace(comp)
 
 

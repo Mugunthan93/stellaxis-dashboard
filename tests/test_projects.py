@@ -1,6 +1,6 @@
-"""Workspace assignment: which configured project a folder belongs to.
+"""Project assignment: which configured project a folder belongs to.
 
-  python3 -m unittest discover -s tests -k test_workspaces
+  python3 -m unittest discover -s tests -k test_projects
 """
 import json
 import os
@@ -13,9 +13,11 @@ from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
-import workspaces as W  # noqa: E402
+from core.component import import_folder  # noqa: E402
 
-WS = [{"id": "ph", "name": "PartHub", "folders": ["~/code/ph-admin", "~/code/ph-admin-ui"]}]
+W = import_folder(Path(__file__).resolve().parent.parent / "collector" / "components" / "project_management").centre
+
+WS = [{"id": "ph", "name": "PartHub", "repos": ["~/code/ph-admin", "~/code/ph-admin-ui"]}]
 
 PROJECTS = [{"path": "~/code/x", "abs": "/nonexistent/code/x", "worktree_of": None},
             {"path": "~/code/x/.claude/worktrees/w", "abs": "/nonexistent/code/x/.claude/worktrees/w",
@@ -26,58 +28,58 @@ SESSIONS = [
     {"id": "wt", "project": "~/code/x/.claude/worktrees/w", "branch": "feat", "first_ts": "2026-11-05T00:00:00Z", "last_ts": "2026-11-05T01:00:00Z", "cost": 3.0},
 ]
 GONE = [{"id": "gone", "project": "~/code/x/deleted", "branch": None, "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 0.5}]
-CFG = {"workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x"]}]}
+CFG = {"projects": [{"id": "x", "name": "X", "repos": ["~/code/x"]}]}
 
 
 class IndexTest(unittest.TestCase):
     def test_groups_repo_branch_newest_first(self):
         i = W.build_index(SESSIONS, PROJECTS, {}, CFG)
-        r = i["workspaces"][0]["repos"][0]
+        r = i["projects"][0]["repos"][0]
         self.assertEqual([b["name"] for b in r["branches"]], ["feat", "main"])
         self.assertEqual([s["id"] for s in r["branches"][1]["sessions"]], ["new", "old"])
 
     def test_worktree_session_joins_parent_repo(self):
-        self.assertEqual(len(W.build_index(SESSIONS, PROJECTS, {}, CFG)["workspaces"][0]["repos"]), 1)
+        self.assertEqual(len(W.build_index(SESSIONS, PROJECTS, {}, CFG)["projects"][0]["repos"]), 1)
 
     def test_session_in_deleted_worktree_joins_parent_repo(self):
         with tempfile.TemporaryDirectory() as t:
             dead = t + "/.claude/worktrees/dead"
-            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": [t]}]}
+            cfg = {"projects": [{"id": "x", "name": "X", "repos": [t]}]}
             sess = [{"id": "d", "project": dead, "branch": "b", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 1}]
-            repos = W.build_index(sess, [{"path": dead, "abs": dead, "worktree_of": None}], {}, cfg)["workspaces"][0]["repos"]
+            repos = W.build_index(sess, [{"path": dead, "abs": dead, "worktree_of": None}], {}, cfg)["projects"][0]["repos"]
             self.assertEqual([r["path"] for r in repos], [t])
             self.assertTrue(repos[0]["exists"])
             self.assertEqual(repos[0]["branches"][0]["sessions"][0]["id"], "d")
 
     def test_session_in_deleted_folder_stays_listed(self):
-        r = W.build_index(GONE, PROJECTS, {}, CFG)["workspaces"][0]["repos"][0]
+        r = W.build_index(GONE, PROJECTS, {}, CFG)["projects"][0]["repos"][0]
         self.assertFalse(r["exists"])
         self.assertEqual(r["branches"][0]["name"], "(no branch)")
         self.assertEqual(r["branches"][0]["sessions"][0]["id"], "gone")
 
-    def test_app_title_is_joined_and_other_is_last(self):
+    def test_app_title_is_joined_and_unassigned_is_last(self):
         i = W.build_index(SESSIONS, PROJECTS, {"new": {"title": "T", "app_id": "local_1", "branch": "app-b"}}, CFG)
-        self.assertEqual(i["workspaces"][-1]["id"], "other")
-        self.assertEqual(i["workspaces"][-1]["name"], "Other")
-        s = next(s for b in i["workspaces"][0]["repos"][0]["branches"] for s in b["sessions"] if s["id"] == "new")
+        self.assertEqual(i["projects"][-1]["id"], "unassigned")
+        self.assertEqual(i["projects"][-1]["name"], "Unassigned")
+        s = next(s for b in i["projects"][0]["repos"][0]["branches"] for s in b["sessions"] if s["id"] == "new")
         self.assertEqual((s["title"], s["app_id"]), ("T", "local_1"))
-        self.assertIn("app-b", [b["name"] for b in i["workspaces"][0]["repos"][0]["branches"]])
+        self.assertIn("app-b", [b["name"] for b in i["projects"][0]["repos"][0]["branches"]])
 
     def test_repo_has_absolute_path(self):
-        self.assertEqual(W.build_index(SESSIONS, PROJECTS, {}, CFG)["workspaces"][0]["repos"][0]["abs"],
+        self.assertEqual(W.build_index(SESSIONS, PROJECTS, {}, CFG)["projects"][0]["repos"][0]["abs"],
                          str(W._norm("~/code/x")))
 
     def test_cost_30d_counts_recent_sessions_only(self):
         now = "2026-11-06T00:00:00Z"
         i = W.build_index(SESSIONS + [{**SESSIONS[0], "id": "ancient", "last_ts": "2026-08-01T00:00:00Z", "cost": 50}],
                           PROJECTS, {}, CFG, now=now)
-        self.assertEqual(i["workspaces"][0]["cost_30d"], 6.0)
+        self.assertEqual(i["projects"][0]["cost_30d"], 6.0)
 
 
     def test_configured_folder_with_no_sessions_is_a_repo_with_no_branches(self):
         with tempfile.TemporaryDirectory() as t:
-            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x", t, t + "/gone"]}]}
-            repos = W.build_index(SESSIONS, PROJECTS, {}, cfg)["workspaces"][0]["repos"]
+            cfg = {"projects": [{"id": "x", "name": "X", "repos": ["~/code/x", t, t + "/gone"]}]}
+            repos = W.build_index(SESSIONS, PROJECTS, {}, cfg)["projects"][0]["repos"]
             self.assertEqual([r["path"] for r in repos], ["~/code/x", t])
             self.assertEqual((repos[1]["abs"], repos[1]["exists"], repos[1]["branches"]), (str(W._norm(t)), True, []))
 
@@ -86,22 +88,22 @@ class IndexTest(unittest.TestCase):
             r = t + "/repo"
             os.mkdir(r)
             sess = [{"id": "a", "project": r, "branch": "b", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T01:00:00Z", "cost": 1}]
-            cfg = {"workspaces": [{"id": "x", "name": "X", "folders": [t, r + "/"]}]}
-            self.assertEqual([x["path"] for x in W.build_index(sess, [], {}, cfg)["workspaces"][0]["repos"]], [r])
+            cfg = {"projects": [{"id": "x", "name": "X", "repos": [t, r + "/"]}]}
+            self.assertEqual([x["path"] for x in W.build_index(sess, [], {}, cfg)["projects"][0]["repos"]], [r])
 
-    def test_folder_in_two_workspaces_shows_in_the_first(self):
+    def test_folder_in_two_projects_shows_in_the_first(self):
         with tempfile.TemporaryDirectory() as t:
-            cfg = {"workspaces": [{"id": "x", "folders": [t]}, {"id": "y", "folders": [t]}]}
-            wss = W.build_index([], [], {}, cfg)["workspaces"]
+            cfg = {"projects": [{"id": "x", "repos": [t]}, {"id": "y", "repos": [t]}]}
+            wss = W.build_index([], [], {}, cfg)["projects"]
             self.assertEqual([len(w["repos"]) for w in wss], [1, 0, 0])
 
     def test_config_entry_with_no_id_is_skipped(self):
-        bad = [{"name": "noid", "folders": ["~/code/x"]}, "text", {"id": ["x"]}, {"id": "x", "name": "X", "folders": ["~/code/x"]}]
+        bad = [{"name": "noid", "repos": ["~/code/x"]}, "text", {"id": ["x"]}, {"id": "x", "name": "X", "repos": ["~/code/x"]}]
         self.assertEqual(W.assign("~/code/x", bad), "x")
-        i = W.build_index(SESSIONS, PROJECTS, {}, {"workspaces": bad})
-        self.assertEqual([w["id"] for w in i["workspaces"]], ["x", "other"])
-        self.assertEqual([w["id"] for w in W.build_index([], [], {}, {"workspaces": "x"})["workspaces"]], ["other"])
-        self.assertEqual(W.build_index([], [], {}, {"workspaces": [{"id": "x", "folders": "~/code/x"}]})["workspaces"][0]["repos"], [])
+        i = W.build_index(SESSIONS, PROJECTS, {}, {"projects": bad})
+        self.assertEqual([w["id"] for w in i["projects"]], ["x", "unassigned"])
+        self.assertEqual([w["id"] for w in W.build_index([], [], {}, {"projects": "x"})["projects"]], ["unassigned"])
+        self.assertEqual(W.build_index([], [], {}, {"projects": [{"id": "x", "repos": "~/code/x"}]})["projects"][0]["repos"], [])
 
 
 class AssignTest(unittest.TestCase):
@@ -109,7 +111,7 @@ class AssignTest(unittest.TestCase):
         self.assertEqual(W.assign("~/code/ph-admin/.claude/worktrees/x", WS), "ph")
 
     def test_name_prefix_is_not_a_match(self):
-        self.assertEqual(W.assign("~/code/ph-admin-old", WS), "other")
+        self.assertEqual(W.assign("~/code/ph-admin-old", WS), "unassigned")
 
     def test_absolute_and_tilde_paths_match(self):
         self.assertEqual(W.assign(os.path.expanduser("~/code/ph-admin-ui"), WS), "ph")
@@ -149,7 +151,7 @@ class AppRecordsTest(unittest.TestCase):
         rec = W.app_records(self.base)
         self.assertEqual(list(rec), ["ok"])
         s = {"id": "ok", "project": "~/code/x", "branch": "main", "first_ts": "t", "last_ts": "t", "cost": 0}
-        self.assertEqual(W.build_index([s], [], rec, {})["workspaces"][-1]["repos"][0]["branches"][0]["name"], "main")
+        self.assertEqual(W.build_index([s], [], rec, {})["projects"][-1]["repos"][0]["branches"][0]["name"], "main")
 
     def test_unreadable_folder_keeps_what_was_found(self):
         def walk(_, __):
@@ -213,6 +215,7 @@ class ReadApiTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()
         if cls.old is None:
             os.environ.pop("STELLAXIS_HOME", None)
         else:
@@ -228,15 +231,15 @@ class ReadApiTest(unittest.TestCase):
         return r.status, (json.loads(raw) if r.status == 200 else None)
 
     def test_missing_index_is_empty_list(self):
-        (self.home / "workspaces.json").unlink(missing_ok=True)
-        code, body = self.get("/api/workspaces")
-        self.assertEqual((code, body["workspaces"], body["live_ok"]), (200, [], False))
+        (self.home / "projects.json").unlink(missing_ok=True)
+        code, body = self.get("/api/projects")
+        self.assertEqual((code, body["projects"], body["live_ok"]), (200, [], False))
 
     def test_binary_missing_gives_null_status(self):
-        (self.home / "workspaces.json").write_text(json.dumps({"workspaces": [{"id": "x", "repos": [
+        (self.home / "projects.json").write_text(json.dumps({"projects": [{"id": "x", "repos": [
             {"path": "p", "branches": [{"name": "b", "sessions": [{"id": "s1"}]}]}]}]}))
-        code, body = self.get("/api/workspaces")
-        s = body["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        code, body = self.get("/api/projects")
+        s = body["projects"][0]["repos"][0]["branches"][0]["sessions"][0]
         self.assertEqual((code, body["live_ok"], s["status"]), (200, False, None))
 
     def test_other_paths_are_not_ours(self):
@@ -336,7 +339,7 @@ class RepoStateTest(unittest.TestCase):
         sessions = [{"id": "s", "project": str(d), "branch": "main", "first_ts": "2026-11-01T00:00:00Z",
                      "last_ts": "2026-11-01T01:00:00Z", "cost": 0}]
         idx = W.build_index(sessions, projects, {}, {}, now="2026-11-06T00:00:00Z")
-        self.assertEqual(idx["workspaces"][-1]["repos"][0]["state"], {"remote": False, "ahead": 0, "dirty": 0})
+        self.assertEqual(idx["projects"][-1]["repos"][0]["state"], {"remote": False, "ahead": 0, "dirty": 0})
 
 
 BG_OUT = "Starting background service…\nbackgrounded · abcd1234 · fz-probe\n"
@@ -398,6 +401,7 @@ class ActionApiTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()
         for k, v in cls.old.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
@@ -428,7 +432,7 @@ class ActionApiTest(unittest.TestCase):
         p.write_text(json.dumps(cur))
 
     def index(self, sessions=()):
-        (self.dir / "stx" / "workspaces.json").write_text(json.dumps({"workspaces": [
+        (self.dir / "stx" / "projects.json").write_text(json.dumps({"projects": [
             {"id": "w", "name": "W", "repos": [{"path": self.repo, "abs": self.repo, "exists": True, "branches": [
                 {"name": "b", "sessions": list(sessions)}]}]}]}))
 
@@ -486,7 +490,7 @@ class ActionApiTest(unittest.TestCase):
 
     def test_unsendable_prompts_are_400(self):
         for bad in ("a\x00b", "a\ud800b"):
-            self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": bad})[0], 400)
+            self.assertEqual(self.post("/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": bad})[0], 400)
         self.assertEqual(self.calls(), [])
 
     def test_bad_content_length_is_400(self):
@@ -515,13 +519,13 @@ class ActionApiTest(unittest.TestCase):
             if "-p" in args:
                 raise subprocess.TimeoutExpired(args, 90)
             return real(args, **kw)
-        with mock.patch("workspaces.subprocess.run", side_effect=slow_relay):
+        with mock.patch.object(W.subprocess, "run", side_effect=slow_relay):
             self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
         self.behave(relay={"code": 1, "tool": None})
         self.assertEqual(self.post(f"/api/sessions/{UID}/message", {"prompt": "x"})[0], 502)
 
     def test_foreign_origin_is_403(self):
-        body = {"workspace": "w", "folder": self.repo, "prompt": "hi"}
+        body = {"project": "w", "folder": self.repo, "prompt": "hi"}
         self.assertEqual(self.post("/api/sessions/new", body, headers={"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(self.calls(), [])
 
@@ -529,26 +533,26 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(W.start(self.repo, "hi", self.cfg), {"id": "abcd1234"})
 
     def test_new_session_endpoint_and_prompt_limits(self):
-        self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi  \n"}),
+        self.assertEqual(self.post("/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": "hi  \n"}),
                          (200, {"id": "abcd1234"}))
         self.assertEqual(self.fake_args()[-1], "hi")
         for bad in ("", "   ", "x" * 4001, 5):
-            self.assertEqual(self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": bad})[0], 400)
+            self.assertEqual(self.post("/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": bad})[0], 400)
         self.assertEqual(len(self.calls("bg")), 1)
 
-    def test_new_session_refuses_folder_outside_workspace(self):
+    def test_new_session_refuses_folder_outside_project(self):
         other = self.dir / "other"
         other.mkdir()
-        code, _ = self.post("/api/sessions/new", {"workspace": "w", "folder": str(other), "prompt": "hi"})
+        code, _ = self.post("/api/sessions/new", {"project": "w", "folder": str(other), "prompt": "hi"})
         self.assertEqual(code, 403)
-        self.assertEqual(self.post("/api/sessions/new", {"workspace": "nope", "folder": self.repo, "prompt": "hi"})[0], 404)
+        self.assertEqual(self.post("/api/sessions/new", {"project": "nope", "folder": self.repo, "prompt": "hi"})[0], 404)
         self.assertEqual(self.calls(), [])
 
     def test_cli_refusal_reaches_the_page(self):
-        self.behave(bg={"err": "Workspace not trusted\n", "code": 1})
-        code, body = self.post("/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"})
+        self.behave(bg={"err": "Project not trusted\n", "code": 1})
+        code, body = self.post("/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": "hi"})
         self.assertEqual(code, 422)
-        self.assertIn("Workspace not trusted", body["error"])
+        self.assertIn("Project not trusted", body["error"])
 
     def test_listed_session_uses_relay_never_resume(self):
         self.listed()
@@ -639,7 +643,7 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
     def test_foreign_host_and_non_json_are_refused(self):
-        body = {"workspace": "w", "folder": self.repo, "prompt": "hi"}
+        body = {"project": "w", "folder": self.repo, "prompt": "hi"}
         self.assertEqual(self.post("/api/sessions/new", body, headers={"Host": "evil.example"})[0], 403)
         self.assertEqual(self.post("/api/sessions/new", body, headers={"Content-Type": "text/plain"})[0], 415)
         self.assertEqual(self.calls(), [])
@@ -671,6 +675,8 @@ class ActionApiTest(unittest.TestCase):
                               stderr=subprocess.PIPE, text=True, env=env)
         pr.stdin.write(raw if isinstance(raw, str) else json.dumps(raw))
         pr.stdin.close()
+        self.addCleanup(pr.stderr.close)
+        self.addCleanup(pr.stdout.close)
         return pr
 
     def req(self, **kw):
@@ -921,7 +927,7 @@ class ActionApiTest(unittest.TestCase):
     def test_switch_creates_and_removes_and_shows_in_rows(self):
         self.assertEqual(self.post("/api/approvals/session/zzz", {"on": True})[0], 400)
         self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": 1})[0], 400)
-        row = lambda: self.get("/api/workspaces")[1]["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        row = lambda: self.get("/api/projects")[1]["projects"][0]["repos"][0]["branches"][0]["sessions"][0]
         self.assertIs(row()["approve"], False)
         self.switch_on()
         self.assertIs(row()["approve"], True)
@@ -930,7 +936,7 @@ class ActionApiTest(unittest.TestCase):
         self.assertEqual(self.post(f"/api/approvals/session/{UID}", {"on": False})[0], 200)
 
     def test_approve_ready_needs_the_hook_in_settings(self):
-        ready = lambda: self.get("/api/workspaces")[1]["approve_ready"]
+        ready = lambda: self.get("/api/projects")[1]["approve_ready"]
         self.assertIs(ready(), False)
         f = self.dir / "claude" / "settings.json"
         for bad in ("{", "[]", '{"hooks": 1}', '{"hooks": {"PermissionRequest": [1]}}',
@@ -964,61 +970,61 @@ class ActionApiTest(unittest.TestCase):
         on = self.dir / "stx" / "approvals" / "on"
         (on / "keep-me").write_text("")
         self.behave(agents={"out": "not json"})
-        self.assertEqual(self.get("/api/workspaces")[0], 200)
+        self.assertEqual(self.get("/api/projects")[0], 200)
         self.assertTrue((on / UID).exists())
         self.behave(agents={"out": "[]"})
-        row = self.get("/api/workspaces")[1]["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]
+        row = self.get("/api/projects")[1]["projects"][0]["repos"][0]["branches"][0]["sessions"][0]
         self.assertIs(row["approve"], False)
         self.assertFalse((on / UID).exists())
         self.assertTrue((on / "keep-me").exists())
 
-    # --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md ---
+    # --- task lists: $STELLAXIS_HOME/tasks/<project id>.md ---
     def tasks(self):
-        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo]}]
+        self.cfg["projects"] = [{"id": "w", "name": "W", "repos": [self.repo]}]
         return self.dir / "stx" / "tasks" / "w.md"
 
     def test_add_toggle_remove_round_trip(self):
         f = self.tasks()
-        self.assertEqual(self.get("/api/workspaces/w/tasks"), (200, []))
-        code, rows = self.post("/api/workspaces/w/tasks", {"add": "  write tests "})
+        self.assertEqual(self.get("/api/projects/w/tasks"), (200, []))
+        code, rows = self.post("/api/projects/w/tasks", {"add": "  write tests "})
         self.assertEqual((code, rows), (200, [{"line": 1, "text": "write tests", "done": False}]))
         self.assertEqual(f.read_text(), "- [ ] write tests\n")
-        self.post("/api/workspaces/w/tasks", {"add": "ship"})
-        code, rows = self.post("/api/workspaces/w/tasks", {"toggle": 2, "expect": "ship"})
+        self.post("/api/projects/w/tasks", {"add": "ship"})
+        code, rows = self.post("/api/projects/w/tasks", {"toggle": 2, "expect": "ship"})
         self.assertEqual([r["done"] for r in rows], [False, True])
         self.assertEqual(f.read_text(), "- [ ] write tests\n- [x] ship\n")
-        code, rows = self.post("/api/workspaces/w/tasks", {"toggle": 2, "expect": "ship"})
+        code, rows = self.post("/api/projects/w/tasks", {"toggle": 2, "expect": "ship"})
         self.assertEqual([r["done"] for r in rows], [False, False])
-        code, rows = self.post("/api/workspaces/w/tasks", {"remove": 1, "expect": "write tests"})
+        code, rows = self.post("/api/projects/w/tasks", {"remove": 1, "expect": "write tests"})
         self.assertEqual(rows, [{"line": 1, "text": "ship", "done": False}])
-        self.assertEqual(self.get("/api/workspaces/w/tasks")[1], rows)
+        self.assertEqual(self.get("/api/projects/w/tasks")[1], rows)
 
     def test_other_lines_in_the_file_survive(self):
         f = self.tasks()
         f.parent.mkdir()
         f.write_bytes("# Plan\n\nnotes  with trailing  \n- [ ] a\n* bullet\r\n- [x] b".encode())
-        self.assertEqual([r["line"] for r in self.get("/api/workspaces/w/tasks")[1]], [4, 6])
-        self.post("/api/workspaces/w/tasks", {"toggle": 4, "expect": "a"})
-        self.post("/api/workspaces/w/tasks", {"add": "c"})
-        self.post("/api/workspaces/w/tasks", {"remove": 6, "expect": "b"})
+        self.assertEqual([r["line"] for r in self.get("/api/projects/w/tasks")[1]], [4, 6])
+        self.post("/api/projects/w/tasks", {"toggle": 4, "expect": "a"})
+        self.post("/api/projects/w/tasks", {"add": "c"})
+        self.post("/api/projects/w/tasks", {"remove": 6, "expect": "b"})
         self.assertEqual(f.read_bytes().decode(), "# Plan\n\nnotes  with trailing  \n- [x] a\n* bullet\r\n- [ ] c\n")
 
     def test_stale_edit_is_refused(self):
         f = self.tasks()
-        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        self.post("/api/projects/w/tasks", {"add": "a"})
         before = f.read_bytes()
         for op in ({"toggle": 1, "expect": "other"}, {"remove": 1, "expect": "other"},
                    {"toggle": 5, "expect": "a"}, {"remove": 5, "expect": "a"}):
-            self.assertEqual(self.post("/api/workspaces/w/tasks", op)[0], 409, op)
+            self.assertEqual(self.post("/api/projects/w/tasks", op)[0], 409, op)
         self.assertEqual(f.read_bytes(), before)
 
-    def test_unknown_workspace_id_cannot_escape_the_folder(self):
+    def test_unknown_project_id_cannot_escape_the_folder(self):
         self.tasks()
         (self.dir / "stx" / "x.md").write_text("- [ ] secret\n")
         for bad in ("../x", "..%2Fx", "nope", "%2e%2e"):
-            self.assertEqual(self.get(f"/api/workspaces/{bad}/tasks")[0], 404, bad)
-            self.assertEqual(self.post(f"/api/workspaces/{bad}/tasks", {"add": "x"})[0], 404, bad)
-        self.assertEqual(self.get("/api/workspaces/other/tasks"), (200, []))
+            self.assertEqual(self.get(f"/api/projects/{bad}/tasks")[0], 404, bad)
+            self.assertEqual(self.post(f"/api/projects/{bad}/tasks", {"add": "x"})[0], 404, bad)
+        self.assertEqual(self.get("/api/projects/unassigned/tasks"), (200, []))
         self.assertEqual((self.dir / "stx" / "x.md").read_text(), "- [ ] secret\n")
         self.assertFalse((self.dir / "stx" / "tasks" / "nope.md").exists())
         with self.assertRaises(W.ApiError):
@@ -1029,9 +1035,9 @@ class ActionApiTest(unittest.TestCase):
         for op in ({"add": ""}, {"add": "  "}, {"add": "a\nb"}, {"add": "a\rb"}, {"add": "x" * 501}, {"add": 5},
                    {}, {"add": "a", "toggle": 1}, {"toggle": "1", "expect": "a"}, {"toggle": True, "expect": "a"},
                    {"toggle": 1}):
-            self.assertEqual(self.post("/api/workspaces/w/tasks", op)[0], 400, op)
+            self.assertEqual(self.post("/api/projects/w/tasks", op)[0], 400, op)
         self.assertFalse(f.exists())
-        self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "x" * 500})[0], 200)
+        self.assertEqual(self.post("/api/projects/w/tasks", {"add": "x" * 500})[0], 200)
 
     def edit_during_write(self, f, times):
         """Patch W._task_raw so the file gains a line from outside right after each of the first `times` reads."""
@@ -1047,27 +1053,27 @@ class ActionApiTest(unittest.TestCase):
 
     def test_edit_on_disk_between_read_and_write_is_not_lost(self):
         f = self.tasks()
-        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        self.post("/api/projects/w/tasks", {"add": "a"})
         with self.edit_during_write(f, 1):
-            code, rows = self.post("/api/workspaces/w/tasks", {"add": "b"})
+            code, rows = self.post("/api/projects/w/tasks", {"add": "b"})
         self.assertEqual(code, 200)
         self.assertEqual(f.read_text(), "- [ ] a\n- [ ] outside 1\n- [ ] b\n")
         self.assertEqual([r["text"] for r in rows], ["a", "outside 1", "b"])
 
     def test_file_that_keeps_changing_is_409_and_keeps_outside_edit(self):
         f = self.tasks()
-        self.post("/api/workspaces/w/tasks", {"add": "a"})
+        self.post("/api/projects/w/tasks", {"add": "a"})
         with self.edit_during_write(f, 3):  # the read and the check of attempt 1, then the read of attempt 2
-            self.assertEqual(self.post("/api/workspaces/w/tasks", {"toggle": 1, "expect": "a"})[0], 409)
+            self.assertEqual(self.post("/api/projects/w/tasks", {"toggle": 1, "expect": "a"})[0], 409)
         self.assertEqual(f.read_text(), "- [ ] a\n- [ ] outside 1\n- [ ] outside 2\n- [ ] outside 3\n")
         self.assertEqual([p.name for p in f.parent.iterdir()], ["w.md"])
 
     def test_task_posts_need_localhost_and_json(self):
         self.tasks()
-        self.assertEqual(self.post("/api/workspaces/w/tasks", {"add": "a"}, headers={"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.post("/api/projects/w/tasks", {"add": "a"}, headers={"Host": "evil.example"})[0], 403)
         import http.client
         c = http.client.HTTPConnection("127.0.0.1", self.port)
-        c.request("POST", "/api/workspaces/w/tasks", '{"add": "a"}', {"Content-Type": "text/plain"})
+        c.request("POST", "/api/projects/w/tasks", '{"add": "a"}', {"Content-Type": "text/plain"})
         self.assertEqual(c.getresponse().status, 415)
         self.assertFalse((self.dir / "stx" / "tasks").exists())
 
@@ -1120,21 +1126,21 @@ class ActionApiTest(unittest.TestCase):
     def test_work_route(self):
         self.plan("docs/plans/a.md", "# Alpha\n")
         self.routine("r-one", "---\nname: r-one\ndescription: D\n---\n")
-        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo], "routines": ["r-one"]}]
-        code, d = self.get("/api/workspaces/w/work")
+        self.cfg["projects"] = [{"id": "w", "name": "W", "repos": [self.repo], "routines": ["r-one"]}]
+        code, d = self.get("/api/projects/w/work")
         self.assertEqual(code, 200)
         self.assertEqual([p["title"] for p in d["plans"]], ["Alpha"])
         self.assertEqual(d["routines"], [{"name": "r-one", "description": "D"}])
-        self.assertEqual(self.get("/api/workspaces/nope/work")[0], 404)
+        self.assertEqual(self.get("/api/projects/nope/work")[0], 404)
         import http.client
         c = http.client.HTTPConnection("127.0.0.1", self.port)
-        c.request("GET", "/api/workspaces/w/work", headers={"Host": "evil.example"})
+        c.request("GET", "/api/projects/w/work", headers={"Host": "evil.example"})
         self.assertEqual(c.getresponse().status, 403)
 
     # --- test runs ---
     def cfg_tests(self, argv, repo=None):
-        self.cfg["workspaces"] = [{"id": "w", "name": "W", "folders": [self.repo], "tests": {repo or self.repo: argv}}]
-        return self.cfg["workspaces"][0]
+        self.cfg["projects"] = [{"id": "w", "name": "W", "repos": [self.repo], "tests": {repo or self.repo: argv}}]
+        return self.cfg["projects"][0]
 
     def wait_done(self, ws):
         for _ in range(100):
@@ -1171,10 +1177,10 @@ class ActionApiTest(unittest.TestCase):
         with self.assertRaises(W.ApiError) as c:
             W.run_tests(str(self.dir / "other"), ws)
         self.assertEqual(c.exception.status, 403)
-        code, _ = self.post("/api/workspaces/w/tests/run", {"repo": str(self.dir / "other"), "argv": ["true"]})
+        code, _ = self.post("/api/projects/w/tests/run", {"repo": str(self.dir / "other"), "argv": ["true"]})
         self.assertEqual(code, 403)
-        self.assertEqual(self.post("/api/workspaces/nope/tests/run", {"repo": self.repo})[0], 404)
-        self.assertEqual(self.post("/api/workspaces/w/tests/run", {"repo": 5})[0], 400)
+        self.assertEqual(self.post("/api/projects/nope/tests/run", {"repo": self.repo})[0], 404)
+        self.assertEqual(self.post("/api/projects/w/tests/run", {"repo": 5})[0], 400)
 
     def test_second_run_while_running_is_409(self):
         ws = self.cfg_tests(self.py("import time; time.sleep(1)"))
@@ -1261,19 +1267,19 @@ class ActionApiTest(unittest.TestCase):
 
     def test_run_route_work_and_failed_run_on_home_index(self):
         self.cfg_tests(self.py("import sys; print('<b>x</b>'); sys.exit(2)"))
-        self.assertEqual(self.get("/api/workspaces/w/work")[1]["tests"][0]["ok"], None)
-        code, d = self.post("/api/workspaces/w/tests/run", {"repo": self.repo})
+        self.assertEqual(self.get("/api/projects/w/work")[1]["tests"][0]["ok"], None)
+        code, d = self.post("/api/projects/w/tests/run", {"repo": self.repo})
         self.assertEqual(code, 200)
         self.assertIn("started", d)
-        ws = self.cfg["workspaces"][0]
+        ws = self.cfg["projects"][0]
         self.wait_done(ws)
-        t = self.get("/api/workspaces/w/work")[1]["tests"][0]
+        t = self.get("/api/projects/w/work")[1]["tests"][0]
         self.assertEqual((t["repo"], t["ok"], t["tail"]), (self.repo, False, "<b>x</b>"))
-        w = self.get("/api/workspaces")[1]["workspaces"][0]
+        w = self.get("/api/projects")[1]["projects"][0]
         self.assertEqual([f["repo"] for f in w["tests_failed"]], [self.repo])
         import http.client
         c = http.client.HTTPConnection("127.0.0.1", self.port)
-        c.request("POST", "/api/workspaces/w/tests/run", '{"repo": "x"}', {"Content-Type": "text/plain"})
+        c.request("POST", "/api/projects/w/tests/run", '{"repo": "x"}', {"Content-Type": "text/plain"})
         self.assertEqual(c.getresponse().status, 415)
 
 

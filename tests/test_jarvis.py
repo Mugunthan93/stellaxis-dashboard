@@ -2,7 +2,9 @@
 
   python3 -m unittest tests.test_jarvis
 """
+import contextlib
 import inspect
+import io
 import json
 import os
 import sys
@@ -12,7 +14,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 import unplaced.jarvis as J  # noqa: E402
-import workspaces as W  # noqa: E402
+from core.app import Core  # noqa: E402
+from core.component import import_folder  # noqa: E402
+
+COMPS = Path(__file__).resolve().parent.parent / "collector" / "components"
+W = import_folder(COMPS / "project_management").centre
 
 
 class BriefingTest(unittest.TestCase):
@@ -23,6 +29,7 @@ class BriefingTest(unittest.TestCase):
         cls.old = os.environ.get("STELLAXIS_HOME")
         os.environ["STELLAXIS_HOME"] = str(cls.home)
         cls.cfg = {"claude_bin": "/no/such/claude"}
+        core = Core(cls.home, cls.home / ".claude", COMPS)
         import http.server
         import threading
 
@@ -31,7 +38,7 @@ class BriefingTest(unittest.TestCase):
                 pass
 
             def do_GET(self):
-                if not J.handle(self, "GET", cls.cfg):
+                if not J.handle(self, "GET", cls.cfg, core):
                     self.send_error(404)
 
         cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -102,16 +109,17 @@ class JarvisAskTest(unittest.TestCase):
             "claude_bin": fake("claude", "a = sys.argv[1:]\nif a[:1] == ['agents']:\n    print('[]')\n"
                                          "else:\n    print('You asked: ' + sys.stdin.read())\n"),
             "say_bin": fake("say", f"open({str(d / 'spoken.txt')!r}, 'w').write(sys.stdin.read())\n"),
-            "whisper_model": str(d / "model.bin"), "workspaces": [{"id": "p", "name": "PartHub"}]}
+            "whisper_model": str(d / "model.bin"), "projects": [{"id": "p", "name": "PartHub"}]}
         self.log = log
         cfg = self.cfg
+        core = Core(d / "stx", d / "claude", COMPS)
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
                 pass
 
             def do_POST(self):
-                if not J.handle(self, "POST", cfg):
+                if not J.handle(self, "POST", cfg, core):
                     self.send_error(404)
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -156,7 +164,11 @@ class JarvisAskTest(unittest.TestCase):
         self.assertEqual(self.post(b"hi", "text/plain")[0], 415)
 
     def test_hear_only_transcribes(self):
-        self.assertEqual(self.post(b"jarvis show PartHub", "audio/webm", "/api/jarvis/hear"), (200, {"heard": "jarvis show PartHub"}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = self.post(b"jarvis show PartHub", "audio/webm", "/api/jarvis/hear")
+        self.assertIn("jarvis heard", out.getvalue())
+        self.assertEqual(result, (200, {"heard": "jarvis show PartHub"}))
         self.assertEqual([x for x in self.calls("claude") if x[:1] != ["agents"]], [])
         self.assertEqual(self.post(b"x", "application/json", "/api/jarvis/hear")[0], 415)
 

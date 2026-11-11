@@ -30,7 +30,6 @@ import zlib
 from pathlib import Path
 
 import settings_api
-import workspaces  # kept so the alias loads at import, on the main thread, before any thread starts; tests patch C.workspaces; goes away with the alias in step 2B
 from core import server as core_server
 from core.app import Core
 from core.util import read_json, write_json, short_path
@@ -59,9 +58,9 @@ DEFAULT_CONFIG = {
     "probe_timeout": 20,
     "max_sessions": 400,          # sessions kept in snapshot (newest first)
     "series_days": 30,
-    "workspaces": [],             # [{id, name, folders: [path]}]: folders grouped into a project
+    "projects": [],               # [{id, name, repos: [path], tests, routines}]: repos grouped into a project
     "claude_bin": "~/.local/bin/claude",
-    "projects": [],               # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
+    "project_notes": [],          # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
     # USD per million tokens. cache_write_5m = 1.25x input, cache_write_1h = 2x input.
     # Longest matching prefix of the model id wins. Notional on a Max plan.
     "pricing": {
@@ -827,11 +826,13 @@ def interactive(s: dict) -> bool:
 
 
 def project_notes(cfg: dict) -> list:
-    """The user's hand-written project cards from config.json, trimmed to plain strings."""
+    """The user's hand-written project cards from config.json, trimmed to plain strings: "project_notes" when it has
+    entries, else the entries of "projects" with no id (where the cards were kept before)."""
     def txt(v, n=500):
         return str(v)[:n] if v is not None else ""
+    cards = cfg.get("project_notes") or [p for p in cfg.get("projects") or [] if isinstance(p, dict) and not p.get("id")]
     out = []
-    for p in cfg.get("projects") or []:
+    for p in cards:
         if not isinstance(p, dict) or not p.get("name"):
             continue
         facts = p.get("facts") if isinstance(p.get("facts"), dict) else {}
@@ -957,7 +958,7 @@ def build_snapshot(cfg: dict, cache: dict) -> dict:
             "_hourly": s["hourly"], "_ctx": ctx,
         })
     sess_list.sort(key=lambda x: x["last_ts"] or "", reverse=True)
-    cfg["_sessions_all"] = sess_list  # uncapped, for the workspace index
+    cfg["_sessions_all"] = sess_list  # uncapped, for the project index
 
     # --- synthesize items seen only in measured context (built-ins, claude.ai connectors)
     by_kind_name = collections.defaultdict(list)
@@ -1245,7 +1246,7 @@ _lock = threading.Lock()
 
 
 def write_index(cfg: dict, snap: dict) -> str | None:
-    """workspaces.json: every session (not just the capped snapshot ones); never fails a collection, returns the error."""
+    """projects.json: every session (not just the capped snapshot ones); never fails a collection, returns the error."""
     sessions = cfg.pop("_sessions_all", None)
     try:
         core = the_core()
@@ -1294,7 +1295,7 @@ def collect(cfg=None, probe=False) -> dict:
         append_history(snap)
         snap["history"] = load_history()
         write_json(STX_HOME / "snapshot.json", snap)
-        status("indexing workspaces")
+        status("indexing projects")
         err = write_index(cfg, snap)
         status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err,
                core_error=the_core().error)
@@ -1303,7 +1304,7 @@ def collect(cfg=None, probe=False) -> dict:
 
 # ---------------------------------------------------------------- serve
 
-PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/workspace": "workspace.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
+PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/project": "project.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
          "/settings": "settings.html", "/settings.html": "settings.html", "/skills": "skills.html"}
 # Reel Brain's dashboard (built by reels/build_dashboard.py): /reels/ shows it inside the shell, /reels/raw is the page
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
@@ -1355,7 +1356,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "GET", load_config()):
             return
-        if jarvis.handle(self, "GET", load_config()):
+        if jarvis.handle(self, "GET", load_config(), the_core()):
             return
         if settings_api.handle(self, "GET"):
             return
@@ -1427,7 +1428,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "POST", load_config()):
             return
-        if jarvis.handle(self, "POST", load_config()):
+        if jarvis.handle(self, "POST", load_config(), the_core()):
             return
         if not settings_api.handle(self, "POST"):
             self.send_error(404)
@@ -1435,6 +1436,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def serve():
     cfg = load_config()
+    the_core()  # the components are imported here, on the main thread, before any thread starts
     last_probe = 0.0
 
     def loop():

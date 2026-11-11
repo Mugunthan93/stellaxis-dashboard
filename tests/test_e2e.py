@@ -164,10 +164,10 @@ class E2E(unittest.TestCase):
         self.assertEqual(p["worktree_of"], "~/code/mesell")
         self.assertFalse(any("worktrees" in i["id"] for i in self.snap["items"]))
 
-    def test_workspace_index_holds_every_session(self):
+    def test_project_index_holds_every_session(self):
         def ids():
-            idx = json.loads((self.home / ".stellaxis" / "workspaces.json").read_text())
-            return {s["id"] for w in idx["workspaces"] for r in w["repos"] for b in r["branches"] for s in b["sessions"]}
+            idx = json.loads((self.home / ".stellaxis" / "projects.json").read_text())
+            return {s["id"] for w in idx["projects"] for r in w["repos"] for b in r["branches"] for s in b["sessions"]}
         n = len(self.snap["sessions"])
         self.assertGreater(n, 1)
         self.assertEqual(ids(), {s["id"] for s in self.snap["sessions"]})

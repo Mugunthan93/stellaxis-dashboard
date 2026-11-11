@@ -12,7 +12,10 @@ TOPICS = ["Claude Code & skills", "AI coding tools", "AI agents & LLM apps", "Mo
 
 def read(name):
     p = os.path.join(R, name)
-    return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+    if not os.path.exists(p):
+        return ""
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
 
 NOTE_TAG = re.compile(r'</?(?:details|summary)>|</a>|<a href="https://[^"<>\s]+">'
@@ -92,7 +95,8 @@ def md(text):
 
 
 def parse_note(path):
-    raw = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
     fm, body = {}, raw
     if raw.startswith("---"):
         head, body = raw[3:].split("\n---\n", 1)
@@ -536,11 +540,13 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
                "trends": [plain_text(m) for m in re.findall(r"^- \*\*(.+?)\*\*", trends, re.M)],
                "projects": proj_rows,
                "artifact_url": read(".tools/artifact_url.txt").strip()}
-    open(os.path.join(R, "summary.json"), "w", encoding="utf-8").write(json.dumps(summary, indent=1, ensure_ascii=False))
+    with open(os.path.join(R, "summary.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(summary, indent=1, ensure_ascii=False))
 
     # Local copy is a full document; the artifact copy is a fragment (the publisher adds the skeleton).
     local = f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n{head}\n{style}</head><body>\n{content}</body></html>\n'
-    open(os.path.join(R, "dashboard.html"), "w", encoding="utf-8").write(local)
+    with open(os.path.join(R, "dashboard.html"), "w", encoding="utf-8") as f:
+        f.write(local)
     os.makedirs(os.path.join(R, ".tools", "artifact"), exist_ok=True)
     # Artifact copy embeds the covers as data: URIs so it is one self-contained file.
     # A cover can appear several times, so only its first <img> carries the bytes; a small script fills the rest.
@@ -549,10 +555,13 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
         if m.group(1) in seen:
             return f'data-from="{m.group(1)}"'
         seen.add(m.group(1))
-        return f'data-cover="{m.group(1)}" src="data:image/jpeg;base64,' + base64.b64encode(open(os.path.join(R, m.group(1)), "rb").read()).decode() + '"'
+        with open(os.path.join(R, m.group(1)), "rb") as f:
+            data = f.read()
+        return f'data-cover="{m.group(1)}" src="data:image/jpeg;base64,' + base64.b64encode(data).decode() + '"'
     art = re.sub(r'src="(images/[\w-]+\.jpg)"', embed, content)
     art += """<script>document.querySelectorAll('img[data-from]').forEach(function (i) { i.src = document.querySelector('img[data-cover="' + i.dataset.from + '"]').src; });</script>\n"""
-    open(os.path.join(R, ".tools", "artifact", "index.html"), "w", encoding="utf-8").write(f"{head}\n{style}\n{art}")
+    with open(os.path.join(R, ".tools", "artifact", "index.html"), "w", encoding="utf-8") as f:
+        f.write(f"{head}\n{style}\n{art}")
     print(f"dashboard.html + .tools/artifact/index.html: {len(notes)} notes, {len(open_actions)} open actions")
 
 

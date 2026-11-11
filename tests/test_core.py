@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
 from core import component, store, undo, server
-from core.app import Core
+from core.app import Core, StoreError
 
 
 def put(root: Path, name: str, init: str, **files: str) -> None:
@@ -117,6 +117,14 @@ class LoadTest(unittest.TestCase):
         for t in threads: t.join()
         self.assertEqual(len(got), 8)
         self.assertTrue(all(m is got[0][0] and ok for m, ok in got))
+
+    def test_an_undo_step_must_carry_the_component_name(self):
+        put(self.comps, "alpha", "from core.component import Component\nCOMPONENT = Component(name='alpha', undo={'alpha.back': print})\n")
+        put(self.comps, "beta", "from core.component import Component\nCOMPONENT = Component(name='beta', undo={'back': print})\n")
+        a, b = component.load(self.comps)
+        self.assertEqual((a.error, list(a.undo)), (None, ["alpha.back"]))
+        self.assertIn("ValueError", b.error)
+        self.assertIn("beta.", b.error)
 
 
 class StoreTest(unittest.TestCase):
@@ -246,6 +254,16 @@ class CoreTest(unittest.TestCase):
         with self.assertRaises(LookupError):
             beta.read("alpha", "other")                         # never declared
 
+    def test_a_way_in_reads_an_offer_without_declaring_it(self):
+        put(self.comps, "alpha", ALPHA); put(self.comps, "beta", BETA)
+        put(self.comps, "broken", "raise RuntimeError('boom')\n")
+        c = self.core(); c.run_pass({"x": 7})
+        self.assertEqual(c.read("alpha", "things", {}), [{"id": "7"}])
+        self.assertEqual(c.read("alpha", "things", {}, prefix="z"), [])
+        self.assertEqual(c.read("alpha", "no_such_offer", {}), [])
+        self.assertEqual(c.read("ghost", "things", {}), [])
+        self.assertEqual(c.read("broken", "things", {}), [])
+
     def test_bad_records_stop_only_that_component(self):
         put(self.comps, "alpha", ALPHA)
         put(self.comps, "thief", "from core.component import Component\nCOMPONENT = Component(name='thief', records=['CREATE TABLE IF NOT EXISTS alpha_x (id TEXT)'])\n")
@@ -338,8 +356,7 @@ class UndoTest(unittest.TestCase):
             {"op": "move", "id": "skill:user:s", "from": str(self.home / "skills" / "s"), "to": str(kept)},
             {"op": "json_del", "id": "mcp:user:gone", "file": str(cfg), "keys": ["mcpServers"], "name": "gone", "value": {"command": "x"}},
             {"op": "json_add", "id": "mcp:user:added", "file": str(cfg), "keys": ["mcpServers"], "name": "added"},
-            {"op": "json_set", "id": "plugin:user:p", "file": str(cfg), "keys": ["enabledPlugins"], "name": "p", "prev": None},
-            {"op": "future_op", "x": 1}]}))
+            {"op": "json_set", "id": "plugin:user:p", "file": str(cfg), "keys": ["enabledPlugins"], "name": "p", "prev": None}]}))
         return d, cfg
 
     def test_an_old_archive_still_restores(self):
@@ -359,11 +376,41 @@ class UndoTest(unittest.TestCase):
 
     def test_restore_stops_when_a_handler_says_no(self):
         d, _ = self.old_archive()
+        man = json.loads((d / "manifest.json").read_text())
+        man["entries"].append({"op": "future_op", "x": 1})
+        (d / "manifest.json").write_text(json.dumps(man))
         with self.assertRaisesRegex(undo.RestoreError, "restore stopped; nothing after this step was changed"):
             undo.restore(d.name, True, self.arch, handlers={"future_op": lambda e, apply, out: False}, out=lambda _: None)
         self.assertTrue((d / "manifest.json").exists())
         with self.assertRaisesRegex(undo.RestoreError, "no manifest in"):
             undo.restore("absent", True, self.arch)
+
+    def test_two_applied_plans_in_one_second_get_two_folders(self):
+        with mock.patch.object(undo, "stamp", return_value="20261111-120000"):
+            plans = [undo.Plan(True, "t", self.arch, out=lambda _: None) for _ in range(3)]
+            dry = undo.Plan(False, "t", self.arch, out=lambda _: None)
+        self.assertEqual([p.dir.name for p in plans], ["20261111-120000-t", "20261111-120000-t-2", "20261111-120000-t-3"])
+        self.assertEqual(dry.dir.name, "20261111-120000-t")
+        self.assertFalse(self.arch.exists())          # naming a folder creates nothing
+
+    def test_a_folder_already_on_disk_is_not_reused(self):
+        (self.arch / "20261111-120001-t").mkdir(parents=True)
+        with mock.patch.object(undo, "stamp", return_value="20261111-120001"):
+            self.assertEqual(undo.Plan(True, "t", self.arch, out=lambda _: None).dir.name, "20261111-120001-t-2")
+
+    def test_restore_refuses_a_step_it_has_no_handler_for(self):
+        d, cfg = self.old_archive()
+        before = cfg.read_text()
+        man = json.loads((d / "manifest.json").read_text())
+        man["entries"].insert(0, {"op": "ghost.step"})      # restore runs entries last to first, so this one would run last
+        (d / "manifest.json").write_text(json.dumps(man))
+        for apply in (False, True):
+            with self.assertRaisesRegex(undo.RestoreError, r"no undo for step 'ghost.step'; nothing was changed"):
+                undo.restore(d.name, apply, self.arch, out=lambda _: None)
+        self.assertEqual(cfg.read_text(), before)
+        self.assertTrue((d / "manifest.json").exists())
+        undo.restore(d.name, True, self.arch, handlers={"ghost.step": lambda e, apply, out: True}, out=lambda _: None)
+        self.assertTrue((d / "manifest.restored.json").exists())
 
 
 class ActionTest(unittest.TestCase):
@@ -382,7 +429,21 @@ def touch(plan, ctx, path, keep=False, fail=False):
 def refuse(plan, ctx):
     plan.say("refused")
     return False
-COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse})
+def note(plan, ctx, path):
+    plan.say(f"note {path}")
+    plan.manifest["entries"].append({"op": "alpha.unnote", "path": path})
+    if plan.apply:
+        Path(path).write_text("n")
+    return True
+def unnote(e, apply, out):
+    out("remove " + e["path"])
+    if apply:
+        Path(e["path"]).unlink()
+    return True
+def uses_db(plan, ctx):
+    ctx.db()
+    return True
+COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "note": note, "uses_db": uses_db}, undo={"alpha.unnote": unnote})
 '''
 
     def setUp(self):
@@ -432,6 +493,43 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse})
         for comp, act in (("ghost", "touch"), ("alpha", "ghost")):
             with self.assertRaises(KeyError):
                 self.core.run_action(comp, act, {}, False, {})
+
+    def test_a_component_runs_its_own_action_through_the_core(self):
+        ctx = self.core.ctx("alpha", {})
+        self.assertEqual(ctx.act("touch", {"path": self.f}), {"applied": False, "ok": True, "steps": [f"create {self.f}"], "manifest": None})
+        self.assertFalse(Path(self.f).exists())
+        r = ctx.act("touch", {"path": self.f, "keep": True}, apply=True)
+        self.assertTrue(Path(self.f).exists())
+        [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
+        self.assertEqual((row["component"], row["action"], row["manifest"]), ("alpha", "touch", r["manifest"]))
+
+    def test_two_applied_actions_in_one_second_keep_two_manifests(self):
+        with mock.patch.object(undo, "stamp", return_value="20261111-120002"):
+            a = self.core.run_action("alpha", "touch", {"path": self.f, "keep": True}, True, {})
+            b = self.core.run_action("alpha", "touch", {"path": self.f + "2", "keep": True}, True, {})
+        self.assertNotEqual(a["manifest"], b["manifest"])
+        self.assertTrue(Path(a["manifest"]).is_file() and Path(b["manifest"]).is_file())
+
+    def test_a_component_undo_step_restores_through_the_core_table(self):
+        r = self.core.run_action("alpha", "note", {"path": self.f}, True, {})
+        arch, name = self.home / ".claude" / "_archive", Path(r["manifest"]).parent.name
+        with self.assertRaisesRegex(undo.RestoreError, "no undo for step 'alpha.unnote'"):
+            undo.restore(name, True, arch, out=lambda _: None)
+        self.assertEqual(sorted(self.core.undo_handlers()), ["alpha.unnote"])
+        undo.restore(name, True, arch, handlers=self.core.undo_handlers(), out=lambda _: None)
+        self.assertFalse(Path(self.f).exists())
+
+    def test_actions_run_with_the_store_down_and_only_a_store_user_fails(self):
+        home = self.home / "down"
+        (home / "stellaxis.db").mkdir(parents=True)
+        core = Core(home, home / ".claude", self.comps)
+        self.assertTrue(core.error)
+        self.assertTrue(core.run_action("alpha", "touch", {"path": self.f}, True, {})["ok"])
+        with self.assertRaises(StoreError):
+            core.run_action("alpha", "uses_db", {}, True, {})
+        rows = [json.loads(l) for l in (home / "actions.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["action"], r["ok"]) for r in rows], [("touch", True), ("uses_db", False)])
+        self.assertTrue(rows[1]["error"].startswith("StoreError: "))
 
 
 WEB = '''

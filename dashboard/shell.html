@@ -87,7 +87,7 @@
     </a>
     <nav class="sx-nav" aria-label="Pages">
       <div class="sx-group">
-        <h2>Workspace</h2>
+        <h2>Projects</h2>
         <a class="sx-link" href="/" data-match="^/$">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-6.5 8 6.5"/><path d="M6 9.5V19h12V9.5"/><path d="M10 19v-5h4v5"/></svg>
           Home</a>
@@ -139,9 +139,9 @@
     try {
       const st = await (await fetch("/api/status", { cache: "no-store" })).json();
       const busy = st.phase && st.phase !== "idle";
-      const failed = !busy && st.index_error;
+      const failed = !busy && (st.index_error || st.core_error);
       box.dataset.state = failed ? "down" : busy ? "busy" : "ok";
-      text.textContent = failed ? "Workspace index failed: " + String(st.index_error).slice(0, 120) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
+      text.textContent = failed ? (st.index_error ? "Project index failed: " + String(st.index_error).slice(0, 120) : "Store failed: " + String(st.core_error).slice(0, 120)) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
     } catch {
       box.dataset.state = "down";
       text.textContent = "Collector unreachable";
@@ -149,14 +149,14 @@
   }
   poll();
   setInterval(poll, 30000);
-  // workspace links come from the API; if it fails the static links above still work
+  // project links come from the API; if it fails the static links above still work
   (async () => {
     try {
-      const d = await (await fetch("/api/workspaces", { cache: "no-store" })).json();
+      const d = await (await fetch("/api/projects", { cache: "no-store" })).json();
       const cur = new URLSearchParams(location.search).get("id");
       const esc = v => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-      document.getElementById("sx-ws").innerHTML = d.workspaces.filter(w => w.repos.length).map(w =>
-        `<a class="sx-link" href="/workspace?id=${encodeURIComponent(w.id)}"${path === "/workspace" && cur === w.id ? ' aria-current="page"' : ""}>`
+      document.getElementById("sx-ws").innerHTML = d.projects.filter(w => w.repos.length).map(w =>
+        `<a class="sx-link" href="/project?id=${encodeURIComponent(w.id)}"${path === "/project" && cur === w.id ? ' aria-current="page"' : ""}>`
         + `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>${esc(w.name)}</a>`).join("");
     } catch {}
   })();

@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
 /* Home as Jarvis's HUD: a reactor core in the middle that shows what Jarvis is doing, what needs you on the
-   right, your workspaces as gauges on the left, the briefing underneath. Data: /api/workspaces,
+   right, your projects as gauges on the left, the briefing underneath. Data: /api/projects,
    /api/approvals, /api/jarvis, /api/jarvis/ask. A HUD is dark by nature, so this page keeps its own dark
    palette in both themes (like /reels/ keeps its own look). */
 :root {
@@ -38,7 +38,7 @@ a { color: var(--hud); }
 @media (max-width: 520px) { .clock { text-align: left; } }
 .clock b { display: block; font: 600 1.6rem/1 var(--tech); letter-spacing: 0.06em; color: var(--ink); font-variant-numeric: tabular-nums; }
 
-/* Three columns on desktop: workspaces | core | needs you. */
+/* Three columns on desktop: projects | core | needs you. */
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
 @media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .core-col { grid-column: 1 / -1; order: -1; } }
 @media (max-width: 700px) { .grid { grid-template-columns: minmax(0, 1fr); } }
@@ -56,7 +56,7 @@ a { color: var(--hud); }
 .panel.alert .head h2 { color: var(--alert); }
 .empty { margin: 0; color: var(--muted); font-size: 0.86rem; }
 
-/* Workspace gauges: the ring is the workspace's share of the last 30 days' cost. */
+/* Project gauges: the ring is the project's share of the last 30 days' cost. */
 .gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 10px; }
 .gauge { display: grid; justify-items: center; gap: 2px; text-align: center; color: var(--ink); text-decoration: none; padding: 4px; }
 .gauge:hover .g-name { color: var(--hud); }
@@ -141,9 +141,9 @@ a { color: var(--hud); }
   <div class="grid">
     <div class="col">
       <section class="panel" aria-labelledby="ws-title">
-        <div class="head"><h2 id="ws-title">Workspaces</h2><span class="label" id="ws-sub">30-day cost</span></div>
-        <div class="gauges" id="gauges"><p class="empty">Loading workspaces…</p></div>
-        <p class="bad" id="ws-load" hidden>Couldn't load workspaces. Retrying.</p>
+        <div class="head"><h2 id="ws-title">Projects</h2><span class="label" id="ws-sub">30-day cost</span></div>
+        <div class="gauges" id="gauges"><p class="empty">Loading projects…</p></div>
+        <p class="bad" id="ws-load" hidden>Couldn't load projects. Retrying.</p>
       </section>
       <section class="panel" aria-labelledby="run-title">
         <div class="head"><h2 id="run-title">Running now</h2><span class="label" id="run-count"></span></div>
@@ -280,7 +280,7 @@ async function tickAppr() {
   drawNeeds();
 }
 
-// Workspace gauges and running sessions.
+// Project gauges and running sessions.
 function gauge(share) {
   const r = 34, c = 2 * Math.PI * r, on = Math.max(0.02, share) * c;
   return `<svg viewBox="0 0 86 86" fill="none" aria-hidden="true">`
@@ -291,17 +291,17 @@ function gauge(share) {
 }
 async function tick() {
   let d;
-  try { const r = await fetch("/api/workspaces", { cache: "no-store" }); if (!r.ok) throw 0; d = await r.json(); idxOk = true; $("ws-load").hidden = true; }
+  try { const r = await fetch("/api/projects", { cache: "no-store" }); if (!r.ok) throw 0; d = await r.json(); idxOk = true; $("ws-load").hidden = true; }
   catch { idxOk = false; $("ws-load").hidden = false; drawNeeds(); return; }
   const sess = [];
-  for (const w of d.workspaces) for (const r of w.repos)
+  for (const w of d.projects) for (const r of w.repos)
     for (const b of r.branches) for (const s of b.sessions) if (!s.archived) sess.push({ s, w, b });
   titles = {}; for (const x of sess) titles[x.s.id] = label(x.s) + " · " + x.w.name;
   waiting = sess.filter(x => x.s.status === "waiting");
-  failed = d.workspaces.flatMap(w => (w.tests_failed || []).map(t => ({ w, t })));
+  failed = d.projects.flatMap(w => (w.tests_failed || []).map(t => ({ w, t })));
   const run = sess.filter(x => x.s.status === "running");
   $("live-note").hidden = d.live_ok !== false;
-  idx = { ws: d.workspaces.filter(w => w.repos.length), sess, run };
+  idx = { ws: d.projects.filter(w => w.repos.length), sess, run };
   drawLeft();
   $("run-count").textContent = run.length ? String(run.length) : "";
   $("run-empty").hidden = run.length > 0;
@@ -310,7 +310,7 @@ async function tick() {
     + `<span class="m">${esc(w.name)} · ${esc(b.name)} · ${esc(ago(s.last_ts))}</span></li>`).join("");
   drawNeeds();
 }
-// The left panel: every workspace as a gauge, or one workspace's latest sessions after "Jarvis, show <name>".
+// The left panel: every project as a gauge, or one project's latest sessions after "Jarvis, show <name>".
 let idx = { ws: [], sess: [], run: [] }, focus = null;
 function drawLeft() {
   const w = idx.ws.find(x => x.id === focus);
@@ -325,7 +325,7 @@ function drawLeft() {
     return;
   }
   const total = idx.ws.reduce((a, x) => a + (x.cost_30d || 0), 0) || 1;
-  $("ws-title").textContent = "Workspaces"; $("ws-sub").textContent = "30-day cost";
+  $("ws-title").textContent = "Projects"; $("ws-sub").textContent = "30-day cost";
   $("gauges").innerHTML = idx.ws.map(x => {
     const n = idx.sess.filter(y => y.w === x && y.s.status === "running").length;
     return `<div class="gauge">${gauge((x.cost_30d || 0) / total)}<span class="g-name">${esc(x.name)}</span>`
@@ -405,7 +405,7 @@ async function command(text) {
   if (/^what (needs|is waiting for) (me|you)/.test(t)) return speak($("finding").textContent);
   const m = t.match(/^(?:show|open|go to|switch to) ?(?:me )?(.+)$/);  // Whisper sometimes runs words together
   if (m) {
-    const sq = s => norm(s).replace(/ /g, ""), want = sq(m[1].replace(/^the /, "").replace(/ ?workspace$/, ""));
+    const sq = s => norm(s).replace(/ /g, ""), want = sq(m[1].replace(/^the /, "").replace(/ ?project$/, ""));
     const w = idx.ws.find(x => sq(x.name) === want) || idx.ws.find(x => sq(x.name).includes(want) || want.includes(sq(x.name)));
     if (w) {
       focus = w.id; drawLeft(); addLog("Showed " + w.name);
