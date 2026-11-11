@@ -192,9 +192,11 @@ def test_a_restore_that_stops_is_logged_and_still_raises(self):
 
 def test_prune_restore_goes_through_the_core(self):
     self.save()
-    P.restore("last", True)                           # P is prune, imported as the other tests import it
+    P.restore("last", True)                           # P is `import prune as P`
     self.assertEqual(self.log()[-1]["action"], "restore")
 ```
+
+No test imports `prune` in process today, so take care: `prune.ARCHIVE` is worked out when the module is imported and would be the real `~/.claude/_archive`. In `setUp`, patch it (`mock.patch.object(P, "ARCHIVE", self.archive)`, with `self.archive = <fake claude dir> / "_archive"`). `prune.restore` also runs a collection with the config of the fake home, so `setUp` writes `<fake STELLAXIS_HOME>/config.json` with `{"scan_roots": [], "claude_bin": "/no/claude"}` and patches `live` and `app_records` of the command centre (as `FakeHome` in `tests/test_claude_management.py` does). Without these the test would read the real home.
 
 - [ ] **Step 2: Run them and see them fail**
 
@@ -270,6 +272,7 @@ git commit -m "An applied restore writes one line to actions.jsonl"
 The base class, used by every later task:
 
 ```python
+import prune as P
 import test_claude_management as TCM        # its FakeHome has no tests of its own
 C, COMPS, CENTRE = TCM.C, TCM.COMPS, TCM.CENTRE
 PRICE = {"claude-opus-5-5": {"in": 4.0, "out": 20.0, "cache_read": 0.2}}     # 250,000 input tokens cost $1.00
@@ -287,6 +290,10 @@ class ShareHome(TCM.FakeHome):
         self.cfg = {**TCM.CFG, "pricing": PRICE, "projects": [
             {"id": "parts", "name": "PartHub", "repos": [str(self.parts)]},
             {"id": "curl", "name": "Curlberry", "repos": [str(self.curl)]}]}
+        (self.stx / "config.json").write_text(json.dumps(self.cfg))     # the routes and the command line read the config from here
+        patch = mock.patch.object(P, "ARCHIVE", self.claude / "_archive")   # prune worked its archive folder out at import
+        patch.start()
+        self.addCleanup(patch.stop)
         self.n = 0
 
     def at(self, when):                                  # the clock, until the test ends or `at` is called again
