@@ -2,11 +2,16 @@
 
   python3 -m unittest tests.test_share
 """
+import contextlib
 import datetime as dt
+import http.client
+import http.server
+import io
 import json
 import os
 import sqlite3
 import sys
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -18,6 +23,7 @@ sys.path.insert(0, str(REPO / "tests"))
 from core.app import Core
 
 import prune as P
+import share as CLI                         # the command line; the component's own share.py is imported only inside its package
 import test_claude_management as TCM        # its FakeHome has no tests of its own
 C, COMPS, CENTRE = TCM.C, TCM.COMPS, TCM.CENTRE
 PRICE = {"claude-opus-5-5": {"in": 4.0, "out": 20.0, "cache_read": 0.2}}     # 250,000 input tokens cost $1.00
@@ -61,6 +67,12 @@ class ShareHome(TCM.FakeHome):
     def sql(self, query, *args):
         with closing(sqlite3.connect(self.stx / "stellaxis.db")) as db:
             return db.execute(query, args).fetchall()
+
+    def collect(self):
+        return C.collect(dict(self.cfg))
+
+    def share(self):
+        return C.the_core().read("claude_management", "share", self.cfg)[0]
 
     def log(self):
         f = self.stx / "actions.jsonl"
@@ -488,3 +500,335 @@ class ReaderTest(ShareHome):
     def test_a_pass_that_is_not_a_collection_adds_nothing_up(self):
         C.the_core().run_pass(self.cfg, {})
         self.assertEqual(self.weeks(), [])
+
+
+class ViewTest(ShareHome):
+    def line(self, project):
+        return [l for l in self.share()["projects"] if l["id"] == project][0]
+
+    def over_in_w1(self):                                # budget 10, parts 40% ($4.00), parts uses 5 at a pass at 10:00
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+
+    def closed_rows(self, *rows):                        # closed week rows (starts, ends, budget), by SQL
+        with closing(sqlite3.connect(self.stx / "stellaxis.db")) as db, db:
+            for w in rows:
+                db.execute("INSERT INTO claude_management_share_weeks (starts, ends, budget, closed, updated) VALUES (?, ?, ?, 1, ?)", (*w, w[1]))
+
+    def test_the_answer_for_a_week_with_a_budget(self):
+        self.act("set_budget", budget=200)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 10)
+        self.turn("c", self.loose, "2026-11-06T09:00:00Z", 2.5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        v = self.share()
+        self.assertEqual({k: v[k] for k in ("now", "week", "week_start", "budget", "used", "updated")},
+                         {"now": "2026-11-06T10:00:00Z", "week": {"start": W1, "end": W2}, "week_start": {"day": "thursday", "hour": 21},
+                          "budget": 200.0, "used": 12.5, "updated": "2026-11-06T10:00:00Z"})
+        self.assertEqual(v["projects"], [
+            {"id": "parts", "name": "PartHub", "percent": 40.0, "allowance": 80.0, "use": 10.0, "left": 70.0, "over": False, "warned_at": None},
+            {"id": "curl", "name": "Curlberry", "percent": None, "allowance": None, "use": 0, "left": None, "over": False, "warned_at": None}])
+        self.assertEqual(v["unassigned"], {"id": "unassigned", "name": "Unassigned", "percent": None, "allowance": None, "use": 2.5,
+                                           "left": None, "over": False, "warned_at": None})
+        self.assertEqual(v["past"], [])
+
+    def test_a_project_over_its_share_is_marked_and_carries_the_time_of_its_warning(self):
+        self.over_in_w1()
+        line = self.line("parts")
+        self.assertEqual((line["allowance"], line["use"], line["left"], line["over"], line["warned_at"]),
+                         (4.0, 5.0, -1.0, True, "2026-11-06T10:00:00Z"))
+
+    def test_a_budget_raised_after_the_warning_ends_over_and_keeps_the_time_of_the_warning(self):
+        self.over_in_w1()
+        self.act("set_budget", budget=100)
+        line = self.line("parts")
+        self.assertEqual((line["allowance"], line["left"], line["over"], line["warned_at"]), (40.0, 35.0, False, "2026-11-06T10:00:00Z"))
+
+    def test_a_new_budget_shows_at_once_without_a_pass(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 10)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.line("parts")["allowance"], None)
+        self.act("set_budget", budget=100)
+        self.act("set_percent", project="parts", percent=40)
+        line = self.line("parts")
+        self.assertEqual((self.share()["budget"], line["percent"], line["allowance"], line["use"], line["left"], line["over"]),
+                         (100.0, 40.0, 40.0, 10.0, 30.0, False))
+
+    def test_without_a_budget_the_use_is_there_and_no_allowance(self):
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 10)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        v = self.share()
+        line = self.line("parts")
+        self.assertEqual((v["budget"], v["used"], line["percent"], line["use"], line["allowance"], line["left"], line["over"]),
+                         (None, 10.0, 40.0, 10.0, None, None, False))
+
+    def test_before_the_first_pass_of_a_new_week_the_use_is_zero_and_updated_is_none(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.at("2026-11-13T10:00:00Z")
+        v = self.share()
+        self.assertEqual((v["week"], v["used"], v["updated"], v["past"]), ({"start": W2, "end": "2026-11-19T21:00:00Z"}, 0, None, []))
+        self.assertEqual([l["use"] for l in v["projects"]], [0, 0])
+
+    def test_past_weeks_come_newest_first_with_the_numbers_they_were_closed_with(self):
+        self.act("set_budget", budget=10)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 5)
+        self.turn("b", self.curl, "2026-11-06T09:00:00Z", 1)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.at("2026-11-12T22:00:00Z")
+        self.collect()
+        self.act("set_budget", budget=100)
+        self.act("set_percent", project="parts", percent=10)
+        v = self.share()
+        [past] = v["past"]
+        self.assertEqual((past["start"], past["end"], past["budget"], past["used"]), (W1, W2, 10.0, 6.0))
+        self.assertEqual([(l["id"], l["name"], l["percent"], l["allowance"], l["use"], l["over"]) for l in past["lines"]],
+                         [("parts", "PartHub", 40.0, 4.0, 5.0, True), ("curl", "Curlberry", None, None, 1.0, False)])
+        self.assertEqual(past["lines"][0]["warned_at"] is not None, True)
+
+    def test_at_most_12_past_weeks_are_given(self):
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        start = dt.datetime(2026, 10, 29, 21, tzinfo=dt.timezone.utc)
+        weeks = [(CM.share.iso(start - dt.timedelta(days=7 * i)), CM.share.iso(start - dt.timedelta(days=7 * (i - 1))), None) for i in range(14)]
+        self.closed_rows(*weeks)
+        past = self.share()["past"]
+        self.assertEqual((len(past), past[0]["start"], past[-1]["start"]), (12, weeks[0][0], weeks[11][0]))
+
+    def test_a_project_no_longer_in_the_config_keeps_its_id_as_its_name_in_a_past_week(self):
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.closed_rows((W0, W1, 10.0))
+        with closing(sqlite3.connect(self.stx / "stellaxis.db")) as db, db:
+            db.execute("INSERT INTO claude_management_share_use (week, project, cost, percent) VALUES (?, 'gone', 3.0, 50.0)", (W0,))
+        [line] = self.share()["past"][0]["lines"]
+        self.assertEqual((line["id"], line["name"], line["allowance"], line["use"], line["over"]), ("gone", "gone", 5.0, 3.0, False))
+
+    def test_an_id_that_comes_twice_is_listed_once_and_a_project_named_unassigned_holds_the_unassigned_line(self):
+        self.cfg["projects"] += [{"id": "parts", "name": "Again", "repos": []}, {"id": "unassigned", "name": "Mine", "repos": []}]
+        self.turn("c", self.loose, "2026-11-06T09:00:00Z", 2)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        v = self.share()
+        self.assertEqual([(l["id"], l["name"]) for l in v["projects"]], [("parts", "PartHub"), ("curl", "Curlberry"), ("unassigned", "Mine")])
+        self.assertEqual(v["projects"][2]["use"], 2.0)
+        self.assertIsNone(v["unassigned"])
+
+    def test_without_project_management_there_is_no_project_line(self):
+        self.act("set_budget", budget=200)
+        [pm] = [c for c in C.the_core().components if c.name == "project_management"]
+        with mock.patch.dict(pm.offers, {"projects": lambda ctx, **a: [], "sessions": lambda ctx, **a: []}):
+            self.at("2026-11-06T10:00:00Z")
+            self.collect()
+            v = self.share()
+        self.assertEqual((v["projects"], v["unassigned"], v["budget"]), ([], None, 200.0))
+
+
+class RouteTest(ShareHome):
+    def setUp(self):
+        super().setUp()
+        C.the_core()                                     # the components are imported on this thread, as `serve` does
+        self.serve()
+
+    def serve(self):
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), C.Handler)     # port 0: never 7777
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        self.port = srv.server_address[1]
+        self.addCleanup(thread.join)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+    def call(self, method, path, body=None, headers=None):
+        raw = body if isinstance(body, str) or body is None else json.dumps(body)
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            c.request(method, path, raw, {"Content-Type": "application/json", **(headers or {})})
+            r = c.getresponse()
+            data = r.read()
+            return r.status, (json.loads(data) if data[:1] == b"{" else data.decode())     # a refusal of the server itself is plain text
+        finally:
+            c.close()
+
+    def test_get_gives_the_answer_of_the_offer(self):
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.assertEqual(self.call("GET", "/api/share"), (200, self.share()))
+
+    def test_a_post_without_apply_true_is_a_dry_run(self):
+        code, r = self.call("POST", "/api/share/budget", {"budget": 200, "apply": False})
+        self.assertEqual((code, r["applied"], r["ok"], r["steps"], r["manifest"]), (200, False, True, ["weekly budget: not set becomes $200.00"], None))
+        self.assertIsNone(self.call("GET", "/api/share")[1]["budget"])
+        self.assertEqual(self.log(), [])
+
+    def test_the_three_posts_apply_and_each_writes_a_manifest(self):
+        code, r = self.call("POST", "/api/share/budget", {"budget": 200, "apply": True})
+        self.assertEqual((code, r["applied"], Path(r["manifest"]).is_file()), (200, True, True))
+        code, r = self.call("POST", "/api/share/week-start", {"day": "monday", "time": "05:30", "utc_offset": "+05:30", "apply": True})
+        self.assertEqual((code, r["result"]["new"]), (200, [0, 0]))
+        code, r = self.call("POST", "/api/share/percent", {"project": "parts", "percent": 40, "apply": True})
+        self.assertEqual(code, 200)
+        v = self.call("GET", "/api/share")[1]
+        self.assertEqual((v["budget"], v["week_start"], v["projects"][0]["percent"]), (200.0, {"day": "monday", "hour": 0}, 40.0))
+        code, r = self.call("POST", "/api/share/percent", {"project": "parts", "percent": None, "apply": True})
+        self.assertEqual((code, self.call("GET", "/api/share")[1]["projects"][0]["percent"]), (200, None))
+
+    def test_a_refused_value_answers_400_with_the_sentence(self):
+        code, r = self.call("POST", "/api/share/budget", {"budget": "200", "apply": True})
+        self.assertEqual((code, r["error"]), (400, "The weekly budget must be a number above 0, or none to remove it."))
+        self.assertEqual((r["ok"], r["applied"]), (False, True))
+        code, r = self.call("POST", "/api/share/week-start", {"day": "friday", "time": "02:00", "utc_offset": "+05:30", "apply": True})
+        self.assertEqual(code, 400)
+        self.assertIn("The nearest times that work are 01:30 and 02:30.", r["error"])
+
+    def test_a_number_too_large_for_a_float_is_refused_like_any_bad_value(self):
+        code, r = self.call("POST", "/api/share/budget", '{"budget": 1' + "0" * 400 + ', "apply": true}')
+        self.assertEqual((code, r["error"]), (400, "The weekly budget must be a number above 0, or none to remove it."))
+        code, r = self.call("POST", "/api/share/percent", '{"project": "parts", "percent": 1' + "0" * 400 + ', "apply": true}')
+        self.assertEqual((code, r["error"]), (400, "The percent must be a number from 0 to 100, or none to remove the share."))
+
+    def test_a_body_that_lacks_a_key_or_a_true_or_false_apply_answers_400(self):
+        for path, body in (("/api/share/budget", {"budget": 200}), ("/api/share/budget", {"budget": 200, "apply": "yes"}),
+                           ("/api/share/budget", {"apply": True}), ("/api/share/week-start", {"day": "friday", "apply": True}),
+                           ("/api/share/week-start", {"time": "02:30", "apply": True}),
+                           ("/api/share/percent", {"project": "parts", "apply": True}), ("/api/share/percent", {"percent": 4, "apply": True})):
+            self.assertEqual(self.call("POST", path, body)[0], 400, (path, body))
+        code, r = self.call("POST", "/api/share/budget", {"budget": 200, "apply": "yes"})
+        self.assertEqual(r["error"], '"apply" must be true or false')
+        self.assertIn('"budget"', self.call("POST", "/api/share/budget", {"apply": True})[1]["error"])
+        self.assertIsNone(self.call("GET", "/api/share")[1]["budget"])
+
+    def test_another_origin_is_refused_and_another_path_is_not_found(self):
+        self.assertEqual(self.call("POST", "/api/share/budget", {"budget": 200, "apply": True}, headers={"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.call("GET", "/api/share", headers={"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.call("GET", "/api/share/nothing"), (404, {"error": "no such share endpoint"}))
+        self.assertEqual(self.call("POST", "/api/share", {"apply": True})[0], 404)
+        self.assertIsNone(self.call("GET", "/api/share")[1]["budget"])
+
+    def test_with_the_store_down_get_answers_503_in_plain_words(self):
+        db = self.stx / "stellaxis.db"
+        db.unlink()
+        db.mkdir()
+        C._core = None                                   # the next core opens the store as it is now
+        C.the_core()
+        code, r = self.call("GET", "/api/share")
+        self.assertEqual(code, 503)
+        self.assertTrue(r["error"].startswith("The store is down"))
+
+
+class CommandTest(ShareHome):
+    def run_cli(self, *args):
+        out = io.StringIO()
+        self.exit_text = None
+        with mock.patch.object(sys, "argv", ["share.py", *args]), contextlib.redirect_stdout(out):
+            try:
+                CLI.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+                self.exit_text = e.code if isinstance(e.code, str) else None
+        return code, out.getvalue()
+
+    def test_show_with_no_budget(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 10)
+        self.turn("c", self.loose, "2026-11-06T09:00:00Z", 2.5)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        code, out = self.run_cli("show")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines(), [
+            "Week: 2026-11-05 21:00 UTC to 2026-11-12 21:00 UTC (a new week starts every Thursday 21:00 UTC)",
+            "Budget: not set. Used so far: $12.50.",
+            "PartHub (parts): $10.00 used, no share",
+            "Curlberry (curl): $0.00 used, no share",
+            "Unassigned (unassigned): $2.50 used, no share"])
+
+    def test_show_with_a_budget_and_a_project_over_its_share(self):
+        self.act("set_budget", budget=20)
+        self.act("set_percent", project="parts", percent=40)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 10)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        code, out = self.run_cli("show")
+        self.assertIn("Budget: $20.00 a week. Used so far: $10.00.", out)
+        self.assertIn("PartHub (parts): $10.00 used of $8.00 (40% of the budget), -$2.00 left. All of its share is used.", out)
+        self.assertNotIn("Past weeks:", out)
+
+    def test_show_with_a_percent_and_no_budget_and_with_past_weeks(self):
+        self.act("set_percent", project="parts", percent=40)
+        self.act("set_budget", budget=200)
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 31)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.at("2026-11-12T22:00:00Z")
+        self.collect()
+        self.act("set_budget", budget=None)
+        self.turn("a", self.parts, "2026-11-12T22:00:00Z", 1)
+        self.collect()
+        code, out = self.run_cli("show")
+        lines = out.splitlines()
+        self.assertIn("Budget: not set. Used so far: $1.00.", lines)
+        self.assertIn("PartHub (parts): $1.00 used, 40% of a budget that is not set", lines)
+        self.assertEqual(lines[lines.index("Past weeks:") + 1:], ["2026-11-05 21:00 UTC to 2026-11-12 21:00 UTC: $31.00 used of $200.00"])
+
+    def test_a_dry_run_prints_the_plan_and_changes_nothing(self):
+        code, out = self.run_cli("budget", "200")
+        self.assertEqual(code, 0)
+        self.assertIn("  [dry-run] weekly budget: not set becomes $200.00", out)
+        self.assertIn("Nothing changed. Re-run with --apply to execute.", out)
+        self.assertEqual(self.log(), [])
+        self.assertFalse((self.claude / "_archive").exists())
+
+    def test_apply_prints_the_manifest_and_the_undo_line_and_the_undo_works(self):
+        code, out = self.run_cli("budget", "200", "--apply")
+        self.assertIn("  weekly budget: not set becomes $200.00", out)
+        self.assertIn("Manifest: ", out)
+        undo_line = [l for l in out.splitlines() if l.startswith("Undo:")][0]
+        self.assertIn("prune.py restore ", undo_line)
+        self.assertTrue(undo_line.endswith(" --apply"))
+        stamp = undo_line.split()[-2]
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.restore(stamp, True)
+        self.assertIsNone(self.share()["budget"])
+
+    def test_none_removes_and_the_week_start_and_percent_commands_work(self):
+        self.run_cli("budget", "200", "--apply")
+        self.assertEqual(self.share()["budget"], 200.0)
+        self.run_cli("budget", "none", "--apply")
+        self.assertIsNone(self.share()["budget"])
+        code, out = self.run_cli("week-start", "friday", "02:30", "--utc-offset", "+05:30")
+        self.assertIn("week start: stays Thursday 21:00 UTC", out)
+        code, out = self.run_cli("week-start", "monday", "05:30", "--utc-offset", "+05:30", "--apply")
+        self.assertEqual(self.share()["week_start"], {"day": "monday", "hour": 0})
+        code, out = self.run_cli("percent", "parts", "40", "--apply")
+        self.assertEqual(self.share()["projects"][0]["percent"], 40.0)
+        code, out = self.run_cli("percent", "parts", "none", "--apply")
+        self.assertIsNone(self.share()["projects"][0]["percent"])
+
+    def test_a_refusal_prints_its_sentence_and_exits_1(self):
+        code, out = self.run_cli("week-start", "friday", "02:00", "--utc-offset", "+05:30", "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("The nearest times that work are 01:30 and 02:30.", out)
+        self.assertNotIn("Nothing changed", out)
+        code, out = self.run_cli("budget", "lots")
+        self.assertEqual(code, 1)
+        self.assertIn("The weekly budget must be a number above 0, or none to remove it.", out)
+        self.assertIsNone(self.share()["budget"])
+
+    def test_with_the_store_down_show_says_so_and_exits_1(self):
+        db = self.stx / "stellaxis.db"
+        db.unlink(missing_ok=True)
+        db.mkdir()
+        C._core = None
+        code, out = self.run_cli("show")
+        self.assertEqual((code, out, self.exit_text), (1, "", "The share cannot be read: the store is down"))

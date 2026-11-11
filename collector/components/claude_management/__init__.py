@@ -50,12 +50,21 @@ def share_reader(ctx) -> None:
     share.update(ctx, placed, now())
 
 
+def share_offer(ctx, **args) -> list:
+    """One record: the answer of GET /api/share. It raises StoreError when the store is down."""
+    return [share.view(ctx, share.project_names(ctx), now())]
+
+
+def handle(handler, method: str, ctx) -> bool:
+    return share_set.handle(handler, method, ctx) or settings.handle(handler, method, ctx)
+
+
 COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader, share_reader], lines=usage.LINES,
-                      records=records.RECORDS, changes=records.CHANGES, handle=settings.handle,
+                      records=records.RECORDS, changes=records.CHANGES, handle=handle,
                       reads=[("project_management", "repos"), ("project_management", "sessions"), ("project_management", "projects")],
                       actions={"archive": trim.archive, "move": trim.move, "save_settings": settings.save_settings,
                                "set_budget": share_set.set_budget, "set_week_start": share_set.set_week_start,
                                "set_percent": share_set.set_percent},
                       undo={"claude_management.settings_file": settings.settings_file,
                             "claude_management.share_setting": share_set.undo_setting},
-                      offers={"sessions": records.sessions, "items": records.items})
+                      offers={"sessions": records.sessions, "items": records.items, "share": share_offer})

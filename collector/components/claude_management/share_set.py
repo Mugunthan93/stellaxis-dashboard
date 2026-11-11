@@ -4,15 +4,24 @@ from __future__ import annotations
 import datetime as dt
 import math
 from contextlib import closing
+from urllib.parse import urlsplit
 
+from core.app import StoreError
+from core.server import ApiError, host_ok, read_body, send_json
 from core.undo import pre
+from core.util import now
 
 from . import share
 from .share import DAYS, FIRST_START, UNASSIGNED
 
 
 def _number(x) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(x)
+    except OverflowError:   # an int too large for a float
+        return False
 
 
 def _money(x) -> str:
@@ -138,4 +147,40 @@ def undo_setting(entry: dict, apply: bool, out, ctx) -> bool:
                 _put(db, "start_day = ?, start_hour = ?", *prev)
             else:
                 _put_percent(db, project, prev)
+    return True
+
+
+ROUTES = {"/api/share/budget": ("set_budget", ("budget",), ()),
+          "/api/share/week-start": ("set_week_start", ("day", "time"), ("utc_offset",)),
+          "/api/share/percent": ("set_percent", ("project", "percent"), ())}
+
+
+def handle(handler, method: str, ctx) -> bool:
+    """Serve /api/share*. Returns False when the path is not ours."""
+    path = urlsplit(handler.path).path
+    if path != "/api/share" and not path.startswith("/api/share/"):
+        return False
+    try:
+        if not host_ok(handler):
+            raise ApiError(403, "share API only answers same-origin localhost requests")
+        if method == "GET" and path == "/api/share":
+            send_json(handler, 200, share.view(ctx, share.project_names(ctx), now()))
+            return True
+        if method != "POST" or path not in ROUTES:
+            raise ApiError(404, "no such share endpoint")
+        action, needed, optional = ROUTES[path]
+        body = read_body(handler)
+        if not isinstance(body.get("apply"), bool):
+            raise ApiError(400, '"apply" must be true or false')
+        for key in needed:
+            if key not in body:
+                raise ApiError(400, f'"{key}" is missing')
+        done = ctx.act(action, {k: body[k] for k in needed + optional if k in body}, body["apply"])
+        if not done["ok"]:
+            raise ApiError(400, " ".join(done["notes"]), **done)
+        send_json(handler, 200, done)
+    except ApiError as e:
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
+    except StoreError as e:
+        send_json(handler, 503, {"error": f"The store is down: {e}"})
     return True

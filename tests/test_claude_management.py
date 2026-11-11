@@ -69,7 +69,7 @@ class ClaudeManagementTest(FakeHome):
     def test_the_component_loads(self):
         core = Core(self.stx, self.claude, COMPS)
         [c] = [c for c in core.components if c.name == "claude_management"]
-        self.assertEqual((c.error, len(c.readers), c.lines is not None, sorted(c.offers)), (None, 3, True, ["items", "sessions"]))
+        self.assertEqual((c.error, len(c.readers), c.lines is not None, sorted(c.offers)), (None, 3, True, ["items", "sessions", "share"]))
         self.assertEqual([tuple(r) for r in c.reads], [("project_management", "repos"), ("project_management", "sessions"),
                                                            ("project_management", "projects")])
 

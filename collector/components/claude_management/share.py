@@ -85,6 +85,39 @@ def over(use: float, allowance) -> bool:
     return allowance is not None and use > 0 and use >= allowance
 
 
+def _line(project: str, name: str, percent, use: float, budget, warned_at) -> dict:
+    allowance = None if budget is None or percent is None else round(budget * percent / 100, 4)
+    use = round(use, 4)
+    return {"id": project, "name": name, "percent": percent, "allowance": allowance, "use": use,
+            "left": None if allowance is None else round(allowance - use, 4), "over": over(use, allowance), "warned_at": warned_at}
+
+
+def view(ctx, names: dict, now: dt.datetime) -> dict:
+    """The answer of GET /api/share: this week's use of each project against its share, and the past weeks as they were closed.
+    It reads the store only, so it raises StoreError when the store is down. `names` is `project_names(ctx)`."""
+    with closing(ctx.db()) as db:
+        plan, pct = setting(db), percents(db)
+        start, end = (iso(t) for t in bounds(now, plan["day"], plan["hour"]))
+        row = db.execute("SELECT updated FROM claude_management_share_weeks WHERE starts = ?", (start,)).fetchone()
+        use = dict(db.execute("SELECT project, cost FROM claude_management_share_use WHERE week = ?", (start,)))
+        warned = dict(db.execute("SELECT project, at FROM claude_management_share_warnings WHERE week = ?", (start,)))
+        line = lambda who, name: _line(who, name, pct.get(who), use.get(who, 0.0), plan["budget"], warned.get(who))
+        lines = [line(who, name) for who, name in names.items()]
+        loose = None if UNASSIGNED in names or (UNASSIGNED not in use and UNASSIGNED not in pct) else line(UNASSIGNED, "Unassigned")
+        past = []
+        for week, ends, budget in db.execute("SELECT starts, ends, budget FROM claude_management_share_weeks "
+                                             "WHERE closed = 1 AND starts < ? ORDER BY starts DESC LIMIT 12", (start,)).fetchall():
+            old = db.execute("SELECT project, cost, percent FROM claude_management_share_use WHERE week = ? ORDER BY cost DESC, project",
+                             (week,)).fetchall()
+            at = dict(db.execute("SELECT project, at FROM claude_management_share_warnings WHERE week = ?", (week,)))
+            past.append({"start": week, "end": ends, "budget": budget, "used": round(sum(c for _, c, _ in old), 4),
+                         "lines": [_line(who, names.get(who, "Unassigned" if who == UNASSIGNED else who), p, c, budget, at.get(who))
+                                   for who, c, p in old]})
+    return {"now": iso(now), "week": {"start": start, "end": end}, "week_start": {"day": DAYS[plan["day"]], "hour": plan["hour"]},
+            "budget": plan["budget"], "used": round(sum(use.values()), 4), "updated": row[0] if row else None,
+            "projects": lines, "unassigned": loose, "past": past}
+
+
 def update(ctx, placed: list, now: dt.datetime) -> None:
     """The pass of one collection, in one transaction: add up the cost of each project in every open week and make the
     warnings. `placed` is what Project management lists as sessions; with none, nothing changes. A closed week is never
