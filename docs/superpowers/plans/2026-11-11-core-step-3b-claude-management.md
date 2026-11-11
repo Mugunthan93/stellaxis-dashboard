@@ -513,3 +513,117 @@ git commit -m "Checks 2 and 3: one component removed and the rest still runs; do
 - **Step 4:** the weekly share of the Claude plan for each project (warn only).
 - **Removing the alias layer** (see the 2B plan).
 - **Memory management:** the next step of its own design; it may use `ctx.service` in place of its first-pass rule.
+
+---
+
+## Rulings made while building
+
+Step 3 was built with no owner at the keyboard. Each point below was decided by the builder. Each one says what it costs if it is wrong. The 25 rulings made when the plans were written are in plan 3A ("Decisions made by the writer"); they still stand.
+
+1. **The reference file may hold the old word.** `tests/same_output_expected.json` is the recorded output of the code before step 3, and that output goes through the alias layer. The test of check 5 allows this one file. Cost if wrong: none. The file goes when the alias layer goes.
+2. **A failed transcript read poisons the pass.** When the shared helper raises inside a pass, every later `ctx.transcripts()` in that pass raises the same error, and `cache.json` is not written. This is what the code did before step 3. Cost if wrong: one bad line that makes a reader raise blocks collecting until the reader is fixed, as before.
+3. **The pass state belongs to the thread that runs the pass.** Any other thread is "outside a pass". Cost if wrong: a component cannot read transcripts from a thread of its own.
+4. **Project management never writes an index from nothing.** When Claude management failed in a pass, Project management keeps the last good index files. Cost if wrong: after a failure the pages show an index that is a minute or more old.
+5. **Only the cost is taken from Claude management.** When only the cost is missing, the index is written with cost 0. When Claude management's first reader failed in this pass, the costs are those of the last good pass, from the store. Cost if wrong: a cost on the Project page can be one pass old after a failure.
+6. **`collect()` knows "this pass wrote the snapshot" by the file's time changing**, not by a 2-second window. Cost if wrong: none known.
+7. **The index tables are keyed by a project's position, not its id.** So a config with a repeated project id, or the id `unassigned`, still gives the old output. Cost if wrong: none; the `sessions` offer lists a session once.
+8. **A store error does not stop the index files.** They are written from memory, and the error then shows in `index_error`. Cost if wrong: the status line names a store problem that the pages do not suffer from.
+9. **The undo of a settings save never loses bytes.** If the settings file was changed after the save, the undo first keeps a copy beside it (`.bak-<stamp>`), then puts the old file back with the old mode. Cost if wrong: one more `.bak-` file beside the settings file.
+10. **`prune.py` checks first that the component is loaded**, in place of catching an error from the core. The message and the exit code 1 are the same. Cost if wrong: none known.
+11. **`CONTEXT.md` states the agreed design, not what is built so far.** One builder changed the line on "installed things" to say what the code does today. That change was taken back, because the lines beside it (weekly share, kit, connectors) also describe things that are not built yet. Cost if wrong: one line says the project list shows skills and plugins, which it does not do yet.
+12. **One commit message was corrected.** A builder wrote the wrong co-author line. The message was amended (message only, before any later commit). Cost if wrong: none.
+13. **Small review findings were recorded, not fixed.** They are in the next section. Cost if wrong: each one is small; the list says what each can cause.
+14. **Two reviews ran while the next task was being built** (tasks 3 and 4 of 3B), to save time. Both reviews came back with nothing to fix in the files the next task touched. Cost if wrong: none happened.
+15. **A component that is there but fails to load is not "removed".** The final review found this: with one component broken (a syntax error), the other one wrote a thinner snapshot, or an index with cost 0, over the good one. Now a reader that reads an offer of a broken component fails too, and its last good files stay. A removed folder still gives an empty list. A way in (a route, Jarvis) still gets an empty list in both cases. This narrows decision 22 of plan 3A. Cost if wrong: while one component is broken, the output of a component that reads it stays old (but right) until the break is fixed.
+16. **A store that was locked when the service started heals on a later pass.** Before this, the component stayed off until a restart. Cost if wrong: one more try to make the tables at the start of each pass, only while the error stands.
+17. **`last_snapshot` in `status.json` keeps its last value when a pass wrote no snapshot.** Before this it became null, and the Overview said "last run never". Cost if wrong: the time shown is the last good snapshot, not the last try; the error line beside it says the pass failed.
+18. **The other findings of the final review that were cheap were fixed in one wave** (a cut last line in `history.jsonl`; the desktop tool says so when its own collection wrote nothing; `collect.py run` prints a failed component also when a snapshot was written; the probe clock; leftovers; two test gaps; the documents). The rest is in the next section. Cost if wrong: none known.
+
+## Found while building step 3
+
+First, what a person can see change. Then the small points that were not fixed. Nothing changes in normal use.
+
+**Changes a person can see** (all in failure cases, or in places that had no fixed form):
+
+- The status line of a failed collection now reads `A component failed: …`, and `index_error` in `status.json` holds every component's error as `name: error; name: error`.
+- `collect.py run` exits with code 1 and prints `collect failed: …` when this pass wrote no snapshot (an older snapshot on disk does not change that). When a snapshot was written but a component failed, it prints `collect: …` to stderr and exits 0.
+- The service log prints `no snapshot was written` after such a pass.
+- Before step 3, a failed collection left the status line stuck on "reading transcripts". Now it goes back to idle and shows the error.
+- `GET /api/core` lists three components and has a new key, `offer_errors`.
+- Every settings save writes a manifest. So saves show in `prune.py archives`, and `prune.py restore last` can pick a save.
+- A new relocation's manifest holds the step `project_management.relocate`. Old manifests (step `relocate`) still restore.
+- A relocation that fails half-way now still writes its manifest (when a step was recorded) and collects once. Before, there was no manifest. The half move can now be undone.
+- Every applied `archive`, `move`, `relocate` and settings save adds one row to `actions.jsonl`. A refused `--apply` adds one too.
+- An unexpected error on a settings route now answers with a JSON 500. Before, the connection dropped. A failed save also writes a log row.
+- When one component is broken, a component that reads it fails in that pass too and keeps its last good files (ruling 15).
+
+**Small points for a later step:**
+
+- With `claude_management` not loaded, nothing answers `/api/settings` (a GET falls to the static file handler, a POST gets 404). With `project_management` not loaded, `prune.py restore` of a relocation stops with "no undo for step" and changes nothing. Both follow the rule "a removed component takes its routes and its undo with it".
+- The action log's `error` is the text of the exception. The settings save was checked, also with a secret in the body: no value from the settings data can reach it. The request's scope name and project folder can. A later action with private arguments must keep values out of its error texts too.
+- An applied `restore` and an applied `purge` write no row in `actions.jsonl`. The spec says every applied action is logged. The undo of a settings save changes a settings file and leaves only the renamed manifest as a trace.
+- `prune.py list` reads `snapshot.json`; `archive` and `move` read the store. They hold the same items after a healthy pass. After a store error they can differ, and an id from `list` can be "unknown" to `archive`.
+- `run_action` can hide the first error: if finishing the plan raises (the manifest write, or the collection after it), the log row is skipped and the action's own error is replaced. A dry run that raises prints "Nothing changed" before the traceback.
+- `cache.json` is one shared dict with no rule for its top keys. Project management writes `walk`, Claude management writes `probes` and `ids`. A second reader that records ids would clash.
+- There are two version constants, both `0.2.2`: `core/transcripts.VERSION` (changing it makes every transcript be read again) and `collect.VERSION` (the version the snapshot shows).
+- "last" in `restore last` sorts by folder name. Ten or more applied actions in one second would sort wrong.
+- After a failed pass, the local Refresh button of the Overview waits 30 seconds and then says "Still collecting", though the pass has ended. It waits for `last_snapshot` to change (ruling 17 keeps it). Before, it said "Updated", which was also wrong. The status line beside it shows the error.
+- The help text of `prune.py` and `skills/stellaxis/SKILL.md` still give the archive folder as `_archive/<stamp>/`. It is `_archive/<stamp>-<label>/` since step 2. The help text is output of `prune.py`, so it was not changed here.
+- While Claude management is broken, a transcript that grows loses Claude management's part of its state. It is read again from the start when the component works again. That is right, only slower once.
+- The desktop app keeps its running `mcp_server.py` in memory. After the merge, quit and reopen the Claude desktop app once.
+- The free-name check for a `.bak-` copy and its write are not one step. Two saves in the same second could race. The save has always worked this way.
+- `core.util.HOME` is fixed at import, as the old `collect.HOME` was.
+- `~/.claude.json` is read by both components in one pass. `repos.read_text` is a 5-line copy of `setup.read_text`.
+- The checks of a schema change are text checks. They also refuse a `;` or `RENAME TO` inside a string literal (the safe direction). A component whose name is a prefix of another (`memory` and `memory_management`) would count the other's tables as its own. No such pair exists.
+- The fixed clock (`STELLAXIS_NOW`) is tested only with a `Z` time.
+- The test "no component names the tables of another" would also trip on prose that holds `<name>_`.
+- The Jarvis GET test passes with or without the change it guards; the ask-path test is the real guard.
+- A `Ctx` copies `service` when it is made. A stored `Ctx` would go stale. None is stored.
+- The serve loop's `collect failed:` print has no test.
+- Older than this branch: two processes can write `cache.json.tmp` at once (an applied `prune.py` command collects while the service collects). The file can come out broken; the next pass then reads every transcript again. The window is under a second.
+- Older than this branch: a backup file name is made from a whole path; a path over 255 bytes raises in the middle of a relocation. Real paths are about 215.
+- Older than this branch: a `cache.json` that is valid JSON but holds a broken state stops every pass until the file is deleted.
+- Older than this branch: a POST is accepted when its content type only contains the text `application/json`; the Origin check is the real guard. `HEAD` on a static page skips the host check. A manifest of an archived MCP server holds its `env` in a file with the default mode.
+- Older than this branch: `probe_stdio` can hang in `readline()` when a server sends a line that is not JSON and then waits.
+- Older than this branch: the Dashboard section of `CLAUDE.md` says `/` is "what needs you", beside the paragraph on the Jarvis portal.
+- Still open from the plan (decision 25): `server.handle` writes a 500 even when the component already sent headers; `_prompt` and `MAX_PROMPT` are in two places; `purge` and `archives` stay inside `prune.py`.
+- `CONTEXT.md`: the relationship lines of Memory management describe things that are not built yet. That is right for that file (ruling 11), but a reader must know it.
+
+## What the step 4 plan must start with
+
+Step 4 is the weekly share of the Claude plan for each project (warn only). It is not started. This is where it starts.
+
+**Ask the owner first. The spec leaves these open, and code cannot answer them:**
+
+1. How a warning reaches the owner. The owner opens no Stellaxis page in the morning.
+2. Where a warning is kept, apart from how it is shown.
+3. Whether a script can read the real weekly limit of the Claude plan. If not, the owner sets one weekly budget, and each project gets a percent of it (the spec's "my call").
+4. When a week starts (which day, which hour, which time zone). This one changes the code: see point 5.
+
+**What is already there for it:**
+
+5. The cost of each session for each hour is in the store: table `claude_management_sessions`, column `hours` (JSON, `{hour: cost}`). Read it with `records.sessions(ctx, hours=True)` in Claude management. It was put there so that a week can start in the middle of a session. The final review checked it on 1,494 sessions: the hours of each session add up to its cost exactly. Know its limits:
+   - **The hours are whole UTC hours.** This Mac is on IST (+05:30). A week that starts on a whole local hour starts at HH:30 UTC, in the middle of an hour. Half an hour of cost cannot be put on the right side. It works as it is only when the week starts on a whole UTC hour. If the owner wants a whole local hour, step 4 needs smaller parts (half hours): a `changes` step for the column, and `VERSION` in `core/transcripts.py` raised so every transcript is read again.
+   - **A row lives only while its transcript file exists.** When Claude cleans up old transcripts, the rows go too. The store holds no past weeks unless step 4 keeps its own weekly totals.
+   - **The cost is priced with `pricing` from the config.** Every row is written again when a price changes.
+   - `records.sessions(ctx, hours=True)` reads the store and raises `StoreError` when the store is down.
+6. Which project a session belongs to: the offer `sessions` of Project management (`id`, `project`, `repo`, `branch`, `first_ts`, `last_ts`). The `project` column of `claude_management_sessions` is the session's folder (`~/code/x`), not a project id. There are two ways, and the plan must choose:
+   - Claude management owns the share (as the spec says). It does not read that offer yet: add `("project_management", "sessions")` to its `reads`, and mind the rounds (point 8).
+   - Or Project management adds the shares up. It already declares the read `claude_management.sessions`, and `ctx.read("claude_management", "sessions", hours=True)` in round two sees the rows of round one of the same pass. Then no third reader is needed. This goes against the spec's table, so the owner must agree.
+7. One clock: `core.util.now()`. It obeys `STELLAXIS_NOW`, so a test can fix the week.
+
+**Rules the plan must follow:**
+
+8. **Rounds.** Project management writes its `sessions` rows in round two (`index_reader`). A reader of Claude management that needs them in the same pass must be its third reader. Or it reads the rows of the last pass from the store. Decide which, and say what a first pass shows.
+9. **Schema.** A new table or column goes through `Component.changes` (table `core_schema`). Never edit a `CREATE TABLE` line that has shipped.
+10. **The action.** "Set a weekly share" is an action of Claude management: dry run first, a manifest, an undo step whose name starts with `claude_management.`. Decide where the shares live (a table of the component, not `config.json`, unless the owner wants to edit them by hand).
+11. **The reference test.** `tests/test_same_output.py` compares `snapshot.json` and every route with the output before step 3. A new key in the snapshot makes it fail. So decide first: the share is served by a route of its own (the test stays as it is), or the snapshot gets a new key (then the test needs a written rule for added keys, and the expected file is still never edited by hand).
+12. **Warn only.** The spec says Stellaxis warns and never stops work. No hook, no block. A warning needs a channel of its own: today the only one is the one string `index_error` in `status.json`, which is for errors.
+13. **Unassigned.** A folder in no project has no share unless the owner gives it one (the spec's "my call").
+14. **The undo is logged.** Today an applied `restore` writes no row in `actions.jsonl`. "Set a weekly share" will want its undo in the log; fix that first or with it.
+15. **The checks stay green:** the three remove-one tests in `tests/test_components.py` (with Project management removed, Claude management must still run and show no share, not fail), and the test that no component imports another.
+
+**Before or beside step 4, the owner may want:**
+
+16. The alias layer removed (see the 2B plan). It is independent of step 4.
+17. The small points of the section above looked at once.

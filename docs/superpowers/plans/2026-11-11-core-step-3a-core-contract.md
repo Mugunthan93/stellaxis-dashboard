@@ -543,3 +543,5 @@ git commit -m "Core: a pass runs in rounds, keeps the pass cache, and reads the 
 ## What this plan leaves for 3B
 
 Claude management as a component, the records of Project management in the store, `relocate` as an action, the checks 2 and 3 of the spec, and the documents. See `2026-11-11-core-step-3b-claude-management.md`.
+
+The rulings made while building both plans, what was found on the way, and what the step 4 plan must start with are at the end of that file.

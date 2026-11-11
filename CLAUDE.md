@@ -58,8 +58,8 @@ serves the routes. A component is one folder under `collector/components/`. The 
   the cache it has. `sessions(files)` gives the plain facts of each session (id, folder, branch, first and last time).
   To make every transcript be read again after a change in how a line is read, change `VERSION` in
   `core/transcripts.py` (a file state with another `v` is read again from the start), or add or rename a key in the
-  consumer's `fresh()` (a state without that key is read again too). `VERSION` in `collect.py` is only the version
-  the snapshot shows; changing it reads nothing again.
+  consumer's `fresh()` (a state without that key is read again too). `VERSION` in `collect.py` is the version
+  the snapshot, the desktop tool and the probes report; changing it reads nothing again.
 - `undo.py`: `Plan` (the dry run, the steps and the manifest) and `restore`. Each applied plan gets its own folder
   under `~/.claude/_archive/<stamp>-<label>/`. `restore` refuses a manifest with a step that has no handler.
 - `server.py`: `host_ok`, `read_body`, `send_json`, `ApiError`, `handle()`, which answers `GET /api/core` and

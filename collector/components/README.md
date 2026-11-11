@@ -38,6 +38,8 @@ Offers and reads
   that pair in `reads`.
 - An offer that raises gives the caller an empty list. The error shows in `GET /api/core`.
 - A component that is missing gives an empty list too. A removed component is not an error.
+- A component that is there but failed to load is different. `ctx.read` of its offer raises, so the reader that
+  asked fails in that pass and its last good files stay. A way in (`Core.read`) still gets an empty list.
 
 Actions
 - An action is `fn(plan, ctx, **args)` and returns True on success.
