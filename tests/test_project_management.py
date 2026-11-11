@@ -65,6 +65,7 @@ class ProjectManagementTest(unittest.TestCase):
         [c] = [c for c in self.core.components if c.name == "project_management"]
         self.assertEqual((c.error, len(c.readers), c.handle is not None), (None, 2, True))
         self.assertEqual(sorted(c.offers), ["approvals", "index", "live", "projects", "repos", "sessions"])
+        self.assertEqual(sorted(c.actions), ["new_names", "relocate"])
         self.assertEqual([tuple(r) for r in c.reads], [("claude_management", "sessions")])
 
     def test_nothing_outside_the_core_imports_the_component(self):

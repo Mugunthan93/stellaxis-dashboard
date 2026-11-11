@@ -9,7 +9,7 @@ from core.server import ApiError, host_ok, read_body, send_json
 from core.undo import pre
 from core.util import short_path, write_json
 
-from . import centre, old_names, records, repos
+from . import centre, old_names, records, relocate, repos
 
 
 def repos_reader(ctx) -> None:
@@ -175,6 +175,8 @@ centre.index_fallback = old_names.index
 
 COMPONENT = Component(name="project_management", readers=[repos_reader, index_reader], handle=handle,
                       records=records.RECORDS, reads=[("claude_management", "sessions")],
-                      actions={"new_names": new_names}, undo={"project_management.old_config_keys": _old_config_keys},
+                      actions={"new_names": new_names, "relocate": relocate.relocate},
+                      undo={"project_management.old_config_keys": _old_config_keys,
+                            "project_management.relocate": relocate.undo_relocate},
                       offers={"index": _index, "projects": _projects, "live": _live, "approvals": _approvals,
                               "repos": _repos, "sessions": records.sessions})

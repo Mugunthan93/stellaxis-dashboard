@@ -13,7 +13,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PRUNE = REPO / "collector" / "prune.py"
 sys.path.insert(0, str(REPO / "collector"))
-from prune import claude_dir_name  # noqa: E402
+from core.component import import_folder  # noqa: E402
+
+claude_dir_name = import_folder(REPO / "collector" / "components" / "project_management").relocate.claude_dir_name
 
 
 def jl(rows):
@@ -154,6 +156,25 @@ class Relocate(unittest.TestCase):
         listed = self.git(self.app, "worktree", "list", "--porcelain")
         self.assertIn(f"worktree {new}\n", listed)
         self.assertNotIn("prunable", listed)
+
+    def test_a_new_relocation_writes_the_step_of_project_management(self):
+        self.prune("relocate", str(self.app), str(self.H / "code" / "app"), "--apply")
+        man = next((self.C / "_archive").glob("*-relocate/manifest.json"))
+        ops = [e["op"] for e in json.loads(man.read_text())["entries"]]
+        self.assertEqual(ops[0], "project_management.relocate")
+        self.assertNotIn("relocate", ops)
+
+    def test_an_archive_from_before_this_step_still_restores(self):
+        dest = self.H / "code" / "app"
+        self.prune("relocate", str(self.app), str(dest), "--apply")
+        man = next((self.C / "_archive").glob("*-relocate/manifest.json"))
+        data = json.loads(man.read_text())
+        for e in data["entries"]:
+            if e["op"] == "project_management.relocate":
+                e["op"] = "relocate"
+        man.write_text(json.dumps(data))
+        self.prune("restore", "last", "--apply")
+        self.assertTrue(self.app.is_dir() and not dest.exists())
 
     def test_apply_and_restore(self):
         new = self.H / "code" / "personal" / "app"

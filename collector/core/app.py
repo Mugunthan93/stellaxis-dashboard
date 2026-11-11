@@ -173,14 +173,15 @@ class Core:
         if plan is None:
             plan = Plan(apply, f"{component}-{action}", self.claude_dir / "_archive", out=lambda _: None)
         private = getattr(c.actions[action], "private", ())
-        ok, error = False, None
+        ok, error, refused = False, None, False
         try:
             ok = bool(c.actions[action](plan, self.ctx(component, cfg), **args))
+            refused = not ok and not apply   # a refused dry run is not finished: no "Nothing changed" after the refusal
         except Exception as e:
             error = _err(e)
             raise
         finally:
-            path = plan.finish()
+            path = None if refused else plan.finish()
             if apply:
                 row = {"at": now_iso(), "component": component, "action": action, "args": {k: v for k, v in args.items() if k not in private},
                        "ok": ok, "manifest": str(path) if path else None, "error": error}

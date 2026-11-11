@@ -916,6 +916,12 @@ COMPONENT = Component(name="alpha", actions={"touch": touch, "refuse": refuse, "
         [row] = [json.loads(l) for l in self.log.read_text().splitlines()]
         self.assertEqual((row["ok"], row["error"]), (False, None))
 
+    def test_a_refused_dry_run_is_not_finished(self):
+        said = []
+        plan = undo.Plan(False, "mine", self.home / ".claude" / "_archive", out=said.append)
+        r = self.core.run_action("alpha", "refuse", {}, False, {}, plan=plan)
+        self.assertEqual((r["ok"], said), (False, ["  [dry-run] refused"]))
+
     def test_unknown_names_are_key_errors(self):
         for comp, act in (("ghost", "touch"), ("alpha", "ghost")):
             with self.assertRaises(KeyError):
