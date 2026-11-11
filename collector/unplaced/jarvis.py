@@ -10,16 +10,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import settings_api
+from core.server import ApiError, host_ok, read_body, send_json
 
-ApiError = settings_api.ApiError
 MAX_PROMPT = 4000
 
 
 def _jarvis(handler, core) -> bool:
     """GET /api/jarvis: the last briefing the Jarvis agent wrote, {"text", "written"}; both null when there is none."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         p = core.home / "jarvis" / "briefing.md"
         try:
@@ -28,11 +27,11 @@ def _jarvis(handler, core) -> bool:
             written = datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()
         except FileNotFoundError:
             text = written = None
-        settings_api._send(handler, 200, {"text": text, "written": written})
+        send_json(handler, 200, {"text": text, "written": written})
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -163,7 +162,7 @@ def _jarvis_voice(handler, path: str, cfg: dict, core) -> bool:
     """POST /api/jarvis/hear (a recording: {"heard"}), /api/jarvis/say ({"text"}: returns when spoken) and
     /api/jarvis/hush (stops speaking)."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if path == "/api/jarvis/hear":
             if not handler.headers.get("Content-Type", "").startswith("audio/"):
@@ -177,31 +176,31 @@ def _jarvis_voice(handler, path: str, cfg: dict, core) -> bool:
             finally:
                 _HEAR_LOCK.release()
         elif path == "/api/jarvis/say":
-            text = _prompt({"prompt": settings_api.read_body(handler).get("text")})
+            text = _prompt({"prompt": read_body(handler).get("text")})
             say(text, cfg)
             out = {}
         else:
             for p in list(_saying):
                 p.kill()
             out = {}
-        settings_api._send(handler, 200, out)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
 def _jarvis_ask(handler, cfg: dict, core) -> bool:
     """POST /api/jarvis/ask with a recording (Content-Type audio/*) or JSON {"question"}: {"heard", "answer"}."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if handler.headers.get("Content-Type", "").startswith("audio/"):
             audio = _audio(handler)
             question = None
         else:
-            q = settings_api.read_body(handler).get("question")
+            q = read_body(handler).get("question")
             question = _prompt({"prompt": q})
         if not _ASK_LOCK.acquire(blocking=False):
             raise ApiError(429, "Jarvis is still answering the last question.")
@@ -213,11 +212,11 @@ def _jarvis_ask(handler, cfg: dict, core) -> bool:
             out = {"heard": question, "answer": ask(question, cfg, core)}
         finally:
             _ASK_LOCK.release()
-        settings_api._send(handler, 200, out)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 

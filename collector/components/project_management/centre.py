@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import settings_api
+from core import util
+from core.server import ApiError, host_ok, read_body, send_json
 
 UNASSIGNED = "unassigned"
 INDEX_FILE = "projects.json"
@@ -109,7 +110,7 @@ def repo_states(paths: list[str]) -> dict[str, dict]:
 
 def build_index(sessions: list, folders: list, app: dict, cfg: dict, now: str | None = None) -> dict:
     """Every session grouped project > repo > branch, sessions newest first; `now` (ISO) is for tests."""
-    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else util.now()
     cut = (now_dt - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
     entries = _entries(cfg.get("projects"))
     by_path = {f["path"]: f for f in folders}
@@ -170,7 +171,6 @@ def status_of(row: dict | None) -> str:
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MAX_PROMPT = 4000
-ApiError = settings_api.ApiError
 
 
 def _bin(cfg: dict) -> str:
@@ -470,7 +470,7 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
     if not (path == "/api/approvals" and method == "GET" or m and method == "POST"):
         return False
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if method == "GET":
             out = pending()
@@ -479,7 +479,7 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
                 raise ApiError(400, "session id must be a uuid")
             if not sess and not APPROVAL_ID_RE.fullmatch(m.group(1)):
                 raise ApiError(404, "no such request")
-            body = settings_api.read_body(handler)
+            body = read_body(handler)
             if sess:
                 on = _bool(body, "on")
                 if on:
@@ -488,11 +488,11 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
             else:
                 decide(m.group(1), _bool(body, "allow"))
             out = {}
-        settings_api._send(handler, 200, out)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -587,16 +587,16 @@ def write_task(pid: str, op: dict) -> list[dict]:
 def _tasks(handler, method: str, pid: str, cfg: dict) -> bool:
     """GET and POST /api/projects/<id>/tasks; <id> must be a configured project or UNASSIGNED."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if pid != UNASSIGNED and not any(isinstance(p, dict) and p.get("id") == pid for p in cfg.get("projects") or []):
             raise ApiError(404, "unknown project")
-        out = read_tasks(pid) if method == "GET" else write_task(pid, settings_api.read_body(handler))
-        settings_api._send(handler, 200, out)
+        out = read_tasks(pid) if method == "GET" else write_task(pid, read_body(handler))
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -659,18 +659,18 @@ def routines(project: dict, cfg: dict) -> list[dict]:
 def _work(handler, pid: str, cfg: dict) -> bool:
     """GET /api/projects/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured project or UNASSIGNED."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
         if pid != UNASSIGNED and not w:
             raise ApiError(404, "unknown project")
         entry = next((e for e in _index().get("projects", []) if e.get("id") == pid), {})
         repos = [r["abs"] for r in entry.get("repos", []) if isinstance(r.get("abs"), str) and _norm(r["abs"]).is_dir()]
-        settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
+        send_json(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -801,19 +801,19 @@ def test_results(project: dict) -> list[dict]:
 def _test_run(handler, pid: str, cfg: dict) -> bool:
     """POST /api/projects/<id>/tests/run {"repo"}: the command comes from config only."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
         if not w:
             raise ApiError(404, "unknown project")
-        repo = settings_api.read_body(handler).get("repo")
+        repo = read_body(handler).get("repo")
         if not isinstance(repo, str) or not repo or "\0" in repo:
             raise ApiError(400, "repo must be a path")
-        settings_api._send(handler, 200, run_tests(repo, w))
+        send_json(handler, 200, run_tests(repo, w))
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -838,26 +838,26 @@ def handle(handler, method: str, cfg: dict, path: str | None = None, fix=None) -
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
         return False
     if path == "/api/projects":
-        settings_api._send(handler, 200, listing(cfg))
+        send_json(handler, 200, listing(cfg))
         return True
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if m and not UUID_RE.fullmatch(m.group(1)):
             raise ApiError(400, "session id must be a uuid")
         if method == "GET":
             out = last_reply(m.group(1))
         elif m:
-            body = settings_api.read_body(handler)
+            body = read_body(handler)
             out = message(m.group(1), _prompt(body), cfg)
         else:
-            body = settings_api.read_body(handler)
+            body = read_body(handler)
             out = _new_session(fix(body) if fix else body, cfg)
-        settings_api._send(handler, 200, out)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 

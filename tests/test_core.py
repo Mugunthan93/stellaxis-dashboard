@@ -4,10 +4,12 @@
 """
 import ast
 import contextlib
+import datetime as dt
 import http.client
 import http.server
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -313,12 +315,30 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(c.ctx("sees", {}).inputs, {})
 
 
+class UtilTest(unittest.TestCase):
+    def test_the_clock_can_be_fixed(self):
+        from core import util
+        with mock.patch.dict(os.environ, {"STELLAXIS_NOW": "2026-11-11T12:00:00Z"}):
+            self.assertEqual(util.now(), dt.datetime(2026, 11, 11, 12, tzinfo=dt.timezone.utc))
+            self.assertEqual(util.now_iso(), "2026-11-11T12:00:00Z")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("STELLAXIS_NOW", None)
+            self.assertLess(abs((util.now() - dt.datetime.now(dt.timezone.utc)).total_seconds()), 5)
+
+
 class UndoTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
         self.arch = self.home / ".claude" / "_archive"
+
+    def test_a_note_is_printed_plain_and_kept(self):
+        said = []
+        plan = undo.Plan(False, "t", self.arch, out=said.append)
+        plan.note("  skip x: not found")
+        self.assertEqual((said, plan.notes, plan.steps, plan.result), (["  skip x: not found"], ["  skip x: not found"], [], None))
+        self.assertEqual((undo.pre(True), undo.pre(False)), ("  ", "  [dry-run] "))
 
     def test_a_dry_run_plan_writes_nothing(self):
         lines = []
@@ -566,9 +586,43 @@ class HttpCase(unittest.TestCase):
             return r.status, r.read()
 
 
+ECHO = '''
+from core.component import Component
+from core.server import ApiError, read_body, send_json
+def handle(handler, method, ctx):
+    if handler.path != "/api/alpha/echo" or method != "POST":
+        return False
+    try:
+        send_json(handler, 200, read_body(handler))
+    except ApiError as e:
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
+    return True
+COMPONENT = Component(name="alpha", handle=handle)
+'''
+
+
 class ServeTest(HttpCase):
     def serve(self):
         self.start(server.serve(Core(self.home, self.home / ".claude", self.comps), 0, {}))
+
+    def test_a_component_reads_a_body_and_refuses_a_bad_one(self):
+        put(self.comps, "alpha", ECHO)
+        self.serve()
+
+        def post(body, ctype="application/json", length=None):
+            conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)
+            with closing(conn):
+                conn.putrequest("POST", "/api/alpha/echo")
+                conn.putheader("Content-Type", ctype)
+                conn.putheader("Content-Length", str(len(body) if length is None else length))
+                conn.endheaders(body)
+                r = conn.getresponse()
+                return r.status, json.loads(r.read())
+        self.assertEqual(post(b'{"a": 1}'), (200, {"a": 1}))
+        self.assertEqual(post(b'{}', ctype="text/plain"), (415, {"error": "send application/json"}))
+        self.assertEqual(post(b'[1]'), (400, {"error": "request body must be an object"}))
+        self.assertEqual(post(b'{')[0], 400)
+        self.assertEqual(post(b'', length=server.MAX_BODY + 1), (413, {"error": "request too large"}))
 
     def test_the_core_serves_with_zero_components(self):
         self.serve()
@@ -634,9 +688,12 @@ class WiringTest(HttpCase):
         self.assertTrue(all(g is got[0] for g in got))
         self.assertIsNone(got[0].error)
 
-    def test_host_ok_has_one_home(self):
+    def test_the_http_helpers_have_one_home(self):
         import settings_api
         self.assertIs(settings_api.host_ok, server.host_ok)
+        self.assertIs(settings_api.ApiError, server.ApiError)
+        self.assertIs(settings_api.read_body, server.read_body)
+        self.assertIs(settings_api._send, server.send_json)
 
 
 class IndependenceTest(unittest.TestCase):

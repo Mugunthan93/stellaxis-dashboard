@@ -31,6 +31,7 @@ from pathlib import Path
 
 import settings_api
 from core import server as core_server
+from core import util as core_util
 from core.app import Core
 from core.util import read_json, write_json, short_path
 from unplaced import jarvis
@@ -81,7 +82,7 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------------------- utilities
 
 def now_utc() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return core_util.now()
 
 
 def iso(t: dt.datetime | None) -> str | None:
@@ -1352,7 +1353,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        if not settings_api.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
+        if not core_server.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
             return self.send_error(403)
         if core_server.handle(the_core(), self, "GET", load_config()):
             return
@@ -1424,7 +1425,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_body(body, ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
     def do_POST(self):
-        if not settings_api.host_ok(self):
+        if not core_server.host_ok(self):
             return self.send_error(403)
         if core_server.handle(the_core(), self, "POST", load_config()):
             return

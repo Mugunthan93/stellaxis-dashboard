@@ -47,7 +47,7 @@ def dig(d: dict, keys: list, create=False):
 
 class Plan:
     def __init__(self, apply: bool, label: str, archive: Path, on_applied=None, undo_hint=None, out=print):
-        self.apply, self.steps = apply, []
+        self.apply, self.steps, self.notes, self.result = apply, [], [], None
         self.on_applied, self.undo_hint, self.out = on_applied, undo_hint, out
         self.dir = _free(archive, label, apply)
         self.manifest = {"created": now_iso(), "label": label, "entries": []}
@@ -55,6 +55,10 @@ class Plan:
     def say(self, msg: str) -> None:
         self.steps.append(msg)
         self.out(("  " if self.apply else "  [dry-run] ") + msg)
+
+    def note(self, msg: str) -> None:
+        self.notes.append(msg)
+        self.out(msg)
 
     def backup_json(self, path: Path) -> None:
         dest = self.dir / "json-backups" / (str(path).strip("/").replace("/", "__"))
@@ -80,12 +84,12 @@ class Plan:
         return None
 
 
-def _pre(apply: bool) -> str:
+def pre(apply: bool) -> str:
     return "  " if apply else "  [dry-run] "
 
 
 def _move(e: dict, apply: bool, out: Callable) -> bool:
-    out(f"{_pre(apply)}move {short_path(e['to'])} -> {short_path(e['from'])}")
+    out(f"{pre(apply)}move {short_path(e['to'])} -> {short_path(e['from'])}")
     if apply and Path(e["to"]).exists():
         Path(e["from"]).parent.mkdir(parents=True, exist_ok=True)
         shutil.move(e["to"], e["from"])
@@ -93,7 +97,7 @@ def _move(e: dict, apply: bool, out: Callable) -> bool:
 
 
 def _json_del(e: dict, apply: bool, out: Callable) -> bool:
-    out(f"{_pre(apply)}re-add {e['name']} to {short_path(e['file'])}")
+    out(f"{pre(apply)}re-add {e['name']} to {short_path(e['file'])}")
     if apply:
         data = read_json(Path(e["file"]), {}) or {}
         dig(data, e["keys"], create=True)[e["name"]] = e["value"]
@@ -102,7 +106,7 @@ def _json_del(e: dict, apply: bool, out: Callable) -> bool:
 
 
 def _json_add(e: dict, apply: bool, out: Callable) -> bool:
-    out(f"{_pre(apply)}remove {e['name']} from {short_path(e['file'])}")
+    out(f"{pre(apply)}remove {e['name']} from {short_path(e['file'])}")
     if apply:
         data = read_json(Path(e["file"]), {}) or {}
         (dig(data, e["keys"]) or {}).pop(e["name"], None)
@@ -111,7 +115,7 @@ def _json_add(e: dict, apply: bool, out: Callable) -> bool:
 
 
 def _json_set(e: dict, apply: bool, out: Callable) -> bool:
-    out(f"{_pre(apply)}reset {e['name']} in {short_path(e['file'])} to {e['prev']!r}")
+    out(f"{pre(apply)}reset {e['name']} in {short_path(e['file'])} to {e['prev']!r}")
     if apply:
         data = read_json(Path(e["file"]), {}) or {}
         tgt = dig(data, e["keys"], create=True)

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import settings_api
 from core.component import Component
-from core.undo import _pre
+from core.server import ApiError, host_ok, read_body, send_json
+from core.undo import pre
 from core.util import short_path, write_json
 
 from . import centre, old_names
@@ -63,11 +63,11 @@ def new_names(plan, ctx) -> bool:
 
 
 def _old_config_keys(entry: dict, apply: bool, out) -> bool:
-    out(f"{_pre(apply)}put the old keys back in {short_path(entry['file'])}")
+    out(f"{pre(apply)}put the old keys back in {short_path(entry['file'])}")
     if apply:
         user = _user_config(Path(entry["file"]))
         if user is None:
-            out(f"{_pre(apply)}{short_path(entry['file'])} is missing or is not JSON: the old keys were not put back")
+            out(f"{pre(apply)}{short_path(entry['file'])} is missing or is not JSON: the old keys were not put back")
             return False
         write_json(Path(entry["file"]), old_names.to_old(user), indent=2, ensure_ascii=False)
     return True
@@ -76,18 +76,18 @@ def _old_config_keys(entry: dict, apply: bool, out) -> bool:
 def _new_names_route(handler, method: str, ctx) -> None:
     """GET (the dry run) and POST {"apply": bool} /api/projects/new-names."""
     try:
-        if not settings_api.host_ok(handler):
-            raise settings_api.ApiError(403, "only same-origin localhost requests are answered")
+        if not host_ok(handler):
+            raise ApiError(403, "only same-origin localhost requests are answered")
         apply = False
         if method == "POST":
-            apply = settings_api.read_body(handler).get("apply")
+            apply = read_body(handler).get("apply")
             if not isinstance(apply, bool):
-                raise settings_api.ApiError(400, '"apply" must be true or false')
-        settings_api._send(handler, 200, ctx.act("new_names", {}, apply))
-    except settings_api.ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+                raise ApiError(400, '"apply" must be true or false')
+        send_json(handler, 200, ctx.act("new_names", {}, apply))
+    except ApiError as e:
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
 
 
 def handle(handler, method: str, ctx) -> bool:
@@ -105,7 +105,7 @@ def handle(handler, method: str, ctx) -> bool:
             handler.end_headers()
             return True
         if path == old_names.ROUTE:
-            settings_api._send(handler, 200, old_names.answer(centre.listing(cfg)))
+            send_json(handler, 200, old_names.answer(centre.listing(cfg)))
             return True
     return centre.handle(handler, method, cfg, path=old_names.path(path), fix=old_names.body)
 

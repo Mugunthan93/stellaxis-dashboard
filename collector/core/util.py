@@ -30,5 +30,13 @@ def short_path(p) -> str:
     return "~" + s[len(h):] if s == h or s.startswith(h + os.sep) else s
 
 
+def now() -> dt.datetime:
+    """The one clock (UTC, aware). STELLAXIS_NOW fixes it, for tests."""
+    fixed = os.environ.get("STELLAXIS_NOW")
+    if fixed:
+        return dt.datetime.fromisoformat(fixed.replace("Z", "+00:00"))
+    return dt.datetime.now(dt.timezone.utc)
+
+
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return now().strftime("%Y-%m-%dT%H:%M:%SZ")

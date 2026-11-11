@@ -6,6 +6,14 @@ import traceback
 
 from core.app import Core
 
+MAX_BODY = 2_000_000
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, msg: str, **extra):
+        super().__init__(msg)
+        self.status, self.msg, self.extra = status, msg, extra
+
 
 def host_ok(handler) -> bool:
     # reject DNS-rebinding and cross-site requests: only our own localhost origin may read or write
@@ -17,7 +25,7 @@ def host_ok(handler) -> bool:
     return origin is None or origin.split("://", 1)[-1] in allowed
 
 
-def _json(handler, status: int, obj) -> None:
+def send_json(handler, status: int, obj) -> None:
     body = json.dumps(obj).encode()
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
@@ -27,10 +35,31 @@ def _json(handler, status: int, obj) -> None:
     handler.wfile.write(body)
 
 
+def read_body(handler) -> dict:
+    """The JSON object a POST sent; ApiError for a wrong content type, a big body or bad JSON."""
+    if "application/json" not in handler.headers.get("Content-Type", ""):
+        raise ApiError(415, "send application/json")
+    try:
+        n = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise ApiError(400, "bad Content-Length")
+    if n > MAX_BODY:
+        raise ApiError(413, "request too large")
+    try:
+        body = json.loads(handler.rfile.read(n) or b"{}")
+    except ValueError as e:
+        raise ApiError(400, f"request body is not JSON: {e}")
+    if not isinstance(body, dict):
+        raise ApiError(400, "request body must be an object")
+    return body
+
+
 def handle(core: Core, handler, method: str, cfg: dict) -> bool:
     """Answer GET /api/core, else offer the request to each component's `handle`. True when answered."""
     if method == "GET" and handler.path.split("?")[0] == "/api/core":
-        _json(handler, 200, core.describe())
+        send_json(handler, 200, core.describe())
         return True
     for c in sorted(core.components, key=lambda c: c.name):
         if c.handle is None or c.error:
@@ -40,7 +69,7 @@ def handle(core: Core, handler, method: str, cfg: dict) -> bool:
                 return True
         except Exception as e:
             traceback.print_exc()
-            _json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+            send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
             return True
     return False
 

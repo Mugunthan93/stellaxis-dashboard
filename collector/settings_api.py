@@ -19,7 +19,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from core.server import host_ok
+from core.server import ApiError, MAX_BODY, host_ok, read_body, send_json as _send  # noqa: F401
 
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
@@ -27,17 +27,10 @@ STX_HOME = Path(os.environ.get("STELLAXIS_HOME", HOME / ".stellaxis")).expanduse
 REPO_DIR = Path(__file__).resolve().parent.parent
 SCOPES = {"user", "project", "local"}
 DEFAULT_FORMAT = {"indent": 2, "ascii": False, "newline": False}  # what Claude Code itself writes
-MAX_BODY = 2_000_000
 
 HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification",
                "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "PreCompact", "SessionStart",
                "SessionEnd"]
-
-
-class ApiError(Exception):
-    def __init__(self, status: int, msg: str, **extra):
-        super().__init__(msg)
-        self.status, self.msg, self.extra = status, msg, extra
 
 
 # ---------------------------------------------------------------- files
@@ -278,37 +271,6 @@ def save(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------- http
-
-def _send(handler, status: int, obj):
-    body = json.dumps(obj).encode()
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-def read_body(handler) -> dict:
-    """The JSON object a POST sent; ApiError for a wrong content type, a big body or bad JSON."""
-    if "application/json" not in handler.headers.get("Content-Type", ""):
-        raise ApiError(415, "send application/json")
-    try:
-        n = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        n = -1
-    if n < 0:
-        raise ApiError(400, "bad Content-Length")
-    if n > MAX_BODY:
-        raise ApiError(413, "request too large")
-    try:
-        body = json.loads(handler.rfile.read(n) or b"{}")
-    except ValueError as e:
-        raise ApiError(400, f"request body is not JSON: {e}")
-    if not isinstance(body, dict):
-        raise ApiError(400, "request body must be an object")
-    return body
-
 
 def handle(handler, method: str) -> bool:
     """Serve /api/settings*. Returns False when the path is not ours."""

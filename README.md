@@ -87,11 +87,11 @@ collector/prune.py       archive / move / restore / purge (dry run by default)
 collector/mcp_server.py  stdio MCP server, one read-only tool: stellaxis_snapshot
 collector/install.sh     macOS service + desktop MCP registration
 collector/settings_api.py  /api/settings: read, diff, back up and save Claude settings.json files
-collector/workspaces.py  command centre: workspace index, sessions, tasks, approvals, plans, tests
+collector/components/project_management/  command centre: project index, sessions, tasks, approvals, plans, tests
 collector/approval_hook.py  PermissionRequest hook behind "Approve from page"
 dashboard/index.html     dashboard (same file is the artifact and the localhost page)
 dashboard/home.html      Home: what needs you, what is running, what isn't backed up (localhost only)
-dashboard/workspace.html  Workspace: sessions, tasks, plans, routines, tests (localhost only)
+dashboard/project.html  Project: sessions, tasks, plans, routines, tests (localhost only)
 dashboard/hierarchy.html  Hierarchy page (same file is the artifact and the localhost page)
 dashboard/settings.html  Settings page: edit user / project / local settings.json (localhost only)
 dashboard/shell.html     sidebar every localhost page sits in
