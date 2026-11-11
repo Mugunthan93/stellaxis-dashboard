@@ -337,6 +337,23 @@ class IndexFailure(unittest.TestCase):
             st = json.loads(Path(t, "status.json").read_text())
         self.assertEqual((st["phase"], st["index_error"]), ("idle", "ValueError: boom"))
         self.assertIn("index_error", (REPO / "dashboard" / "shell.html").read_text())
+        self.assertIn("core_error", (REPO / "dashboard" / "shell.html").read_text())
+
+
+class PageNames(unittest.TestCase):
+    def test_pages_and_the_agent_use_the_new_names(self):
+        old = "work" + "space"
+        for name in ("dashboard/home.html", "dashboard/project.html", "dashboard/shell.html", "agents/jarvis.md", "DESIGN.md"):
+            text = (REPO / name).read_text()
+            self.assertNotIn(old, text.lower(), name)
+        for name in ("home.html", "project.html", "shell.html"):
+            self.assertIn("/api/projects", (REPO / "dashboard" / name).read_text(), name)
+        self.assertFalse((REPO / "dashboard" / (old + ".html")).exists())
+        shell = (REPO / "dashboard" / "shell.html").read_text()
+        self.assertIn('href="/project?id=', shell)
+        self.assertIn("<h2>Projects</h2>", shell)
+        self.assertIn("/api/projects", (REPO / "agents" / "jarvis.md").read_text())
+        self.assertIn("projects.json", (REPO / "agents" / "jarvis.md").read_text())
 
 
     def test_collection_clears_stale_switches(self):
