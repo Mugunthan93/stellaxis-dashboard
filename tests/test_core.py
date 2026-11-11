@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -41,6 +42,11 @@ class LoadTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
         self.comps = self.home / "components"
+
+    def test_no_component_may_be_named_core(self):
+        put(self.comps, "core", "from core.component import Component\nCOMPONENT = Component(name='core')\n")
+        [c] = component.load(self.comps)
+        self.assertIn("core", c.error)
 
     def test_missing_or_empty_folder_gives_no_components(self):
         self.assertEqual(component.load(self.comps / "absent"), [])
@@ -159,6 +165,54 @@ class StoreTest(unittest.TestCase):
                 s.ensure("alpha", ["CREATE TABLE IF NOT EXISTS alpha_ok (id TEXT)", bad])
         names = {r["name"] for r in self.q(s, "SELECT name FROM sqlite_master")}
         self.assertNotIn("alpha_ok", names)   # a rejected list creates nothing
+
+    V1 = ["CREATE TABLE IF NOT EXISTS alpha_t (id TEXT)"]
+    V2 = ["CREATE TABLE IF NOT EXISTS alpha_t (id TEXT, more TEXT)"]
+    ADD = [["ALTER TABLE alpha_t ADD COLUMN more TEXT"]]
+
+    def cols(self, s):
+        with closing(s.connect()) as db:
+            return [r[1] for r in db.execute("PRAGMA table_info(alpha_t)")]
+
+    def version(self, s, name="alpha"):
+        with closing(s.connect()) as db:
+            row = db.execute("SELECT version FROM core_schema WHERE component = ?", (name,)).fetchone()
+            return row and row[0]
+
+    def test_a_new_store_gets_the_present_shape_and_no_change_is_run(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("alpha", self.V2, self.ADD)
+        self.assertEqual((self.cols(s), self.version(s)), (["id", "more"], 1))
+
+    def test_an_older_store_gets_each_change_one_time(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("alpha", self.V1)
+        self.assertEqual(self.version(s), 0)
+        s.ensure("alpha", self.V2, self.ADD)
+        s.ensure("alpha", self.V2, self.ADD)
+        self.assertEqual((self.cols(s), self.version(s)), (["id", "more"], 1))
+
+    def test_a_store_from_before_the_rule_counts_as_version_zero(self):
+        s = store.Store(self.home / "stellaxis.db")
+        with closing(s.connect()) as db, db:
+            db.execute(self.V1[0])
+        s.ensure("alpha", self.V2, self.ADD)
+        self.assertEqual(self.cols(s), ["id", "more"])
+
+    def test_a_change_that_fails_leaves_the_store_as_it_was(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("alpha", self.V1)
+        with self.assertRaises(sqlite3.Error):
+            s.ensure("alpha", self.V2, [["ALTER TABLE alpha_t ADD COLUMN more TEXT", "ALTER TABLE alpha_t ADD COLUMN more TEXT"]])
+        self.assertEqual((self.cols(s), self.version(s)), (["id"], 0))
+
+    def test_a_change_may_touch_only_its_own_tables(self):
+        s = store.Store(self.home / "stellaxis.db")
+        s.ensure("beta", ["CREATE TABLE IF NOT EXISTS beta_t (id TEXT)"])
+        for bad in ("DROP TABLE IF EXISTS beta_t", "ALTER TABLE beta_t ADD COLUMN x", "DELETE FROM core_schema", "PRAGMA writable_schema = 1"):
+            with self.assertRaises(ValueError):
+                s.ensure("alpha", self.V1, [[bad]])
+        self.assertIsNone(self.version(s, "alpha"))
 
     def test_two_threads_use_the_store_at_once(self):
         s = store.Store(self.home / "stellaxis.db")
@@ -305,6 +359,17 @@ class CoreTest(unittest.TestCase):
         by = {x["name"]: x for x in c.describe()["components"]}
         self.assertIn("ValueError", by["thief"]["error"])
         self.assertEqual(by["alpha"], {"name": "alpha", "readers": 1, "actions": [], "offers": ["things"], "reads": [], "error": None})
+        self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
+
+    def test_a_change_that_fails_stops_only_that_component(self):
+        put(self.comps, "alpha", ALPHA)
+        put(self.comps, "sick", "from core.component import Component\nCOMPONENT = Component(name='sick', records=['CREATE TABLE IF NOT EXISTS sick_t (id TEXT)'], changes=[['ALTER TABLE sick_t ADD COLUMN x TEXT', 'ALTER TABLE sick_t ADD COLUMN x TEXT']])\n")
+        with closing(sqlite3.connect(self.home / "stellaxis.db")) as db, db:
+            db.execute("CREATE TABLE sick_t (id TEXT)")   # an older store, so the changes run
+        c = self.core()
+        by = {x["name"]: x for x in c.describe()["components"]}
+        self.assertIn("OperationalError", by["sick"]["error"])
+        self.assertIsNone(by["alpha"]["error"])
         self.assertEqual(set(c.run_pass({})["components"]), {"alpha"})
 
     def test_records_that_fail_in_sqlite_stop_only_that_component(self):

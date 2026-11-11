@@ -76,7 +76,7 @@ class Core:
             if c.error:
                 continue
             try:
-                self.store.ensure(c.name, c.records)
+                self.store.ensure(c.name, c.records, c.changes)
             except Exception as e:
                 c.error = _err(e)
 

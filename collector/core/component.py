@@ -19,6 +19,7 @@ class Component:
     name: str
     readers: list = field(default_factory=list)
     records: list = field(default_factory=list)
+    changes: list = field(default_factory=list)   # steps (lists of statements) that bring an older store to `records`
     actions: dict = field(default_factory=dict)
     offers: dict = field(default_factory=dict)
     reads: list = field(default_factory=list)
@@ -60,6 +61,8 @@ def _import(folder: Path) -> Component:
         raise TypeError("COMPONENT is missing or is not a Component")
     if not NAME.fullmatch(comp.name):
         raise ValueError(f"bad component name {comp.name!r}")
+    if comp.name == "core":
+        raise ValueError("a component may not be named 'core'")
     if comp.name != folder.name:
         raise ValueError(f"component name {comp.name!r} differs from folder name {folder.name!r}")
     for step in comp.undo:

@@ -20,12 +20,45 @@ class Store:
         db.row_factory = sqlite3.Row
         return db
 
-    def ensure(self, name: str, records: list[str]) -> None:
-        """Run a component's CREATE statements, but only if every one makes a table or index named <name>_…"""
-        own = re.compile(rf"\s*CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+{re.escape(name)}_", re.I)
+    def ensure(self, name: str, records: list[str], changes: list[list[str]] = ()) -> None:
+        """Bring a component's tables to the shape of `records`, in one transaction.
+
+        `records` is the present shape. `changes` are the steps that bring an older store to it; the
+        version of the component in core_schema says how many of them the store has had."""
+        n = re.escape(name)
+        make = re.compile(rf"\s*CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+{n}_", re.I)
+        alter = re.compile(
+            rf"\s*(ALTER\s+TABLE\s+{n}_|DROP\s+(TABLE|INDEX)\s+IF\s+EXISTS\s+{n}_|UPDATE\s+{n}_"
+            rf"|DELETE\s+FROM\s+{n}_|INSERT\s+INTO\s+{n}_)", re.I)
         for sql in records:
-            if not own.match(sql):
+            if not make.match(sql):
                 raise ValueError(f"component {name!r} may only create tables and indexes named {name}_…: {sql!r}")
-        with closing(self.connect()) as db, db:
-            for sql in records:
-                db.execute(sql)
+        for step in changes:
+            for sql in step:
+                if not (make.match(sql) or alter.match(sql)):
+                    raise ValueError(f"component {name!r} may only change tables and indexes named {name}_…: {sql!r}")
+        db = self.connect()
+        db.isolation_level = None
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("CREATE TABLE IF NOT EXISTS core_schema (component TEXT PRIMARY KEY, version INTEGER NOT NULL)")
+                row = db.execute("SELECT version FROM core_schema WHERE component = ?", (name,)).fetchone()
+                if row is not None:
+                    version = row[0]
+                else:
+                    mine = db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE ? ESCAPE '\\' LIMIT 1",
+                                      (name.replace("_", "\\_") + "\\_%",)).fetchone()
+                    version = 0 if mine else len(changes)
+                for step in changes[version:]:
+                    for sql in step:
+                        db.execute(sql)
+                for sql in records:
+                    db.execute(sql)
+                db.execute("INSERT OR REPLACE INTO core_schema (component, version) VALUES (?, ?)", (name, len(changes)))
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+        finally:
+            db.close()
