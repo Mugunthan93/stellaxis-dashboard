@@ -754,3 +754,20 @@ Expected: `{"components": [], "store": "/Users/…/.stellaxis/stellaxis.db", "er
 - Step 2: Project management moves out of `workspaces.py`, the word "workspace" becomes "project", and the shared transcript helper is built.
 - Step 3: Claude management moves out of `collect.py`, `prune.py` and `settings_api.py`.
 - A generic HTTP route to run any action. Step 2 adds routes through its own component `handle`, so no such route is needed yet.
+
+## Found while building step 1, for the step 2 plan to open with
+
+The final review of this branch found gaps in the component contract. None can happen with zero components. The step 2 plan starts with a task that closes them:
+
+- **A component cannot run its own action through the core.** `handle` gets a `Ctx`, and `Ctx` has no way to call `run_action`. Add `Ctx.act(action, args, apply)` bound to the component's own name, so every applied action still gets its dry run, its manifest and its line in `actions.jsonl`.
+- **Two applied actions with the same label in the same second share one manifest folder**, and the second overwrites the first (`core/undo.py`, `stamp()`). Make the folder name unique before any applied action can be reached over HTTP.
+- **A component cannot register its own undo steps.** `restore` skips an op it has no handler for and still marks the manifest restored. Give `Component` an `undo` field (op to handler) and make `restore` refuse an unknown op, except `json_backup`.
+- **`run_action` still runs when the store could not be opened.** Refuse it, as readers and routes are refused.
+- **When the store is down, component routes answer 404.** Once the project routes live in a component, decide what the pages should see instead.
+- **Readers have no named input.** Today `collect.py` hands the uncapped session list to `workspaces.build_index` through a private config key. Name that channel.
+- **A schema change has no path.** Records are `CREATE … IF NOT EXISTS` only.
+- **An action must return True on success.** One that returns nothing is logged as not ok. Say so in `collector/components/README.md`.
+- **A connection from `ctx.db()` must be closed by the caller.** Say so in the README, or give `Ctx` a context manager.
+- **The core does not apply the "POSTs need `application/json`" rule** that `workspaces.handle` applies today.
+- **Tests:** `tests/test_hardening.py` (class `Service`) builds the real core when run alone. Patch `C._core` there once components exist.
+- **Smaller:** the core pass runs under the status phase "indexing workspaces"; `server.handle` writes a 500 even when the component already sent headers; `Ctx` exposes `home` but not `claude_dir`; the table-name check in `Store.ensure` guards against accidents and is not a boundary.
