@@ -1,0 +1,161 @@
+"""Tests of the alias layer (collector/components/project_management/old_names.py): the names from before
+2026-11-11 (workspace, other) still answer as they did.
+
+  python3 -m unittest tests.test_old_names
+"""
+import http.client
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+from contextlib import closing
+from pathlib import Path
+from unittest import mock
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "collector"))
+sys.path.insert(0, str(REPO / "tests"))
+from core import server
+from core.app import Core
+from core.component import import_folder
+
+import test_hardening
+
+COMPS = REPO / "collector" / "components"
+PM = import_folder(COMPS / "project_management")
+W = PM.centre
+O = PM.old_names
+OLD_CFG = {"claude_bin": "/no/claude", "workspaces": [{"id": "x", "name": "X", "folders": ["~/code/x"], "routines": ["r"]}],
+           "projects": [{"name": "A card"}]}
+
+
+class NamesTest(unittest.TestCase):
+    def test_old_config_keys_are_read_as_the_new_ones(self):
+        cfg = O.config(OLD_CFG)
+        self.assertEqual(cfg["projects"], [{"id": "x", "name": "X", "repos": ["~/code/x"], "routines": ["r"]}])
+        self.assertEqual(OLD_CFG["workspaces"][0]["folders"], ["~/code/x"])          # the argument is not changed
+        new = {"projects": [{"id": "y", "repos": ["~/code/y"]}], "project_notes": []}
+        self.assertIs(O.config(new), new)
+
+    def test_old_paths_bodies_and_pages(self):
+        self.assertEqual(O.path("/api/workspaces"), "/api/projects")
+        self.assertEqual(O.path("/api/workspaces/other/tasks"), "/api/projects/unassigned/tasks")
+        self.assertEqual(O.path("/api/workspaces/x/tests/run"), "/api/projects/x/tests/run")
+        self.assertIsNone(O.path("/api/projects/x/tasks"))
+        self.assertIsNone(O.path("/api/workspacesx"))
+        self.assertEqual(O.body({"workspace": "other", "folder": "f"}), {"project": "unassigned", "folder": "f"})
+        self.assertEqual(O.body({"project": "x"}), {"project": "x"})
+        self.assertEqual(O.page("/workspace", "id=other&x=1"), "/project?id=unassigned&x=1")
+        self.assertEqual(O.page("/workspace", "id=a%20b"), "/project?id=a%20b")
+        self.assertEqual(O.page("/workspace", ""), "/project")
+        self.assertEqual(O.page("/workspace.html", ""), "/project.html")
+        self.assertIsNone(O.page("/project", "id=x"))
+
+    def test_old_answers_keep_their_shape(self):
+        new = {"generated_at": "g", "live_ok": True, "projects": [{"id": "x", "name": "X", "repos": []}, {"id": "unassigned", "name": "Unassigned", "repos": []}]}
+        self.assertEqual(O.answer(new), {"generated_at": "g", "live_ok": True, "workspaces": [
+            {"id": "x", "name": "X", "repos": []}, {"id": "other", "name": "Other", "repos": []}]})
+        self.assertEqual(new["projects"][1]["id"], "unassigned")
+
+
+class ComponentTest(unittest.TestCase):
+    """The component under the old config shape, through the core's own server."""
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        env = mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+                                           "HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.core = Core(self.home, self.home / ".claude", COMPS)
+        self.srv = server.serve(self.core, 0, dict(OLD_CFG))
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def call(self, method, path, body=None):
+        with closing(http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=10)) as conn:
+            conn.request(method, path, None if body is None else json.dumps(body),
+                         {} if body is None else {"Content-Type": "application/json"})
+            r = conn.getresponse()
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw and r.getheader("Content-Type") == "application/json" else None), r.headers
+
+    def get(self, path):
+        return self.call("GET", path)
+
+    def post(self, path, body):
+        return self.call("POST", path, body)
+
+    def run_pass(self):
+        row = {"id": "s1", "project": "~/code/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z", "cost": 1, "branch": "main"}
+        stray = {**row, "id": "s2", "project": "~/nowhere/y"}
+        with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
+            return self.core.run_pass(dict(OLD_CFG), {"sessions": [row, stray], "folders": []})
+
+    def test_a_pass_with_an_old_config_writes_both_index_files(self):
+        res = self.run_pass()
+        self.assertEqual(res["components"]["project_management"]["errors"], [])
+        new = json.loads((self.home / "projects.json").read_text())
+        old = json.loads((self.home / "workspaces.json").read_text())
+        self.assertEqual([p["id"] for p in new["projects"]], ["x", "unassigned"])
+        self.assertEqual([(w["id"], w["name"]) for w in old["workspaces"]], [("x", "X"), ("other", "Other")])
+        self.assertEqual(old["workspaces"][0]["repos"], new["projects"][0]["repos"])
+
+    def test_old_routes_answer_as_before(self):
+        self.run_pass()
+        status, body, _ = self.get("/api/workspaces")
+        self.assertEqual((status, [w["id"] for w in body["workspaces"]], "projects" in body), (200, ["x", "other"], False))
+        self.assertEqual(self.get("/api/projects")[1]["projects"][1]["id"], "unassigned")
+        self.assertEqual(self.post("/api/workspaces/other/tasks", {"add": "one"})[0], 200)
+        self.assertEqual([t["text"] for t in self.get("/api/projects/unassigned/tasks")[1]], ["one"])
+        self.assertEqual([t["text"] for t in self.get("/api/workspaces/other/tasks")[1]], ["one"])
+        self.assertEqual(self.get("/api/workspaces/x/work")[0], 200)
+        self.assertEqual(self.get("/api/workspaces/nope/tasks")[0], 404)
+        self.assertEqual(self.get("/api/projects/other/tasks")[0], 404)          # the old id is an old name only
+
+    def test_the_old_page_address_redirects(self):
+        status, _, headers = self.get("/workspace?id=other")
+        self.assertEqual((status, headers["Location"], headers["Content-Length"]), (302, "/project?id=unassigned", "0"))
+
+    def test_the_old_task_file_is_used_until_it_is_moved(self):
+        (self.home / "tasks").mkdir()
+        (self.home / "tasks" / "other.md").write_text("- [ ] kept\n")
+        self.assertEqual([t["text"] for t in W.read_tasks("unassigned")], ["kept"])
+        W.write_task("unassigned", {"add": "more"})
+        self.assertEqual((self.home / "tasks" / "other.md").read_text(), "- [ ] kept\n- [ ] more\n")
+        self.assertFalse((self.home / "tasks" / "unassigned.md").exists())
+        (self.home / "tasks" / "other.md").rename(self.home / "tasks" / "unassigned.md")
+        self.assertEqual(len(W.read_tasks("unassigned")), 2)
+
+    def test_a_new_session_takes_the_old_body_key(self):
+        repo = self.home / "code" / "x"
+        repo.mkdir(parents=True)
+        (self.home / "projects.json").write_text(json.dumps({"projects": [{"id": "x", "name": "X", "repos": [
+            {"path": str(repo), "abs": str(repo), "exists": True, "branches": []}]}]}))
+        with mock.patch.object(W, "start", return_value={"id": "n"}):
+            self.assertEqual(self.post("/api/sessions/new", {"workspace": "x", "folder": str(repo), "prompt": "hi"})[:2], (200, {"id": "n"}))
+            self.assertEqual(self.post("/api/sessions/new", {"project": "x", "folder": str(repo), "prompt": "hi"})[:2], (200, {"id": "n"}))
+
+
+class OldRoutes(test_hardening.RouteMatrix):
+    """The same matrix under the old names: every old route answers our Host and refuses any other."""
+    def config(self):
+        new = super().config()
+        return {**{k: v for k, v in new.items() if k != "projects"},
+                "workspaces": [{**{k: v for k, v in p.items() if k != "repos"}, "folders": p["repos"]} for p in new["projects"]]}
+
+    def routes(self):
+        return [("GET", "/api/workspaces", None, 200), ("GET", "/api/workspaces/w/tasks", None, 200),
+                ("GET", "/api/workspaces/other/tasks", None, 200), ("GET", "/api/workspaces/w/work", None, 200),
+                ("GET", "/workspace?id=w", None, 302), ("GET", "/workspace.html", None, 302),
+                ("POST", "/api/workspaces/w/tasks", {"add": "x"}, 200),
+                ("POST", "/api/workspaces/w/tests/run", {"repo": self.repo}, 200),
+                ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200)]
+
+
+if __name__ == "__main__":
+    unittest.main()

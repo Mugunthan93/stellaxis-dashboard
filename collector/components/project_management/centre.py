@@ -1,7 +1,8 @@
-"""Command centre: group folders into configured workspaces.
+"""Command centre: group folders into configured projects.
 
-A workspace is {"id", "name", "folders": [path]}; a path belongs to the first workspace with a folder that
+A project is {"id", "name", "repos": [path]}; a path belongs to the first project with a repo that
 is the path itself or a parent of it (whole path components, so ph-admin-old is not under ph-admin).
+A path in no project belongs to UNASSIGNED.
 """
 from __future__ import annotations
 
@@ -20,29 +21,32 @@ from pathlib import Path
 
 import settings_api
 
+UNASSIGNED = "unassigned"
+INDEX_FILE = "projects.json"
 
 def _norm(p: str) -> Path:
     return Path(os.path.normpath(os.path.expanduser(p)))
 
 
-def _entries(wss) -> list[dict]:
-    """The usable config workspaces: a config entry with no id is skipped."""
-    return [w for w in wss if isinstance(w, dict) and isinstance(w.get("id"), str) and w["id"]] if isinstance(wss, list) else []
+def _entries(entries) -> list[dict]:
+    """The usable config projects: a config entry with no id is skipped."""
+    return [e for e in entries if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]] if isinstance(entries, list) else []
 
 
-def _folders(w: dict) -> list[str]:
-    fs = w.get("folders")
-    return [f for f in fs if isinstance(f, str)] if isinstance(fs, list) else []
+def _repos(p: dict) -> list[str]:
+    rs = p.get("repos")
+    return [r for r in rs if isinstance(r, str)] if isinstance(rs, list) else []
 
 
-def assign(path: str, workspaces: list[dict]) -> str:
+def assign(path: str, projects: list[dict]) -> str:
+    """The id of the project this path belongs to, else UNASSIGNED."""
     p = _norm(path)
-    for w in _entries(workspaces):
-        for f in _folders(w):
-            root = _norm(f)
+    for e in _entries(projects):
+        for r in _repos(e):
+            root = _norm(r)
             if p == root or root in p.parents:
-                return w["id"]
-    return "other"
+                return e["id"]
+    return UNASSIGNED
 
 
 def app_records(base: Path) -> dict[str, dict]:
@@ -103,19 +107,19 @@ def repo_states(paths: list[str]) -> dict[str, dict]:
     return {p: _STATE_CACHE[p][1] for p in paths}
 
 
-def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str | None = None) -> dict:
-    """Every session grouped workspace > repo > branch, sessions newest first; `now` (ISO) is for tests."""
+def build_index(sessions: list, folders: list, app: dict, cfg: dict, now: str | None = None) -> dict:
+    """Every session grouped project > repo > branch, sessions newest first; `now` (ISO) is for tests."""
     now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
     cut = (now_dt - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
-    wss = _entries(cfg.get("workspaces"))
-    by_path = {p["path"]: p for p in projects}
-    tree: dict = {}  # workspace id > repo path > branch > [session]
+    entries = _entries(cfg.get("projects"))
+    by_path = {f["path"]: f for f in folders}
+    tree: dict = {}  # project id > repo path > branch > [session]
     cost = {}
     for s in sessions:
         proj = by_path.get(s["project"]) or {}
         repo = proj.get("worktree_of") or s["project"].split("/.claude/worktrees/")[0]  # deleted worktrees have no worktree_of
         a = app.get(s["id"]) or {}
-        wid = assign(repo, wss)
+        wid = assign(repo, entries)
         row = {"id": s["id"], "title": a.get("title") or "", "first_ts": s.get("first_ts"), "last_ts": s.get("last_ts"),
                "cost": s.get("cost") or 0, "app_id": a.get("app_id"), "archived": bool(a.get("archived")),
                "path": proj.get("abs") or s["project"]}
@@ -123,14 +127,14 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
         tree.setdefault(wid, {}).setdefault(repo, {}).setdefault(branch, []).append(row)
         if (s.get("last_ts") or "")[:19] >= cut:
             cost[wid] = cost.get(wid, 0) + row["cost"]
-    for w in wss:  # a configured folder with no sessions is a repo with no branches, so it can still be reached
-        for f in _folders(w):
-            root, repos = _norm(f), tree.setdefault(assign(f, wss), {})
+    for e in entries:  # a configured repo with no sessions is a repo with no branches, so it can still be reached
+        for f in _repos(e):
+            root, repos = _norm(f), tree.setdefault(assign(f, entries), {})
             if root.is_dir() and not any(root == _norm(r) or root in _norm(r).parents for r in repos):
                 repos[f] = {}
     states = repo_states([str(_norm(r)) for repos in tree.values() for r in repos])
     out = []
-    for w in [*wss, {"id": "other", "name": "Other"}]:
+    for w in [*entries, {"id": UNASSIGNED, "name": "Unassigned"}]:
         repos = []
         for repo, branches in tree.get(w["id"], {}).items():
             bl = []
@@ -142,7 +146,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
             repos.append({"path": repo, "abs": str(ab), "exists": ab.exists(), "state": states[str(ab)], "branches": bl})
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
-    return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
+    return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "projects": out}
 
 
 def live(claude_bin: str, timeout: float = 5) -> list[dict] | None:
@@ -183,9 +187,9 @@ def _home() -> Path:
 
 def _index() -> dict:
     try:
-        return json.loads((_home() / "workspaces.json").read_text())
+        return json.loads((_home() / INDEX_FILE).read_text())
     except (OSError, ValueError):
-        return {"workspaces": []}
+        return {"projects": []}
 
 
 def _prompt(body: dict) -> str:
@@ -305,7 +309,7 @@ def message(session_id: str, prompt: str, cfg: dict) -> dict:
             raise ApiError(409, "this session is open but has no message socket; open it to talk to it")
         relay(sock, prompt + RELAY_NOTE, cfg)
         return {"via": "relay"}
-    path = next((s.get("path") for w in _index().get("workspaces", []) for r in w.get("repos", [])
+    path = next((s.get("path") for w in _index().get("projects", []) for r in w.get("repos", [])
                  for b in r.get("branches", []) for s in b.get("sessions", []) if s.get("id") == session_id), None)
     folder = _norm(path) if path else None
     if not folder or not folder.is_dir():
@@ -338,13 +342,13 @@ def last_reply(session_id: str) -> dict:
 
 def _new_session(body: dict, cfg: dict) -> dict:
     prompt = _prompt(body)
-    w = next((w for w in _index().get("workspaces", []) if w.get("id") == body.get("workspace")), None)
+    w = next((w for w in _index().get("projects", []) if w.get("id") == body.get("project")), None)
     if not w:
-        raise ApiError(404, "unknown workspace")
+        raise ApiError(404, "unknown project")
     folder = body.get("folder")
     ok = {_norm(r["path"]) for r in w.get("repos", []) if r.get("path") and _norm(r["path"]).is_dir()}
     if not isinstance(folder, str) or _norm(folder) not in ok:
-        raise ApiError(403, "that folder is not one of this workspace's repos")
+        raise ApiError(403, "that folder is not one of this project's repos")
     return start(str(_norm(folder)), prompt, cfg)
 
 
@@ -489,16 +493,19 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
     return True
 
 
-# --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md; "- [ ] text" / "- [x] text" lines, every other line is left alone ---
+# --- task lists: $STELLAXIS_HOME/tasks/<project id>.md; "- [ ] text" / "- [x] text" lines, every other line is left alone ---
 TASK_RE = re.compile(r"- \[([ x])\] (.*?)(\r?\n)?")
 MAX_TASK = 500
 _TASK_LOCK = threading.Lock()  # one read-modify-write at a time
 
 
-def _task_file(ws: str) -> Path:
-    if not isinstance(ws, str) or not re.fullmatch(r"[\w-]+", ws):
-        raise ApiError(404, "unknown workspace")
-    return _home() / "tasks" / (ws + ".md")
+def _task_file(pid: str) -> Path:
+    if not isinstance(pid, str) or not re.fullmatch(r"[\w-]+", pid):
+        raise ApiError(404, "unknown project")
+    d = _home() / "tasks"
+    if pid == UNASSIGNED and not (d / (pid + ".md")).exists() and (d / "other.md").exists():
+        return d / "other.md"  # the list from before the group was renamed, used until it is moved
+    return d / (pid + ".md")
 
 
 def _task_raw(f: Path) -> bytes:
@@ -524,13 +531,13 @@ def _task_rows(lines: list[str]) -> list[dict]:
     return rows
 
 
-def read_tasks(ws: str) -> list[dict]:
-    return _task_rows(_task_lines(_task_raw(_task_file(ws))))
+def read_tasks(pid: str) -> list[dict]:
+    return _task_rows(_task_lines(_task_raw(_task_file(pid))))
 
 
-def write_task(ws: str, op: dict) -> list[dict]:
+def write_task(pid: str, op: dict) -> list[dict]:
     """op: {"add": text}, {"toggle": line, "expect": text} or {"remove": line, "expect": text}; line is 1-based."""
-    f = _task_file(ws)
+    f = _task_file(pid)
     kinds = [k for k in ("add", "toggle", "remove") if k in op]
     if len(kinds) != 1:
         raise ApiError(400, "send one of add, toggle or remove")
@@ -573,14 +580,14 @@ def write_task(ws: str, op: dict) -> list[dict]:
         raise ApiError(409, "the task file keeps changing; try again")
 
 
-def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:
-    """GET and POST /api/workspaces/<id>/tasks; <id> must be a configured workspace or `other`."""
+def _tasks(handler, method: str, pid: str, cfg: dict) -> bool:
+    """GET and POST /api/projects/<id>/tasks; <id> must be a configured project or UNASSIGNED."""
     try:
         if not settings_api.host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        if ws != "other" and not any(isinstance(w, dict) and w.get("id") == ws for w in cfg.get("workspaces") or []):
-            raise ApiError(404, "unknown workspace")
-        out = read_tasks(ws) if method == "GET" else write_task(ws, settings_api.read_body(handler))
+        if pid != UNASSIGNED and not any(isinstance(p, dict) and p.get("id") == pid for p in cfg.get("projects") or []):
+            raise ApiError(404, "unknown project")
+        out = read_tasks(pid) if method == "GET" else write_task(pid, settings_api.read_body(handler))
         settings_api._send(handler, 200, out)
     except ApiError as e:
         settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
@@ -589,7 +596,7 @@ def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:
     return True
 
 
-# --- plans and routines: docs plan files in a workspace's repos, and <claude dir>/scheduled-tasks/<name>/SKILL.md ---
+# --- plans and routines: docs plan files in a project's repos, and <claude dir>/scheduled-tasks/<name>/SKILL.md ---
 PLAN_DIRS = ("docs/plans", "docs/superpowers/plans")
 MAX_PLANS = 200
 
@@ -623,10 +630,10 @@ def plans(repos: list[str]) -> list[dict]:
             for m, repo, f in found[:MAX_PLANS]]
 
 
-def routines(ws: dict, cfg: dict) -> list[dict]:
-    """{"name", "description"} for each routine the workspace lists whose SKILL.md exists; frontmatter is read line by line."""
+def routines(project: dict, cfg: dict) -> list[dict]:
+    """{"name", "description"} for each routine the project lists whose SKILL.md exists; frontmatter is read line by line."""
     out = []
-    for name in ws.get("routines") or []:
+    for name in project.get("routines") or []:
         if not isinstance(name, str) or not re.fullmatch(r"[\w-]+", name):
             continue
         try:
@@ -645,15 +652,15 @@ def routines(ws: dict, cfg: dict) -> list[dict]:
     return out
 
 
-def _work(handler, ws: str, cfg: dict) -> bool:
-    """GET /api/workspaces/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured workspace or `other`."""
+def _work(handler, pid: str, cfg: dict) -> bool:
+    """GET /api/projects/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured project or UNASSIGNED."""
     try:
         if not settings_api.host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
-        if ws != "other" and not w:
-            raise ApiError(404, "unknown workspace")
-        entry = next((e for e in _index().get("workspaces", []) if e.get("id") == ws), {})
+        w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
+        if pid != UNASSIGNED and not w:
+            raise ApiError(404, "unknown project")
+        entry = next((e for e in _index().get("projects", []) if e.get("id") == pid), {})
         repos = [r["abs"] for r in entry.get("repos", []) if isinstance(r.get("abs"), str) and _norm(r["abs"]).is_dir()]
         settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
     except ApiError as e:
@@ -676,9 +683,9 @@ def _test_file(repo: str) -> Path:
     return _home() / "test-results" / (hashlib.sha1(str(_norm(repo)).encode()).hexdigest()[:16] + ".json")
 
 
-def _test_argv(repo: str, ws: dict) -> list[str] | None:
+def _test_argv(repo: str, project: dict) -> list[str] | None:
     """The configured command for this repo (keys compared after expanduser/normpath), or None."""
-    for k, v in (ws.get("tests") or {}).items():
+    for k, v in (project.get("tests") or {}).items():
         if isinstance(k, str) and _norm(k) == _norm(repo) and isinstance(v, list) and v and all(isinstance(a, str) for a in v):
             return v
     return None
@@ -750,9 +757,9 @@ def _run_one(argv: list[str], repo: str, f: Path) -> None:
             _RUNNING.pop(f.name, None)
 
 
-def run_tests(repo: str, ws: dict) -> dict:
-    """Start the configured test command for `repo` (a workspace dict with "tests"). 403 if not configured, 409 if running."""
-    argv = _test_argv(repo, ws)
+def run_tests(repo: str, project: dict) -> dict:
+    """Start the configured test command for `repo` (a project dict with "tests"). 403 if not configured, 409 if running."""
+    argv = _test_argv(repo, project)
     if argv is None:
         raise ApiError(403, "no test command is configured for this repo")
     f = _test_file(repo)
@@ -769,11 +776,11 @@ def run_tests(repo: str, ws: dict) -> dict:
     return {"started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
-def test_results(ws: dict) -> list[dict]:
+def test_results(project: dict) -> list[dict]:
     """One row per configured repo: {"repo", "running", "ok" (None before any run), "finished", "tail"}."""
     out = []
-    for repo in (ws.get("tests") or {}):
-        if _test_argv(repo, ws) is None:
+    for repo in (project.get("tests") or {}):
+        if _test_argv(repo, project) is None:
             continue
         f = _test_file(repo)
         with _RUN_LOCK:
@@ -787,14 +794,14 @@ def test_results(ws: dict) -> list[dict]:
     return out
 
 
-def _test_run(handler, ws: str, cfg: dict) -> bool:
-    """POST /api/workspaces/<id>/tests/run {"repo"}: the command comes from config only."""
+def _test_run(handler, pid: str, cfg: dict) -> bool:
+    """POST /api/projects/<id>/tests/run {"repo"}: the command comes from config only."""
     try:
         if not settings_api.host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
+        w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
         if not w:
-            raise ApiError(404, "unknown workspace")
+            raise ApiError(404, "unknown project")
         repo = settings_api.read_body(handler).get("repo")
         if not isinstance(repo, str) or not repo or "\0" in repo:
             raise ApiError(400, "repo must be a path")
@@ -806,26 +813,29 @@ def _test_run(handler, ws: str, cfg: dict) -> bool:
     return True
 
 
-def handle(handler, method: str, cfg: dict) -> bool:
-    """Serve /api/workspaces, /api/workspaces/<id>/tasks and /work, /api/sessions/* and /api/approvals/*. False when the path is not ours."""
-    path = handler.path.split("?")[0]
+def handle(handler, method: str, cfg: dict, path: str | None = None, fix=None) -> bool:
+    """Serve /api/projects, /api/projects/<id>/tasks, /work and /tests/run, /api/sessions/* and /api/approvals/*.
+    False when the path is not ours. `path` is the path to route on (default: the handler's, without the query);
+    `fix` is applied to the JSON body of POST /api/sessions/new before it is used."""
+    path = path or handler.path.split("?")[0]
     if path.startswith("/api/approvals") and _approvals(handler, method, path, cfg):
         return True
-    t = re.fullmatch(r"/api/workspaces/(.+)/tasks", path)
+    t = re.fullmatch(r"/api/projects/(.+)/tasks", path)
     if t and method in ("GET", "POST"):
         return _tasks(handler, method, t.group(1), cfg)
-    k = re.fullmatch(r"/api/workspaces/(.+)/work", path)
+    k = re.fullmatch(r"/api/projects/(.+)/work", path)
     if k and method == "GET":
         return _work(handler, k.group(1), cfg)
-    r = re.fullmatch(r"/api/workspaces/(.+)/tests/run", path)
+    r = re.fullmatch(r"/api/projects/(.+)/tests/run", path)
     if r and method == "POST":
         return _test_run(handler, r.group(1), cfg)
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
-    if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
+    if not (path == "/api/projects" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
         return False
-    if path == "/api/workspaces":
-        return _list(handler, cfg)
+    if path == "/api/projects":
+        settings_api._send(handler, 200, listing(cfg))
+        return True
     try:
         if not settings_api.host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
@@ -837,7 +847,8 @@ def handle(handler, method: str, cfg: dict) -> bool:
             body = settings_api.read_body(handler)
             out = message(m.group(1), _prompt(body), cfg)
         else:
-            out = _new_session(settings_api.read_body(handler), cfg)
+            body = settings_api.read_body(handler)
+            out = _new_session(fix(body) if fix else body, cfg)
         settings_api._send(handler, 200, out)
     except ApiError as e:
         settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
@@ -846,15 +857,15 @@ def handle(handler, method: str, cfg: dict) -> bool:
     return True
 
 
-def _list(handler, cfg: dict) -> bool:
-    """GET /api/workspaces: the index plus live status per session."""
+def listing(cfg: dict) -> dict:
+    """The index plus live status per session: what GET /api/projects answers."""
     idx = _index()
     on = _appr_dir() / "on"
     rows = live(_bin(cfg))
     clear_stale(rows)
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
-    conf = {c.get("id"): c for c in cfg.get("workspaces") or [] if isinstance(c, dict)}
-    for w in idx.get("workspaces", []):
+    conf = {c.get("id"): c for c in cfg.get("projects") or [] if isinstance(c, dict)}
+    for w in idx.get("projects", []):
         w["tests_failed"] = [{"repo": t["repo"], "finished": t["finished"]} for t in test_results(conf.get(w.get("id")) or {}) if t["ok"] is False]
         for repo in w.get("repos", []):
             for b in repo.get("branches", []):
@@ -863,5 +874,4 @@ def _list(handler, cfg: dict) -> bool:
                     s["approve"] = bool(UUID_RE.fullmatch(str(s["id"])) and (on / s["id"]).is_file())
     idx["live_ok"] = rows is not None
     idx["approve_ready"] = approve_ready()
-    settings_api._send(handler, 200, idx)
-    return True
+    return idx

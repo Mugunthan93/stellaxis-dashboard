@@ -104,7 +104,7 @@ def _ask_context(cfg: dict, core) -> str:
                     if str(s.get("last_ts") or "") >= since and not s.get("archived"):
                         rows.append(f"{w.get('name')} | {r.get('path')} | {b.get('name')} | {s.get('title') or s.get('id')} "
                                     f"| {status.get(s.get('id'), 'closed')} | last {s.get('last_ts')} | ${s.get('cost') or 0:.2f} | id {s.get('id')}")
-    out.append("# Sessions active in the last 7 days\nworkspace | repo | branch | title | status | last active | cost | id\n"
+    out.append("# Sessions active in the last 7 days\nproject | repo | branch | title | status | last active | cost | id\n"
                + "\n".join(rows[:400]))
     appr = core.read("project_management", "approvals", cfg)
     out.append("# Waiting for the owner's approval\n" + ("\n".join(f"{a['tool']}: {a['summary'][:300]}" for a in appr) or "None."))

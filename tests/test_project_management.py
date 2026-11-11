@@ -24,7 +24,7 @@ from core.app import Core
 
 COMPS = REPO / "collector" / "components"
 W = component.import_folder(COMPS / "project_management").centre
-CFG = {"workspaces": [], "claude_bin": "/no/claude"}
+CFG = {"projects": [], "claude_bin": "/no/claude"}
 ROW = {"id": "s1", "project": "~/nowhere/x", "first_ts": "2026-11-01T00:00:00Z", "last_ts": "2026-11-01T00:00:00Z",
        "cost": 1.5, "branch": "main"}
 
@@ -57,28 +57,35 @@ class ProjectManagementTest(unittest.TestCase):
             self.assertNotIn("project_management import", src, name)
 
     def test_ways_in_read_the_offers(self):
-        (self.home / "workspaces.json").write_text(json.dumps({"workspaces": [{"id": "x", "name": "X", "repos": []}]}))
+        (self.home / "projects.json").write_text(json.dumps({"projects": [{"id": "x", "name": "X", "repos": []}]}))
         with mock.patch.object(W, "live", return_value=None), mock.patch.object(W, "pending", return_value=[{"id": "r"}]):
             self.assertEqual([g["id"] for g in self.core.read("project_management", "index", CFG)], ["x"])
             self.assertEqual(self.core.read("project_management", "live", CFG), [])
             self.assertEqual(self.core.read("project_management", "approvals", CFG), [{"id": "r"}])
-        cfg = {**CFG, "workspaces": [{"id": "p", "name": "P"}, {"name": "no id"}]}
+        cfg = {**CFG, "projects": [{"id": "p", "name": "P"}, {"name": "no id"}]}
         self.assertEqual([p["id"] for p in self.core.read("project_management", "projects", cfg)], ["p"])
-        (self.home / "workspaces.json").unlink()
+        (self.home / "projects.json").unlink()
         self.assertEqual(self.core.read("project_management", "index", CFG), [])
 
     def test_a_pass_writes_the_index_from_its_inputs(self):
         with mock.patch.object(W, "live", return_value=[]), mock.patch.object(W, "app_records", return_value={}):
             res = self.core.run_pass(dict(CFG), {"sessions": [ROW], "folders": []})
         self.assertEqual(res["components"]["project_management"], {"readers": 1, "errors": []})
-        idx = json.loads((self.home / "workspaces.json").read_text())
-        self.assertEqual([w["id"] for w in idx["workspaces"]], ["other"])
-        self.assertEqual(idx["workspaces"][0]["repos"][0]["branches"][0]["sessions"][0]["id"], "s1")
+        idx = json.loads((self.home / "projects.json").read_text())
+        self.assertEqual([w["id"] for w in idx["projects"]], ["unassigned"])
+        self.assertEqual(idx["projects"][0]["repos"][0]["branches"][0]["sessions"][0]["id"], "s1")
+
+    def test_notes_cards_are_found_under_either_key(self):
+        card = {"name": "Reel Brain", "summary": "s"}
+        self.assertEqual([n["name"] for n in C.project_notes({"projects": [card], "project_notes": []})], ["Reel Brain"])
+        self.assertEqual([n["name"] for n in C.project_notes({"projects": [{"id": "x", "name": "X", "repos": []}], "project_notes": [card]})], ["Reel Brain"])
+        self.assertEqual(C.project_notes({"projects": [{"id": "x", "name": "X", "repos": []}], "project_notes": []}), [])
+        self.assertNotIn("work" + "spaces", C.DEFAULT_CONFIG)
 
     def test_a_pass_without_inputs_leaves_the_index_alone(self):
         res = self.core.run_pass(dict(CFG))
         self.assertEqual(res["components"]["project_management"]["errors"], [])
-        self.assertFalse((self.home / "workspaces.json").exists())
+        self.assertFalse((self.home / "projects.json").exists())
 
     def test_routes_are_served_through_the_core_also_with_the_store_down(self):
         (self.home / "broken").mkdir()
@@ -90,9 +97,9 @@ class ProjectManagementTest(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         with mock.patch.object(W, "live", return_value=[]):
-            status, body = self.get(srv, "/api/workspaces")
+            status, body = self.get(srv, "/api/projects")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["workspaces"], [])
+        self.assertEqual(json.loads(body)["projects"], [])
 
     def test_write_index_reports_a_reader_error_and_a_load_error(self):
         snap = {"sessions": [ROW], "projects": []}
@@ -113,7 +120,7 @@ class ProjectManagementTest(unittest.TestCase):
                 mock.patch.object(W, "app_records", return_value={}):
             self.assertIsNone(C.write_index(cfg, {"sessions": [ROW], "projects": []}))
         self.assertNotIn("_sessions_all", cfg)
-        ids = [s["id"] for s in json.loads((self.home / "workspaces.json").read_text())["workspaces"][0]["repos"][0]["branches"][0]["sessions"]]
+        ids = [s["id"] for s in json.loads((self.home / "projects.json").read_text())["projects"][0]["repos"][0]["branches"][0]["sessions"]]
         self.assertEqual(sorted(ids), ["s1", "s2"])
 
 

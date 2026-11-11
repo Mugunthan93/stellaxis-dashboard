@@ -1,4 +1,5 @@
 """Local-server hardening: untrusted reel text stays inert, and only localhost can reach the service."""
+import atexit
 import base64
 import hashlib
 import html.parser
@@ -18,6 +19,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 TMP = tempfile.TemporaryDirectory()
+atexit.register(TMP.cleanup)  # removed at exit, also when another test module imports this one
 ENV = {"REELS_HOME": TMP.name}
 sys.path.insert(0, str(REPO / "collector"))
 import collect as C
@@ -200,10 +202,10 @@ class Service(unittest.TestCase):
         self.assertIn('id="needs-you"', self.req("/").body)
         self.assertIn('id="refresh"', self.req("/overview").body)
         self.assertIn('id="refresh"', self.req("/index.html").body)
-        self.assertEqual(self.req("/workspace?id=x").status, 200)
-        self.assertIn('id="new-session"', self.req("/workspace?id=x").body)
+        self.assertEqual(self.req("/project?id=x").status, 200)
+        self.assertIn('id="new-session"', self.req("/project?id=x").body)
         self.assertNotIn('class="sx-side"', self.req("/").body)  # Home is the full-screen voice portal
-        self.assertIn('href="/overview"', self.req("/workspace?id=x").body)  # every other page keeps the sidebar
+        self.assertIn('href="/overview"', self.req("/project?id=x").body)  # every other page keeps the sidebar
 
     def test_own_host_works_with_headers(self):
         r = self.req("/snapshot.json")
@@ -256,9 +258,9 @@ class RouteMatrix(unittest.TestCase):
                         'echo "backgrounded \u00b7 44444444-4444-4444-4444-444444444444"\n' % self.LIVE)
         fake.chmod(0o755)
         self.repo = str(repo)
-        (stx / "config.json").write_text(json.dumps({"claude_bin": str(fake), "workspaces": [
-            {"id": "w", "name": "W", "folders": [self.repo], "tests": {self.repo: ["/usr/bin/true"]}}]}))
-        (stx / "workspaces.json").write_text(json.dumps({"workspaces": [{"id": "w", "name": "W", "repos": [
+        self.fake = str(fake)
+        (stx / "config.json").write_text(json.dumps(self.config()))
+        (stx / "projects.json").write_text(json.dumps({"projects": [{"id": "w", "name": "W", "repos": [
             {"path": self.repo, "abs": self.repo, "exists": True, "state": {}, "branches": [{"name": "main", "sessions": [
                 {"id": self.LIVE, "path": self.repo}, {"id": self.DONE, "path": self.repo}]}]}]}]}))
         (claude / "settings.json").write_text(json.dumps({"hooks": {"PermissionRequest": [{"hooks": [{"command": "approval_hook.py"}]}]}}))
@@ -271,18 +273,21 @@ class RouteMatrix(unittest.TestCase):
         self.addCleanup(self.srv.server_close)
         self.addCleanup(self.srv.shutdown)
 
+    def config(self) -> dict:
+        return {"claude_bin": self.fake, "projects": [{"id": "w", "name": "W", "repos": [self.repo], "tests": {self.repo: ["/usr/bin/true"]}}]}
+
     def routes(self):
         return [("GET", p, None, code) for p, code in (
-            ("/", 200), ("/overview", 200), ("/index.html", 200), ("/workspace?id=w", 200), ("/hierarchy", 200), ("/hierarchy.html", 200),
-            ("/settings", 200), ("/settings.html", 200), ("/home.html", 200), ("/workspace.html", 200), ("/reels", 301), ("/reels/", 200),
+            ("/", 200), ("/overview", 200), ("/index.html", 200), ("/project?id=w", 200), ("/hierarchy", 200), ("/hierarchy.html", 200),
+            ("/settings", 200), ("/settings.html", 200), ("/home.html", 200), ("/project.html", 200), ("/reels", 301), ("/reels/", 200),
             ("/reels/raw", 200), ("/reels/images/a.jpg", 200), ("/snapshot.json", 200), ("/api/snapshot", 200), ("/api/status", 200),
-            ("/api/refresh", 202), ("/api/settings", 200), ("/api/workspaces", 200), ("/api/approvals", 200),
-            ("/api/workspaces/w/tasks", 200), ("/api/workspaces/other/tasks", 200), ("/api/workspaces/w/work", 200),
+            ("/api/refresh", 202), ("/api/settings", 200), ("/api/projects", 200), ("/api/approvals", 200),
+            ("/api/projects/w/tasks", 200), ("/api/projects/unassigned/tasks", 200), ("/api/projects/w/work", 200),
             (f"/api/sessions/{self.DONE}/reply", 200), ("/api/jarvis", 200))] + [
             ("POST", "/api/jarvis/hush", {}, 200), ("POST", "/api/jarvis/hear", {}, 415),
             ("POST", f"/api/approvals/session/{self.LIVE}", {"on": True}, 200), ("POST", f"/api/approvals/{self.REQ}", {"allow": False}, 200),
-            ("POST", "/api/workspaces/w/tasks", {"add": "x"}, 200), ("POST", "/api/workspaces/w/tests/run", {"repo": self.repo}, 200),
-            ("POST", "/api/sessions/new", {"workspace": "w", "folder": self.repo, "prompt": "hi"}, 200),
+            ("POST", "/api/projects/w/tasks", {"add": "x"}, 200), ("POST", "/api/projects/w/tests/run", {"repo": self.repo}, 200),
+            ("POST", "/api/sessions/new", {"project": "w", "folder": self.repo, "prompt": "hi"}, 200),
             ("POST", f"/api/sessions/{self.DONE}/message", {"prompt": "hi"}, 200),
             ("POST", "/api/settings/preview", {}, 422), ("POST", "/api/settings/save", {}, 422)]
 

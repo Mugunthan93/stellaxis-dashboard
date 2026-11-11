@@ -107,7 +107,7 @@ class JarvisAskTest(unittest.TestCase):
             "claude_bin": fake("claude", "a = sys.argv[1:]\nif a[:1] == ['agents']:\n    print('[]')\n"
                                          "else:\n    print('You asked: ' + sys.stdin.read())\n"),
             "say_bin": fake("say", f"open({str(d / 'spoken.txt')!r}, 'w').write(sys.stdin.read())\n"),
-            "whisper_model": str(d / "model.bin"), "workspaces": [{"id": "p", "name": "PartHub"}]}
+            "whisper_model": str(d / "model.bin"), "projects": [{"id": "p", "name": "PartHub"}]}
         self.log = log
         cfg = self.cfg
         core = Core(d / "stx", d / "claude", COMPS)
