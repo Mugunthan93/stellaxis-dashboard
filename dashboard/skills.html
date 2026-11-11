@@ -67,6 +67,12 @@ a { color: var(--accent); }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .card .src { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
 .card .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.proj { display: grid; gap: 0; }
+.proj .row { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); gap: 6px 16px; padding: 10px 0; border-top: 1px solid var(--line); }
+.proj .row:first-child { border-top: 0; padding-top: 0; }
+.proj .from { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; margin-bottom: 4px; }
+.proj .from .mono { font-size: 0.74rem; color: var(--muted); margin-right: 4px; }
+@media (max-width: 480px) { .proj .row { grid-template-columns: minmax(0, 1fr); } }
 .list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 0.88rem; overflow-wrap: anywhere; }
 @media (pointer: coarse) { .chip, .btn { min-height: 44px; } }
 @media (max-width: 480px) { .grid { grid-template-columns: minmax(0, 1fr); } }
@@ -83,6 +89,10 @@ a { color: var(--accent); }
     <div class="kpi"><span class="eyebrow">Use cases</span><span class="v" id="k-uses">—</span><span class="s">from the reels' topics</span></div>
     <div class="kpi"><span class="eyebrow">In your projects</span><span class="v" id="k-inst">—</span><span class="s">skills installed somewhere in ~/code</span></div>
     <div class="kpi"><span class="eyebrow">Ship scripts</span><span class="v" id="k-scr">—</span><span class="s">third-party code; asked before install</span></div>
+  </section>
+  <section class="panel" id="used" hidden>
+    <div class="panel-head"><h2>Used in your projects</h2><p class="muted">Library skills each project's sessions have called, by source repo. <span class="pill acc">Installed</span> means copied into the project but not called yet.</p></div>
+    <div class="proj" id="used-list"></div>
   </section>
   <section class="panel" id="lib" hidden>
     <div class="panel-head"><h2>Skills</h2><p class="muted" id="shown"></p></div>
@@ -175,6 +185,44 @@ function missing() {
   $("missing").hidden = !items.length;
 }
 
+// Which project called which library skill: usage comes from the snapshot, joined by skill name to the
+// library skills that are actually installed (in every session, or in a project).
+async function used() {
+  let snap = null;
+  try { const r = await fetch("/api/snapshot", { cache: "no-store" }); snap = r.ok ? await r.json() : null; } catch {}
+  const repoOf = {}, proj = {};
+  const add = (path, name, called) => {
+    const m = /^~\/code\/([^/]+)/.exec(path);
+    if (!m) return;
+    const skills = proj[m[1]] = proj[m[1]] || {};
+    skills[name] = skills[name] || called;
+  };
+  cat.skills.forEach(s => {
+    if (s.installed_globally || s.installed_in.length) repoOf[s.name] = repoOf[s.name] || s.repo;
+    s.installed_in.forEach(p => add(p, s.name, false));
+  });
+  ((snap && snap.items) || []).forEach(i => {
+    const name = String(i.name || "").split(":").pop();
+    if (i.kind !== "skill" || !["user", "project"].includes(i.scope) || !repoOf[name]) return;
+    ((i.usage && i.usage.projects) || []).forEach(p => add(p, name, true));
+  });
+  const rows = Object.entries(proj).sort((a, b) => Object.keys(b[1]).length - Object.keys(a[1]).length || a[0].localeCompare(b[0])).map(([p, skills]) => {
+    const row = el("div", "row"), right = el("div"), names = Object.keys(skills).sort(), byRepo = {};
+    const head = el("div");
+    head.append(el("h3", "", p), el("div", "muted", `${names.length} skill${names.length === 1 ? "" : "s"}`));
+    names.forEach(n => (byRepo[repoOf[n]] = byRepo[repoOf[n]] || []).push(n));
+    Object.entries(byRepo).sort((a, b) => b[1].length - a[1].length).forEach(([repo, ns]) => {
+      const line = el("div", "from");
+      line.append(el("span", "mono", repo), ...ns.map(n => el("span", skills[n] ? "pill" : "pill acc", skills[n] ? n : n + " · installed")));
+      right.append(line);
+    });
+    row.append(head, right);
+    return row;
+  });
+  $("used-list").replaceChildren(...rows);
+  $("used").hidden = !rows.length;
+}
+
 async function load() {
   try {
     const r = await fetch("/api/skills", { cache: "no-store" });
@@ -186,7 +234,7 @@ async function load() {
   $("k-skills-s").textContent = `from ${cat.repos.with_skills} of ${cat.repos.named} repos the reels named`;
   $("k-inst").textContent = cat.skills.filter(s => s.installed_in.length).length;
   $("k-scr").textContent = cat.skills.filter(s => s.has_scripts).length;
-  chips(); missing(); render();
+  chips(); missing(); render(); used();
 }
 
 $("q").addEventListener("input", render);
