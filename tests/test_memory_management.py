@@ -591,11 +591,10 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(s["places"][1]["path"], str(self.home / ".claude"))
         there = MM.settings({}, self.home / ".stellaxis", self.home / "cfg")    # the core says where Claude's folder is
         self.assertEqual(there["places"][1]["path"], str(self.home / "cfg"))
-        self.assertEqual(s["guarded"], s["guard"].paths)
         self.assertEqual(s["places"][3]["path"], str(self.home / ".stellaxis"))
         self.assertIsNone(s["idle"])
         for p in (self.home / "Documents", self.home / "Library" / "Caches" / "com.apple.Safari", "/Volumes"):
-            self.assertTrue(s["guard"].hit(str(p)))
+            self.assertTrue(W.Guard(s["guarded"]).hit(str(p)))
 
     def test_config_places_add_replace_and_remove(self):
         self.inside()
@@ -611,7 +610,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(s["places"][-1], {"name": "chrome", "path": str(self.home / "Library/Application Support/Google"),
                                            "owner": "none", "depth": 1, "repos": False})
         self.assertNotIn("homebrew", names)
-        self.assertTrue(s["guard"].hit(str(self.home / "Private")))
+        self.assertTrue(W.Guard(s["guarded"]).hit(str(self.home / "Private")))
 
     def test_bad_config_falls_back(self):
         out = self.home / "stx"
@@ -633,17 +632,17 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(by["ok"], str(self.home / "ok"))
         self.assertEqual(by["code"], str(self.home / "code"))
         self.assertFalse([n for n in by if n.startswith("bad")])
-        self.assertTrue(all(os.path.isabs(p) for p in s["guard"].paths))
-        self.assertIn("/abs", s["guard"].paths)
+        self.assertTrue(all(os.path.isabs(p) for p in s["guarded"]))
+        self.assertIn("/abs", s["guarded"])
 
     def test_the_guard_holds_both_spellings_of_the_home_folder(self):
         alias = self.home / "alias"
         os.symlink(self.home, alias)
         with mock.patch.object(MM, "account_home", return_value=alias):
-            g = MM.settings({}, self.home / "stx")["guard"]
+            paths = MM.settings({}, self.home / "stx")["guarded"]
         for h in (alias, self.home):
-            self.assertTrue(g.hit(str(h / "Documents")))
-        self.assertEqual(len(g.paths), len(set(g.paths)))
+            self.assertTrue(W.Guard(paths).hit(str(h / "Documents")))
+        self.assertEqual(len(paths), len(set(paths)))
 
     def test_a_fake_HOME_does_not_turn_the_defaults_on(self):
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
@@ -1003,7 +1002,7 @@ class ComponentTest(unittest.TestCase):
         open_gate = self.gate()
         self.cfg = {"memory": {"places": self.cfg["memory"]["places"], "max_seconds": "1s"}}
         self.a_pass()
-        self.pid()
+        self.assertTrue(until(lambda: self.job()["progress"].get("place") == "t"))     # its clock runs: it is in the walk
         time.sleep(1.2)                 # past the limit, inside the grace: the walker is still in its first folder
         open_gate()
         self.wait()
@@ -1018,9 +1017,14 @@ class ComponentTest(unittest.TestCase):
                 ("dies", wait_for_order + "sys.exit(3)\n", r"^the measuring process ended with no result \(code 3\)$"),
                 ("is killed", wait_for_order + "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n",
                  r"^the measuring process ended with no result \(code -9\)$"),
-                ("talks nonsense", wait_for_order + "print('hello', flush=True)\n", r"^JSONDecodeError: "),
+                ("talks nonsense", wait_for_order + "print('hello', flush=True)\n",
+                 r"^the measuring process ended with no result \(code 0\): hello$"),
                 ("says nothing useful", wait_for_order + "print('{}', flush=True)\n",
-                 r"^the measuring process ended with no result \(code "),
+                 r"^the measuring process ended with no result \(code 0\): \{\}$"),
+                ("crashes", wait_for_order + "raise ValueError('boom')\n",
+                 r"^the measuring process ended with no result \(code 1\): ValueError: boom$"),
+                ("ends before it reads", "import sys\nsys.exit(4)\n",
+                 r"^the measuring process ended with no result \(code 4\)$"),
                 ("cannot start", None, r"^FileNotFoundError: ")):
             with self.subTest(name):
                 if code is None:
@@ -1158,7 +1162,7 @@ class ComponentTest(unittest.TestCase):
                 self.assertNotIn(bad, text, f.name)
             # one process is ever started: the component's own child, by the watcher
             self.assertEqual(text.count("subprocess."), 4 if f.name == "__init__.py" else 0, f.name)
-        self.assertEqual(MM.CHILD, [sys.executable, str(CHILD_DIR / "walk.py")])
+        self.assertEqual(MM.CHILD, [sys.executable, "-I", str(CHILD_DIR / "walk.py")])
 
 
 class StarterGoneTest(unittest.TestCase):

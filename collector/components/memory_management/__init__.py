@@ -41,8 +41,8 @@ DEFAULT_PLACES = [
 IDLE = ("no places to measure: the Stellaxis data folder is not .stellaxis in the account's home folder, "
         "and config names no places")
 ALL_OFF = "no places to measure: config turned every place off"
-CHILD = [sys.executable, str(Path(__file__).resolve().parent / "walk.py")]     # the walk runs there, not in the service
-GRACE = 30.0    # seconds past max_seconds before a child that has not answered is killed
+CHILD = [sys.executable, "-I", str(Path(__file__).resolve().parent / "walk.py")]   # the walk runs there, not in the service
+GRACE = 30.0    # a child that has not answered this long (plus a tenth of max_seconds) past max_seconds is killed
 _JOBS: dict = {}
 _LOCK = threading.Lock()
 
@@ -97,7 +97,7 @@ def settings(cfg: dict, stx_home, claude_dir=None) -> dict:
                                     if isinstance(g, str) and expand(g)]))
     return {"every": max(60.0, duration(m.get("every"), 6 * 3600)),
             "max_seconds": max(1.0, duration(m.get("max_seconds"), 1800)),
-            "places": list(places.values()), "guarded": guarded, "guard": walk.Guard(guarded),
+            "places": list(places.values()), "guarded": guarded,
             "idle": None if places else ALL_OFF if on else IDLE}
 
 
@@ -109,18 +109,28 @@ def _watch(ctx, s: dict, job: dict) -> None:
             disk = {"path": str(ctx.home), "total": st.f_frsize * st.f_blocks, "free": st.f_frsize * st.f_bavail}
         except OSError:
             disk = None
-        t0, late, result, error = time.monotonic(), threading.Event(), None, None
-        with subprocess.Popen(CHILD, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+        t0, late, result, error, noise = time.monotonic(), threading.Event(), None, None, ""
+        limit = s["max_seconds"] * 1.1 + GRACE      # the child stops its own walk at max_seconds; this is for one that hangs
+        with subprocess.Popen(CHILD, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
             job["pid"] = proc.pid
-            timer = threading.Timer(s["max_seconds"] + GRACE, lambda: (late.set(), proc.kill()))
+            timer = threading.Timer(limit, lambda: (late.set(), proc.kill()))
             timer.daemon = True
             timer.start()
             try:
                 spec = {"places": s["places"], "guarded": s["guarded"], "max_seconds": s["max_seconds"]}
-                proc.stdin.write((json.dumps(spec) + "\n").encode())
-                proc.stdin.flush()      # stdin stays open: the child ends itself when it closes, also if we die
+                try:
+                    proc.stdin.write((json.dumps(spec) + "\n").encode())
+                    proc.stdin.flush()      # stdin stays open: the child ends itself when it closes, also if we die
+                except BrokenPipeError:     # it ended before it read: what it wrote says why
+                    pass
                 for line in proc.stdout:
-                    said = json.loads(line)
+                    try:
+                        said = json.loads(line)
+                    except ValueError:
+                        said = None
+                    if not isinstance(said, dict) or not {"progress", "result", "error"} & set(said):
+                        noise = line.decode(errors="replace").strip() or noise    # e.g. the last line of a crash
+                        continue
                     if "progress" in said:
                         job["progress"] = said["progress"]
                     else:
@@ -129,11 +139,11 @@ def _watch(ctx, s: dict, job: dict) -> None:
             finally:
                 timer.cancel()
                 proc.kill()
-        if late.is_set():
-            error = (f"stopped at the time limit: no answer after {s['max_seconds'] + GRACE:.0f} s, "
-                     f"last in {job['progress'].get('place')}")
-        elif result is None and error is None:
-            error = f"the measuring process ended with no result (code {proc.returncode})"
+        if result is None and error is None:
+            place = job["progress"].get("place")
+            error = (f"stopped at the time limit: no answer after {limit:.0f} s" + (f", last in {place}" if place else "")
+                     if late.is_set() else
+                     f"the measuring process ended with no result (code {proc.returncode})" + (f": {noise}" if noise else ""))
         if error is None and (ctx.home / "stellaxis.db").exists():
             run = {"started_at": job["started_at"], "finished_at": now_iso(), "finished_ts": time.time(),
                    "seconds": time.monotonic() - t0, "disk": disk}
