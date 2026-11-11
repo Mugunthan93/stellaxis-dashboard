@@ -50,7 +50,7 @@ def restore(name: str, apply: bool):
     if "project_management.relocate" in handlers:   # an archive written before relocate was an action names its step "relocate"
         handlers["relocate"] = handlers["project_management.relocate"]
     try:
-        undo.restore(name, apply, ARCHIVE, handlers=handlers, on_applied=C.collect)
+        C.the_core().restore(name, apply, ARCHIVE, handlers, on_applied=C.collect)
     except undo.RestoreError as e:
         sys.exit(str(e))
 

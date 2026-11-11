@@ -5,6 +5,7 @@
 import ast
 import contextlib
 import datetime as dt
+import hashlib
 import http.client
 import http.server
 import io
@@ -22,9 +23,13 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "collector"))
+sys.path.insert(0, str(REPO / "tests"))
 import collect as C
+import prune as P
+import test_hardening
 from core import component, store, undo, server, transcripts
 from core.app import Core, StoreError
+from core.component import import_folder
 
 
 def put(root: Path, name: str, init: str, **files: str) -> None:
@@ -1162,6 +1167,66 @@ class WiringTest(HttpCase):
         self.assertEqual(len(got), 8)
         self.assertTrue(all(g is got[0] for g in got))
         self.assertIsNone(got[0].error)
+
+
+class RestoreLogTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(os.path.realpath(tmp.name))
+        self.stx, self.claude = root / "stx", root / "claude"
+        self.archive = self.claude / "_archive"
+        self.stx.mkdir()
+        self.claude.mkdir()
+        (self.claude / "settings.json").write_text(json.dumps({"model": "opus"}))
+        (self.stx / "snapshot.json").write_text(json.dumps({"projects": [], "items": []}))
+        self.cfg = {"scan_roots": [], "claude_bin": "/no/claude"}
+        (self.stx / "config.json").write_text(json.dumps(self.cfg))
+        test_hardening.fake_home(self, self.stx, self.claude)
+        centre = import_folder(REPO / "collector" / "components" / "project_management").centre
+        for patch in (mock.patch.object(P, "ARCHIVE", self.archive), mock.patch.object(centre, "live", return_value=[]),
+                      mock.patch.object(centre, "app_records", return_value={})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.core = Core(self.stx, self.claude, REPO / "collector" / "components")
+
+    def save(self):
+        body = {"scope": "user", "data": {"model": "sonnet"}, "base_sha": hashlib.sha256((self.claude / "settings.json").read_bytes()).hexdigest()}
+        return self.core.run_action("claude_management", "save_settings", {"body": body}, True, self.cfg)
+
+    def log(self):
+        return [json.loads(line) for line in (self.stx / "actions.jsonl").read_text().splitlines()]
+
+    def test_an_applied_restore_writes_one_log_line(self):
+        r = self.save()
+        self.core.restore("last", True, self.archive, self.core.undo_handlers(self.cfg), out=lambda _: None)
+        rows = self.log()
+        self.assertEqual(len(rows), 2)
+        row = rows[1]
+        folder = Path(r["manifest"]).parent
+        self.assertEqual((row["component"], row["action"], row["ok"], row["error"]), ("core", "restore", True, None))
+        self.assertEqual(row["args"], {"name": "last", "folder": folder.name})
+        self.assertEqual(row["manifest"], str(folder / "manifest.restored.json"))
+
+    def test_a_dry_run_restore_writes_no_log_line(self):
+        self.save()
+        self.core.restore("last", False, self.archive, self.core.undo_handlers(self.cfg), out=lambda _: None)
+        self.assertEqual(len(self.log()), 1)
+
+    def test_a_restore_that_stops_is_logged_and_still_raises(self):
+        r = self.save()
+        Path(r["result"]["backup"]).unlink()
+        with self.assertRaises(undo.RestoreError):
+            self.core.restore("last", True, self.archive, self.core.undo_handlers(self.cfg), out=lambda _: None)
+        row = self.log()[-1]
+        self.assertEqual((row["action"], row["ok"], row["manifest"]), ("restore", False, None))
+        self.assertIn("RestoreError", row["error"])
+
+    def test_prune_restore_goes_through_the_core(self):
+        self.save()
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.restore("last", True)
+        self.assertEqual(self.log()[-1]["action"], "restore")
 
 
 class IndependenceTest(unittest.TestCase):

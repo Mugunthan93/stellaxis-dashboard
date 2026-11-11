@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from core.component import Component, load
-from core import transcripts
+from core import transcripts, undo
 from core.store import Store
 from core.undo import Plan
 from core.util import now_iso, read_json, write_json
@@ -199,11 +199,29 @@ class Core:
             if apply:
                 row = {"at": now_iso(), "component": component, "action": action, "args": {k: v for k, v in args.items() if k not in private},
                        "ok": ok, "manifest": str(path) if path else None, "error": error}
-                self.home.mkdir(parents=True, exist_ok=True)
-                with open(self.home / "actions.jsonl", "a") as f:
-                    f.write(json.dumps(row) + "\n")
+                self._log(row)
         return {"applied": apply, "ok": ok, "steps": plan.steps, "notes": plan.notes, "result": plan.result,
                 "manifest": str(path) if path else None}
+
+    def _log(self, row: dict) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
+        with open(self.home / "actions.jsonl", "a") as f:
+            f.write(json.dumps(row) + "\n")
+
+    def restore(self, name: str, apply: bool, archive: Path, handlers: dict, on_applied=None, out=print) -> None:
+        """Undo one archive folder (see undo.restore). An applied restore, also one that stops with an error, writes a line to actions.jsonl."""
+        folder, manifest, error = undo.folder_of(name, archive), None, None   # found before the restore renames the manifest
+        try:
+            undo.restore(name, apply, archive, handlers=handlers, on_applied=on_applied, out=out)
+            manifest = str(folder / "manifest.restored.json")
+        except Exception as e:
+            error = _err(e)
+            raise
+        finally:
+            if apply:
+                self._log({"at": now_iso(), "component": "core", "action": "restore",
+                           "args": {"name": name, "folder": folder.name if folder.is_dir() else None},
+                           "ok": error is None, "manifest": manifest, "error": error})
 
     def describe(self) -> dict:
         return {
