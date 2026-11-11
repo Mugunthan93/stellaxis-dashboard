@@ -32,11 +32,13 @@ CM = import_folder(REPO / "collector" / "components" / "claude_management")
 
 
 def fake_home(case, stx: Path, claude: Path | None = None) -> None:
-    """Point collect, the command centre and a fresh core at a temp home, until the test (or class) ends."""
+    """Point collect, the command centre and a fresh core at a temp home (and Reel Brain at a folder that is not there),
+    until the test (or class) ends. A caller that patches REELS_HOME itself does it after this."""
     claude = claude or stx / ".claude"
     add = case.addClassCleanup if isinstance(case, type) else case.addCleanup
     for patch in (mock.patch.dict(os.environ, {"STELLAXIS_HOME": str(stx), "CLAUDE_CONFIG_DIR": str(claude)}),
-                  mock.patch.object(C, "STX_HOME", stx), mock.patch.object(C, "CLAUDE_DIR", claude)):
+                  mock.patch.object(C, "STX_HOME", stx), mock.patch.object(C, "CLAUDE_DIR", claude),
+                  mock.patch.object(C, "REELS_HOME", stx / "no-reels")):
         patch.start()
         add(patch.stop)
     C._core = None

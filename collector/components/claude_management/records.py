@@ -61,13 +61,14 @@ def save_items(ctx, items: list) -> None:
         db.executemany("DELETE FROM claude_management_items WHERE id = ?", [(i,) for i in sorted(gone)])
 
 
-def sessions(ctx, with_hours: bool = False) -> list:
+def sessions(ctx, hours: bool = False) -> list:
+    """[{"id", "project", "first_ts", "last_ts", "branch", "cost"}] from the store, with "hours": {hour: cost} when asked."""
     with closing(ctx.db()) as db:
         out = []
         for r in db.execute("SELECT * FROM claude_management_sessions ORDER BY last_ts DESC, id"):
             row = {"id": r["id"], "project": r["project"], "first_ts": r["first_ts"], "last_ts": r["last_ts"],
                    "branch": r["branch"], "cost": r["cost"]}
-            if with_hours:
+            if hours:
                 row["hours"] = json.loads(r["hours"])
             out.append(row)
         return out

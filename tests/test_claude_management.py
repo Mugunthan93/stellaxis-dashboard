@@ -5,6 +5,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -121,9 +122,83 @@ class ClaudeManagementTest(unittest.TestCase):
 
     def test_every_components_error_is_in_the_status(self):
         with mock.patch.object(CENTRE, "build_index", side_effect=ValueError("boom")), \
-                mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
-            self.assertEqual(C.collect(dict(CFG)), {})
+                mock.patch.object(CM.records, "save_items", side_effect=KeyError("k")):
+            C.collect(dict(CFG))
         self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'k'; project_management: ValueError: boom")
+        self.assertEqual(C.last_error, self.status()["index_error"])
+
+    def test_a_failed_collection_keeps_the_last_good_index(self):
+        C.collect(dict(CFG))
+        with mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
+            C.collect(dict(CFG))
+        idx = json.loads((self.stx / "projects.json").read_text())
+        ids = [s["id"] for p in idx["projects"] for r in p["repos"] for b in r["branches"] for s in b["sessions"]]
+        self.assertEqual(ids, ["s1"])
+        self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'k'")
+
+    def test_a_failed_collection_right_after_a_good_one_returns_no_snapshot(self):
+        self.assertTrue(C.collect(dict(CFG)))
+        with mock.patch.object(CM.snapshot, "build", side_effect=KeyError("k")):
+            self.assertEqual(C.collect(dict(CFG)), {})
+        self.assertIsNone(self.status()["last_snapshot"])
+
+    def test_a_failed_round_one_gives_one_error(self):
+        with mock.patch.object(CM.usage, "sessions", side_effect=KeyError("u")):
+            C.collect(dict(CFG))
+        self.assertEqual(self.status()["index_error"], "claude_management: KeyError: 'u'")
+        with mock.patch("core.transcripts.read", side_effect=OSError("disk")):
+            C.collect(dict(CFG))
+        self.assertEqual(self.status()["index_error"], "claude_management: OSError: disk")
+
+    def test_a_session_that_grows_is_rewritten_and_an_unchanged_one_is_not(self):
+        other = self.claude / "projects" / "p" / "s2.jsonl"
+        other.write_text(self.transcript.read_text().replace('"s1"', '"s2"').replace('"m1"', '"m9"'))
+        C.collect(dict(CFG))
+        with closing(sqlite3.connect(self.stx / "stellaxis.db")) as db, db:
+            db.execute("UPDATE claude_management_sessions SET project = 'marker' WHERE id = 's2'")
+            before = db.execute("SELECT cost, data, hours FROM claude_management_sessions WHERE id = 's1'").fetchone()
+        line = json.loads(self.transcript.read_text())
+        line.update(timestamp="2026-11-10T11:00:00Z", message={**line["message"], "id": "m2", "content": []})
+        with open(self.transcript, "a") as f:
+            f.write(json.dumps(line) + "\n")
+        C.collect(dict(CFG))
+        rows = {r[0]: r for r in self.rows("claude_management_sessions")}
+        cost, data, hours = rows["s1"][5], rows["s1"][6], rows["s1"][7]
+        self.assertAlmostEqual(cost, 2 * COST, delta=1e-9)
+        self.assertNotEqual(data, before[1])
+        self.assertEqual(sorted(json.loads(hours)), ["2026-11-10T09", "2026-11-10T11"])
+        self.assertNotEqual(before[0], cost)
+        self.assertEqual(rows["s2"][1], "marker")
+
+    def test_an_item_that_changes_is_rewritten_and_an_unchanged_one_is_not(self):
+        C.collect(dict(CFG))
+        with closing(sqlite3.connect(self.stx / "stellaxis.db")) as db, db:
+            db.execute("UPDATE claude_management_items SET name = 'marker'")
+        (self.claude / "skills" / "foo" / "SKILL.md").write_text("---\nname: foo\ndescription: Does foo, and more\n---\nbody\n")
+        C.collect(dict(CFG))
+        rows = {r[0]: r for r in self.rows("claude_management_items")}
+        self.assertEqual(rows["skill:user:foo"][4], "foo")
+        self.assertEqual(json.loads(rows["skill:user:foo"][5])["description"], "Does foo, and more")
+        others = [r for i, r in rows.items() if i != "skill:user:foo"]
+        self.assertTrue(others)
+        self.assertEqual({r[4] for r in others}, {"marker"})
+
+
+class RunCommandTest(unittest.TestCase):
+    def test_a_failed_run_says_why_and_exits_with_1(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(os.path.realpath(t))
+            stx = root / "stx"
+            (stx / "snapshot.json").mkdir(parents=True)     # Claude management cannot write its snapshot
+            (stx / "config.json").write_text(json.dumps({"scan_roots": [], "claude_bin": "/no/claude"}))
+            (root / "home").mkdir()
+            env = {**os.environ, "HOME": str(root / "home"), "STELLAXIS_HOME": str(stx), "CLAUDE_CONFIG_DIR": str(root / "claude"),
+                   "REELS_HOME": str(root / "no-reels")}
+            r = subprocess.run([sys.executable, str(REPO / "collector" / "collect.py"), "run"], env=env, capture_output=True,
+                               text=True, timeout=60)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "")
+        self.assertRegex(r.stderr.strip(), r"^collect failed: claude_management: \w+Error: ")
 
 
 if __name__ == "__main__":

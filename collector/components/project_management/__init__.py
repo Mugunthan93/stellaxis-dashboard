@@ -17,7 +17,8 @@ def _round_one(ctx) -> None:
 
 def index_reader(ctx) -> None:
     """The project index, and beside it the same index under the old names; a pass that is neither a collection nor
-    given sessions leaves them alone. The sessions and folders come from the inputs when given, else from Claude management."""
+    given sessions leaves them alone. The sessions and folders come from the inputs when given, else from Claude management;
+    when it gave nothing (it failed or is gone) the last good index stays."""
     if "sessions" not in ctx.inputs and "collector" not in ctx.inputs:
         return
     ctx.status("indexing projects")
@@ -25,7 +26,9 @@ def index_reader(ctx) -> None:
         sessions, folders = ctx.inputs["sessions"], ctx.inputs["folders"]
     else:
         got = ctx.read("claude_management", "pass")
-        sessions, folders = (got[0]["sessions"], got[0]["folders"]) if got else ([], [])
+        if not got:
+            return
+        sessions, folders = got[0]["sessions"], got[0]["folders"]
     with centre.at(ctx):
         cfg = old_names.config(ctx.cfg)
         centre.clear_stale(centre.live(centre._bin(cfg)))

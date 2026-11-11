@@ -22,7 +22,7 @@ def usage_reader(ctx) -> None:
 
 def setup_reader(ctx) -> None:
     """Round two: the Claude setup joined with the rows of round one, written to snapshot.json and the store."""
-    if "collector" not in ctx.inputs:
+    if "collector" not in ctx.inputs or "files" not in ctx.memo:   # round one failed: its error is the one to show
         return
     col, files, rows = ctx.inputs["collector"], ctx.memo["files"], ctx.memo["sessions"]
     items, projects, meta = setup.inventory(ctx, {st["cwd"] for st in files.values() if st.get("cwd")})
@@ -38,15 +38,6 @@ def setup_reader(ctx) -> None:
     records.save_items(ctx, snap["items"])
 
 
-def _sessions(ctx, hours: bool = False) -> list:
-    """[{"id", "project", "first_ts", "last_ts", "branch", "cost"}] from the store, with "hours": {hour: cost} when asked."""
-    return records.sessions(ctx, hours)
-
-
-def _items(ctx) -> list:
-    return records.items(ctx)
-
-
 def _pass(ctx) -> list:
     """This pass's session rows and the folders of its snapshot, until Project management reads them itself."""
     memo = ctx.memo
@@ -56,4 +47,4 @@ def _pass(ctx) -> list:
 
 
 COMPONENT = Component(name="claude_management", readers=[usage_reader, setup_reader], lines=usage.LINES,
-                      records=records.RECORDS, offers={"sessions": _sessions, "items": _items, "pass": _pass})
+                      records=records.RECORDS, offers={"sessions": records.sessions, "items": records.items, "pass": _pass})

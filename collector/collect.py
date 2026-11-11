@@ -165,20 +165,33 @@ def pass_error(core: Core, res: dict) -> str | None:
     return "; ".join(errs) or None
 
 
+last_error: str | None = None   # the errors of the last collection (pass_error), for the ways in that print them
+
+
+def _stamp(f: Path) -> int | None:
+    try:
+        return f.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def collect(cfg=None, probe=False) -> dict:
-    """One pass of the core as a collection: the snapshot this pass wrote, else {}."""
+    """One pass of the core as a collection: the snapshot this pass wrote, else {}. Its errors are kept in `last_error`."""
+    global last_error
     with _lock:
         cfg = cfg or load_config()
         STX_HOME.mkdir(parents=True, exist_ok=True)
-        started = time.time()
+        f = STX_HOME / "snapshot.json"
+        before = _stamp(f)
         status("reading transcripts")
         core = the_core()
         res = core.run_pass(cfg, {"collector": {"version": VERSION, "probe": probe, "reels": reels_summary(),
                                                 "project_notes": project_notes(cfg)}})
-        f = STX_HOME / "snapshot.json"
-        snap = (read_json(f, {}) or {}) if f.exists() and f.stat().st_mtime >= started - 2 else {}
+        after = _stamp(f)
+        snap = (read_json(f, {}) or {}) if after is not None and after != before else {}
+        last_error = pass_error(core, res)
         status("idle", last_snapshot=snap.get("generated_at"), elapsed_ms=(snap.get("meta") or {}).get("elapsed_ms"),
-               index_error=pass_error(core, res), core_error=core.error)
+               index_error=last_error, core_error=core.error)
         return snap
 
 
@@ -333,6 +346,8 @@ def serve():
                           f"{len(snap['items'])} items, {snap['meta']['elapsed_ms']} ms", flush=True)
                 else:
                     print("no snapshot was written", flush=True)
+                if last_error:
+                    print(f"collect failed: {last_error}", file=sys.stderr, flush=True)
             except Exception as e:  # keep the daemon alive
                 print(f"collect failed: {e!r}", file=sys.stderr, flush=True)
             time.sleep(max(10, parse_duration(c["interval"], 60)))
@@ -371,6 +386,9 @@ def main():
         serve()
         return
     snap = collect(probe=a.probe) if a.cmd == "run" else read_json(STX_HOME / "snapshot.json", {})
+    if a.cmd == "run" and not snap and last_error:
+        print(f"collect failed: {last_error}", file=sys.stderr, flush=True)
+        sys.exit(1)
     if a.json:
         json.dump(snap, sys.stdout, indent=1, default=list)
     elif snap:
