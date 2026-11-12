@@ -85,6 +85,7 @@ textarea.inp { resize: vertical; }
 </style>
 <div class="wrap">
   <header><h1 id="title">Project</h1></header>
+  <div class="notice" id="share" hidden></div>
   <div class="notice" id="live-note" hidden>Live status is unavailable, so session status can't be shown.</div>
   <div class="bad" id="sw-err" role="alert" hidden></div>
   <div class="notice" id="load-note" hidden>Couldn't load projects. Retrying.</div>
@@ -385,6 +386,17 @@ $("tree").addEventListener("toggle", e => {
   if (k) e.target.open ? shut.delete(k) : shut.add(k);
 }, true);
 $("arch").onclick = () => { showArch = !showArch; $("arch").setAttribute("aria-pressed", showArch); draw(); };
+let share = null;  // the last answer of /api/share; a failed fetch keeps it
+function drawShare() {  // one line: how much of this project's weekly share is used, or that it is used up
+  const p = share && share.budget != null && (share.projects.find(x => x.id === id) || (id === "unassigned" ? share.unassigned : null));
+  const el = $("share");
+  if (!p || p.allowance == null) { el.hidden = true; return; }
+  const end = when(share.week.end), n = v => `<span class="num">${esc(money(v))}</span>`;
+  el.innerHTML = p.over
+    ? `<span class="pill warn">Share used up</span> ${esc(p.name)} has used all of its weekly share: ${n(p.use)} of ${n(p.allowance)}. Nothing is stopped. A new week starts ${esc(end)}.`
+    : `Weekly share: ${n(p.use)} of ${n(p.allowance)} used. ${n(p.left)} left until ${esc(end)}.`;
+  el.hidden = false;
+}
 async function tick(force) {  // force: redraw even if nothing changed, so a switch that failed flips back
   let same = false;
   try {
@@ -395,6 +407,8 @@ async function tick(force) {  // force: redraw even if nothing changed, so a swi
     if (!same) { data = JSON.parse(text); dataText = text; }
     $("load-note").hidden = true;
   } catch { $("load-note").hidden = false; }
+  try { const r = await fetch("/api/share", { cache: "no-store" }); if (!r.ok) throw 0; share = await r.json(); } catch {}
+  drawShare();
   if (!same || force) draw();
   if (tab === "tasks") loadTasks().then(() => { $("task-err").hidden = true; }).catch(() => {});
   if (tab === "plans" || tab === "routines") loadWork();  // throttled to once a minute

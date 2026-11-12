@@ -832,3 +832,26 @@ class CommandTest(ShareHome):
         C._core = None
         code, out = self.run_cli("show")
         self.assertEqual((code, out, self.exit_text), (1, "", "The share cannot be read: the store is down"))
+
+
+class PagesTest(unittest.TestCase):
+    def page(self, name):
+        return (TCM.REPO / "dashboard" / name).read_text()
+
+    def test_the_project_page_asks_for_the_share_and_has_one_hidden_line_for_it(self):
+        text = self.page("project.html")
+        self.assertIn('fetch("/api/share"', text)
+        self.assertEqual(text.count('id="share"'), 1)
+        self.assertRegex(text, r'<div class="notice" id="share"[^>]*\bhidden\b')
+        self.assertIn("has used all of its weekly share", text)
+        self.assertIn("Nothing is stopped.", text)
+
+    def test_home_asks_for_the_share_and_lists_a_project_that_used_it_up(self):
+        text = self.page("home.html")
+        self.assertIn('fetch("/api/share"', text)
+        self.assertIn("has used all of its weekly share", text)
+        self.assertNotRegex(text, r"<(button|input|select|textarea)\b")       # Home stays voice only
+
+    def test_the_overview_and_the_shell_are_not_changed_by_the_share(self):
+        for name in ("index.html", "hierarchy.html", "shell.html"):
+            self.assertNotIn("/api/share", self.page(name), name)
