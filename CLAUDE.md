@@ -11,6 +11,8 @@ It is one core (`collector/core/`) and three components (`collector/components/`
 keeps only the folders holding a `SKILL.md` (data and `catalog.json` in `~/Knowledge/skills`), and `install` copies one
 into a project's `.claude/skills/`. The folder is itself the `skill-library` skill, symlinked from `~/.claude/skills/`
 so every session can search and install; `/skills` (`dashboard/skills.html`, `GET /api/skills`) shows the catalog.
+A `UserPromptSubmit` hook in `~/.claude/settings.json` runs `library.py match` on every message and hands the session the
+skills that fit (names and ids only, never the third-party descriptions).
 `reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777; its `summary.json` feeds the snapshot's `reels` field and the Overview panel). Python 3 stdlib only, no
 packages, no build step. Target platform is macOS (launchd service, Claude desktop app config path).
 

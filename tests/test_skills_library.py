@@ -134,6 +134,17 @@ class SkillsLibraryTest(unittest.TestCase):
         self.assertTrue(out.startswith("ui-polish  ["), out)  # its own name/description beat the reel's tags
         self.assertIn("No match", self.run_lib("search", "kubernetes").stdout)
 
+    def test_match_a_whole_message(self):
+        hook = lambda prompt: subprocess.run([sys.executable, str(LIB), "match"], input=json.dumps({"prompt": prompt}),
+                                             env=self.env, capture_output=True, text=True, check=True).stdout
+        note = json.loads(hook("please polish the UI screens before the demo"))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- ui-polish [acme/skills/skills/ui-polish]", note)
+        self.assertNotIn("Polish UI screens", note)  # third-party descriptions never reach a session
+        self.assertEqual(hook("ok thanks, commit it"), "")  # nothing fits: say nothing
+        self.assertEqual(hook("/skills polish the ui screens"), "")  # a slash command is not a request
+        bad = subprocess.run([sys.executable, str(LIB), "match"], input="not json", env=self.env, capture_output=True, text=True)
+        self.assertEqual((bad.returncode, bad.stdout), (0, ""))  # a broken hook input never blocks the prompt
+
     def test_rerun_fetches_only_new_repos(self):
         self.assertIn("fetching 0", self.run_lib("harvest").stdout)
 
