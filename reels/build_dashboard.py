@@ -3,11 +3,18 @@
 Usage: python3 build_dashboard.py   (stdlib only; read-only on the notes)
 Open with: open ~/Knowledge/reels/dashboard.html
 """
-import base64, glob, html, json, os, re
+import base64, glob, html, json, os, re, subprocess
 
 R = os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels"))  # the notes; code lives in the repo
 TOPICS = ["Claude Code & skills", "AI coding tools", "AI agents & LLM apps", "Models & research",
           "AI security", "AI for design & UI", "AI industry & trends"]
+# A second set of notes (REELS_HOME elsewhere) names itself in $REELS_HOME/.site.json: {"title", "avatar", "topics"}.
+try:
+    with open(os.path.join(R, ".site.json"), encoding="utf-8") as _f:
+        SITE = json.load(_f)
+except (OSError, ValueError):
+    SITE = {}
+TITLE, AVATAR, TOPICS = SITE.get("title", "AI Reel Knowledge"), SITE.get("avatar", "AI"), SITE.get("topics", TOPICS)
 
 
 def read(name):
@@ -276,7 +283,7 @@ def main():
     i_acts = icon('<rect x="3" y="3" width="18" height="18" rx="4"/><path d="m8 12 3 3 5-6"/>')
     i_x = icon('<path d="M6 6l12 12M18 6 6 18"/>')
 
-    head = """<title>AI Reel Knowledge</title>
+    head = f"""<title>{html.escape(TITLE)}</title>
 <meta name="claude:viewport-fit-sides" content="cover">"""
     style = """<style>
 /* Instagram's layout language (profile header, story row, 3-column 4:5 grid, post view, tab bar) on our own content.
@@ -502,7 +509,7 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
     content = f"""<nav class="tabs" aria-label="Sections">{tab('reels', i_grid, 'Reels')}{tab('next', i_next, 'Next')}{tab('projects', i_proj, 'Projects')}{tab('actions', i_acts, 'Actions')}</nav>
 <main>
 <section data-v="reels" id="reels">
-<header class="profile"><div class="avatar" aria-hidden="true">AI</div><h1>AI Reel Knowledge</h1>
+<header class="profile"><div class="avatar" aria-hidden="true">{html.escape(AVATAR)}</div><h1>{html.escape(TITLE)}</h1>
 <ul class="stats"><li><a href="#reels"><b>{len(notes)}</b> reels</a></li><li><a href="#actions"><b>{len(open_actions)}</b> to try</a></li><li><a href="#projects"><b>{len(proj_cards)}</b> projects</a></li></ul>
 <p class="bio">What your saved reels add up to. Updated <span style="white-space:nowrap">{last_date}</span>.</p></header>
 <div class="storyrow" aria-label="What's changing in AI">{''.join(stories)}</div>
@@ -551,11 +558,20 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
     # Artifact copy embeds the covers as data: URIs so it is one self-contained file.
     # A cover can appear several times, so only its first <img> carries the bytes; a small script fills the rest.
     seen = set()
+    def small(path):
+        """A 320px-wide copy of a cover, made once with macOS sips: full covers put the page over the 16MB limit."""
+        out = os.path.join(R, "images", ".small", os.path.basename(path))
+        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(path):
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            done = subprocess.run(["/usr/bin/sips", "--resampleWidth", "320", "-s", "format", "jpeg", "-s", "formatOptions", "45", path, "--out", out], capture_output=True)
+            if done.returncode or not os.path.exists(out):
+                return path
+        return out
     def embed(m):
         if m.group(1) in seen:
             return f'data-from="{m.group(1)}"'
         seen.add(m.group(1))
-        with open(os.path.join(R, m.group(1)), "rb") as f:
+        with open(small(os.path.join(R, m.group(1))), "rb") as f:
             data = f.read()
         return f'data-cover="{m.group(1)}" src="data:image/jpeg;base64,' + base64.b64encode(data).decode() + '"'
     art = re.sub(r'src="(images/[\w-]+\.jpg)"', embed, content)

@@ -13,7 +13,7 @@ into a project's `.claude/skills/`. The folder is itself the `skill-library` ski
 so every session can search and install; `/skills` (`dashboard/skills.html`, `GET /api/skills`) shows the catalog.
 A `UserPromptSubmit` hook in `~/.claude/settings.json` runs `library.py match` on every message and hands the session the
 skills that fit (names and ids only, never the third-party descriptions).
-`reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777; its `summary.json` feeds the snapshot's `reels` field and the Overview panel). Python 3 stdlib only, no
+`reels/` holds the Reel Brain code (data in `~/Knowledge/reels`, served at `/reels/` on port 7777; a second set of notes, social media and digital marketing, lives in `~/Knowledge/marketing-reels`, is built by the same `build_dashboard.py` with `REELS_HOME` pointing there (its `.site.json` gives the title and topics) and is served at `/marketing/`; its `summary.json` feeds the snapshot's `reels` field and the Overview panel). Python 3 stdlib only, no
 packages, no build step. Target platform is macOS (launchd service, Claude desktop app config path).
 
 ## Commands
@@ -271,6 +271,8 @@ returns when done) and `/api/jarvis/hush`. Their binaries are config keys `ffmpe
 `whisper_model`, `say_bin` (defaults under `/opt/homebrew/bin`, `~/.stellaxis/models/ggml-base.en.bin` and
 `/usr/bin/say`).
 Every old route and request key still answers through the alias layer.
+
+Jarvis's hologram is `dashboard/jarvis-orb.js` (a 3D sphere on a 2D canvas, no library): large on Home, where it follows the microphone and flies to the top left on leaving for another page, and small in the sidebar brand of `shell.html`.
 
 Home (`/`) is the voice-only Jarvis portal: served without the shell (`FULL_SCREEN` in `collect.py`), no buttons
 or inputs. It listens all the time, records whatever is louder than the room until a pause, and acts only on text

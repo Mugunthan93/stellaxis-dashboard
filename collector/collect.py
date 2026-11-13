@@ -205,7 +205,18 @@ PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
 # Skill Library's catalog (built by skills_library/library.py), read by /skills through /api/skills
 SKILLS_HOME = Path(os.path.expanduser(os.environ.get("SKILLS_HOME", "~/Knowledge/skills")))
-REELS_FRAME = '<title>Reels · Stellaxis</title><iframe class="sx-frame" src="/reels/raw" title="Reel Brain dashboard"></iframe>'
+# A second set of notes, built by the same script with REELS_HOME pointing here: social media and digital marketing
+MARKETING_HOME = Path(os.path.expanduser(os.environ.get("MARKETING_REELS_HOME", "~/Knowledge/marketing-reels")))
+REEL_SETS = {"reels": "Reels", "marketing": "Marketing"}  # first part of the address -> name in the tab
+
+
+def reel_home(name: str) -> Path:
+    return REELS_HOME if name == "reels" else MARKETING_HOME
+
+
+def reels_frame(name: str) -> str:
+    return (f'<title>{REEL_SETS[name]} · Stellaxis</title><iframe class="sx-frame" src="/{name}/raw" '
+            f'title="{REEL_SETS[name]} reel notes"></iframe>')
 
 
 def reels_scripts(body: bytes) -> str:
@@ -242,7 +253,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # the API through its parent frame, so only the page's own script may run: script-src blocks injected scripts
         # and event handlers. Not a sandbox, the app's browser pane refuses images inside sandboxed frames.
         raw = (getattr(self, "reels_csp", "script-src 'none'; ") + "connect-src 'none'; form-action 'none'; base-uri 'none'; "
-               if self.path.split("?")[0] == "/reels/raw" else "")
+               if self.path.split("?")[0] in ("/reels/raw", "/marketing/raw") else "")
         self.send_header("Content-Security-Policy", raw + "frame-ancestors 'self'")
         super().end_headers()
 
@@ -263,15 +274,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         path = self.path.split("?")[0]
-        if path == "/reels":
-            self.send_response(301)
-            self.send_header("Location", "/reels/")
-            self.end_headers()
-            return
-        if path == "/reels/":
-            return self.send_body(shell_page(REELS_FRAME), "text/html; charset=utf-8")
-        if path == "/reels/raw" or path.startswith("/reels/images/"):
-            return self.send_reels(path)
+        name = path.split("/")[1]
+        if name in REEL_SETS:
+            if path == "/" + name:
+                self.send_response(301)
+                self.send_header("Location", f"/{name}/")
+                self.end_headers()
+                return
+            if path == f"/{name}/":
+                return self.send_body(shell_page(reels_frame(name)), "text/html; charset=utf-8")
+            if path == f"/{name}/raw" or path.startswith(f"/{name}/images/"):
+                return self.send_reels(name, path)
         page_file = PAGES.get(path)
         if page_file:
             # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
@@ -300,19 +313,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_reels(self, path):
-        if path == "/reels/raw":
-            f, ctype = REELS_HOME / "dashboard.html", "text/html; charset=utf-8"
+    def send_reels(self, which, path):
+        home = reel_home(which)
+        if path == f"/{which}/raw":
+            f, ctype = home / "dashboard.html", "text/html; charset=utf-8"
         else:
-            name = urllib.parse.unquote(path[len("/reels/images/"):])
-            f = REELS_HOME / "images" / name
+            name = urllib.parse.unquote(path[len(f"/{which}/images/"):])
+            f = home / "images" / name
             if "/" in name or name.startswith(".") or f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
                 return self.send_error(404)
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if not f.is_file():
             return self.send_error(404, "Reel Brain dashboard not built yet (run reels/build_dashboard.py)")
         body = f.read_bytes()
-        if path == "/reels/raw":
+        if path == f"/{which}/raw":
             self.reels_csp = reels_scripts(body)
         self.send_body(body, ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
