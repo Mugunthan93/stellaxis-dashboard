@@ -1103,3 +1103,60 @@ git commit -m "Docs: the weekly share in CLAUDE.md, README.md, the component rul
 3. A look at the two pages in the browser, served from a temp home on a free port (never 7777), light and dark, desktop and phone width.
 4. A final whole-branch review on the strongest model. Fix or record what it finds.
 5. Add two sections to the end of this file: "Rulings made while building step 4" (each with its cost if wrong) and "Found while building step 4".
+
+---
+
+## Rulings made while building step 4
+
+Each line is a call the builder made, not the owner. Each says what it costs if it is wrong.
+
+**About what the owner sees and sets**
+
+1. **"Friday 2:30 AM" is read as India time** (Thursday 21:00 UTC). The session that started this work made this call. Cost if wrong: one command sets another start.
+2. **The budget is in USD, in the notional API prices Stellaxis already uses.** A normal week of the owner is in the thousands of these dollars (the week of 5 November was $2,730), far above what the plan costs. Cost if wrong: the numbers mean little until the owner picks a budget in this unit; nothing breaks.
+3. **The budget, the week start and the percents live in the store, not in `config.json`.** They change only through the three actions. Cost if wrong: they cannot be edited by hand in a file.
+4. **A week start that is not on a whole UTC hour is refused.** In India that means a time at half past (02:30, not 02:00). Cost if wrong: a start on a whole India hour needs the cost kept for half hours, and every transcript read again.
+5. **A percent is from 0 to 100 for one project. 0 means "warn at the first cent". No percent means "never warn".** Cost if wrong: small; one line of the check.
+6. **"Over" needs a use above 0 and a use at or above the allowance. The allowance is rounded to 4 places.** Cost if wrong: with an odd percent a project can count as over 0.00005 dollars early.
+7. **A warning stays as a record when the budget is raised later. The pages show "over" from the numbers of now.** So a raised budget takes the line off the page at once, and the history still says when the warning was made. Cost if wrong: none seen.
+8. **The line shows on the project page only when the project has an allowance** (a budget and a percent). A project with no percent shows nothing. Cost if wrong: one condition in `project.html`.
+9. **On Home the line is one entry in "needs you", and the sentence at the top counts it.** A project that is over stays there until the week ends, so Home is not "All clear" in that time. Jarvis reads that top sentence when asked what needs the owner; it says nothing unasked. Cost if wrong: a few lines in `home.html`. This one is for the owner to confirm.
+10. **The Overview is not changed.** Cost if wrong: the Overview shows no share; adding a panel is a later, separate change (that page is also an artifact).
+11. **Home shows cents for the two amounts of the line** (its own money helper rounds to whole dollars). Cost if wrong: one line.
+12. **The command line is its own file, `collector/share.py`,** not new commands of `prune.py`. Cost if wrong: a rename.
+13. **A setting does not start a collection.** After a change of the week start the weeks are added up again at the next collection (within a minute). Cost if wrong: the page shows the old weeks for up to a minute.
+
+**About how the numbers are made**
+
+14. **Claude management owns the share, with a third reader in round three.** Cost if wrong: none seen; this is what the spec says.
+15. **The running week is added up fresh at every collection and is kept for good only when it has ended.** Cost if wrong: if a transcript is deleted before the week ends, its cost leaves that week. Claude keeps transcripts 30 days by default and the owner has no shorter setting.
+16. **After a change of the week start, the running week is cut at the new start** (or taken into the new week when the new start lies before it), and the warnings of the cut weeks are made again. Cost if wrong: one short week in the history after each change.
+17. **A week with no collection at all gets no row.** The final review disagreed: it would fill such weeks from the transcripts. It was left, because filled weeks made while the clock is wrong would then block the pass (ruling 20). Cost if wrong: if the service is off for 7 days or more while Claude is used, those weeks are missing from "past weeks".
+18. **A session that Project management does not list counts as unassigned.** The final review disagreed: it would keep the last numbers. It was left, because the other choices fail worse (numbers frozen with no error). Cost if wrong: when Project management's own pass fails, new sessions show under unassigned for that pass; a week that closes in exactly such a pass keeps that split.
+19. **When Project management gives no session, or did not load, the share reader changes nothing and adds no second error.** Cost if wrong: a broken Project management shows one error line, not two.
+20. **When the clock is behind (a closed week would end after now), the pass changes nothing.** Without this a Mac that starts with a reset clock would delete every past week. Cost if wrong: if the clock stays ahead across a week boundary, the pass also changes nothing until real time passes that week; the fix is to delete that one row.
+21. **History starts at the first collection after the merge.** Earlier weeks are not built from the transcripts that are still there. Cost if wrong: "past weeks" is empty for the first week.
+22. **The answer gives at most 12 past weeks.** Older ones stay in the store. Cost if wrong: one number.
+
+**About the actions and the core**
+
+23. **One undo step for all three settings** (`claude_management.share_setting`, with `what`, `prev`, `new`). **An undo after a later change still puts the old value back, and says so.** Cost if wrong: an old undo can overwrite a newer value; the line tells the owner.
+24. **A new percent for an unknown project id is refused; removing the percent of a project that left the config is allowed.** Cost if wrong: none seen.
+25. **The core got `Core.restore` and the helper `undo.folder_of`.** An applied restore is logged with `component` `core`. An applied `purge` is still not logged. Cost if wrong: three lines to move.
+26. **A refusal is a note and `return False`, not an exception.** So a refused dry run prints only its sentence. Cost if wrong: none seen.
+
+**About how the work was done**
+
+27. **The builder wrote the four documents and the last fix wave itself,** without a helper, because lean helper use was asked for. The final review read the documents; a small re-review read the fix. Cost if wrong: a mistake there had one reader fewer.
+28. **The tests that run `prune` or the routes in process write the config into the fake home and point `prune.ARCHIVE` at the fake archive.** Cost if wrong: none; tests only.
+
+## Found while building step 4
+
+- **The numbers are large.** On the real data the week of 5 November was $2,730.63 in notional API prices (PartHub $1,422, Curlberry $724, Stellaxis $583, Budget App $0, unassigned $1.76). A budget must be picked in this unit.
+- **After the merge the service must be restarted.** Until then the running process answers 404 on `/api/share` and the pages show nothing.
+- **The first collection after the merge adds change 1 to the store** (five new tables). The copy of the real store took it without an error.
+- **An apply from the command line writes its manifest to the real `~/.claude/_archive`,** like every other action. `prune.py archives` lists them; `restore last` can pick one.
+- **`--utc-offset -08:00` fails on Python 3.9** (argparse reads it as an option). Write `--utc-offset=-08:00`. A `+` offset works both ways.
+- **`prune.ARCHIVE` is worked out at import.** A test that imports `prune` in process must patch it, or it reads the real archive folder.
+- **Small points left** (the final review said "leave" to each): `share.update` reads the settings just before its transaction starts, so a setting changed in that instant is used one collection late; `GET /api/share` answers a JSON 500, not 503, when the store is locked; `share.py show` says "the store is down" for any failure of the offer; the store-down test of the reader cannot fail on its own; the page tests are text checks; `drawShare()` in `project.html` is not guarded against an answer with a budget and no project list (the route never sends one).
+- **Not done:** no backfill of earlier weeks; no line on the Overview; an applied `purge` is still not logged; the spec's "Open" list still names "how a warning reaches the owner" (the answer is in `CONTEXT.md`).
