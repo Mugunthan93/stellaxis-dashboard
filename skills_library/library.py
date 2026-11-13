@@ -305,7 +305,8 @@ which who whom why how all any some more most much many few lot very just also t
 get got give make made let lets need want like use used using work works help please thank thanks does did done doing
 being been see look show tell say said know think try tried run add put set take keep going able way thing things
 something anything everything time today app apps project projects code file files claude skill skills session
-sessions message every each per may might must shall yes okay sure find write end fix page""".split())
+sessions message every each per may might must shall yes okay sure find write end fix page
+create build full whole complete current simple good better best great nice check verify trigger change update""".split())
 SUFFIXES = ("ions", "ion", "ing", "ed", "es", "s", "e")
 
 
