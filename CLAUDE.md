@@ -27,6 +27,10 @@ python3 collector/collect.py serve           # collect every `interval` + dashbo
 python3 collector/collect.py summary         # summary of the last snapshot
 python3 collector/prune.py list --unused-days 30
 python3 collector/prune.py relocate <src> <dest>   # move a project folder (dry run without --apply)
+python3 collector/share.py show                           # the weekly share: this week's use for each project
+python3 collector/share.py budget <amount|none> [--apply] # the three settings are a dry run without --apply
+python3 collector/share.py week-start <day> <HH:MM> [--utc-offset=+05:30] [--apply]
+python3 collector/share.py percent <project id> <percent|none> [--apply]
 ```
 
 To run against something other than the real `~/.stellaxis` and `~/.claude`, set `STELLAXIS_HOME`
@@ -47,7 +51,8 @@ serves the routes. A component is one folder under `collector/components/`. The 
   fails to import becomes a component with an `error`.
 - `app.py`: `Core` and `Ctx`. `Core.run_pass` runs a pass; `Core.run_action(component, action, args, apply, cfg,
   plan=None)` runs an action; `Core.read` asks a component's offer for a way in; `Core.undo_handlers` gives the undo
-  steps to `restore`; `Core.describe` answers `GET /api/core`. A `Ctx` is what a component sees: `name`, `cfg`,
+  steps to `restore`; `Core.restore` runs an undo (`core.undo.restore`) and logs it; `Core.describe` answers
+  `GET /api/core`. A `Ctx` is what a component sees: `name`, `cfg`,
   `inputs` (the pass inputs), `home`, `claude_dir`, `claude_json`, `service` (true in `collect.py serve`), `db()`,
   `read(owner, offer)` (only a declared read), `act(action, args, apply, plan=None)`, `cache` (`cache.json`),
   `transcripts()`, `memo` (a dict of its own for one pass) and `status(...)`.
@@ -81,23 +86,64 @@ the pass does not read the transcripts again: every later reader that asks for t
 **An action** is `fn(plan, ctx, **args) -> bool`. With `apply` false it only says what it would do. An applied action
 writes one line to `$STELLAXIS_HOME/actions.jsonl`; the names in `fn.private` are left out of that line. A way in may
 pass its own `plan=`, so `prune.py` prints exactly what it printed before. An undoable step adds a manifest entry with
-`op` `<component>.<step>` and a handler in `Component.undo`; a handler is `(entry, apply, out, ctx)`.
+`op` `<component>.<step>` and a handler in `Component.undo`; a handler is `(entry, apply, out, ctx)`. An applied
+restore writes one line to `actions.jsonl` too (`component` `core`, `action` `restore`), also when it stops half-way.
+An action refuses a bad value with `plan.note(<one sentence>)` and `return False`; nothing is written.
 
 **Claude management** (`collector/components/claude_management/`): what Claude has and uses on this Mac.
 - Files: `usage.py` (what each transcript line adds, and one row per session; `_cache_loss` flags turns that rebuilt
   the cache after idling past the 1-hour TTL, a threshold measured from real transcripts), `setup.py` (the inventory:
   `~/.claude`, `~/.claude.json`, installed plugins and each repo's `.claude`; the stdio MCP probes), `snapshot.py`
   (joins setup and use, prices tokens, groups repos and worktrees, `history.jsonl`), `records.py`, `trim.py`
-  (archive, move), `settings.py` (the Settings page routes and the save).
-- Readers: `usage_reader` (round one: the session rows) and `setup_reader` (round two: the setup, joined with the rows,
-  written to `snapshot.json` and `history.jsonl`).
-- Records: `claude_management_sessions` (one row per session, with its cost for each hour) and
-  `claude_management_items` (one row per item of the last snapshot).
-- Offers: `sessions`, `items`. Reads: `project_management.repos` (to find the `.claude` folder of each repo).
-- Actions: `archive`, `move` and `save_settings`. The `body` of `save_settings` is private: it never reaches the
-  action log. Undo step: `claude_management.settings_file`. The undo of a settings save keeps a copy
-  (`.bak-<stamp>`) of a file changed since the save, and puts back the mode of the backup.
-- Routes: `GET /api/settings`, `POST /api/settings/preview`, `POST /api/settings/save`.
+  (archive, move), `settings.py` (the Settings page routes and the save), `share.py` (the weekly share: the week, the
+  adding up, the warnings, the answer) and `share_set.py` (the actions that set it, their undo, the `/api/share…` routes).
+- Readers: `usage_reader` (round one: the session rows), `setup_reader` (round two: the setup, joined with the rows,
+  written to `snapshot.json` and `history.jsonl`) and `share_reader` (round three: the weekly share, below).
+- Records: `claude_management_sessions` (one row per session, with its cost for each hour),
+  `claude_management_items` (one row per item of the last snapshot) and the five `claude_management_share_…` tables.
+- Offers: `sessions`, `items`, `share`. Reads: `project_management.repos` (to find the `.claude` folder of each repo),
+  `project_management.sessions` (which session belongs to which project) and `project_management.projects` (their names).
+- Actions: `archive`, `move`, `save_settings`, `set_budget`, `set_week_start` and `set_percent`. The `body` of
+  `save_settings` is private: it never reaches the action log. Undo steps: `claude_management.settings_file` and
+  `claude_management.share_setting`. The undo of a settings save keeps a copy (`.bak-<stamp>`) of a file changed
+  since the save, and puts back the mode of the backup.
+- Routes: `GET /api/settings`, `POST /api/settings/preview`, `POST /api/settings/save`, and the `/api/share…` routes.
+
+**The weekly share** (`share.py` and `share_set.py` of Claude management). The owner sets one weekly budget in USD and
+gives each project a percent of it. The unit is the cost Stellaxis works out for each session. Stellaxis warns when a
+project has used all of its share. It never stops work: no hook, no block.
+- Tables. `share_plan`: one row, the budget and the week start (no row means no budget and Thursday 21:00 UTC, which
+  is Friday 02:30 in India). `share_percents`: project id (or `unassigned`) and its percent; no row means no share.
+  `share_weeks`: one row for each week a collection saw (`starts`, `ends`, `closed`, the budget it was added up with).
+  `share_use`: the cost of one project in one week, with the percent it had. `share_warnings`: one row for a project
+  and a week, made when its cost reached its allowance.
+- The week is kept in UTC and must start on a whole UTC hour, because the cost of a session is kept for whole UTC
+  hours. `set_week_start` takes a local day and time with a UTC offset and refuses a start that is off the hour, with
+  the nearest times that work. A moment exactly on the start belongs to the new week.
+- `share_reader` is the third reader, so it sees the sessions Project management wrote in round two of the same pass.
+  `share.update` adds up every open week fresh from the hourly costs (a session that moves to another project takes its
+  cost along, and nothing counts twice). A week that has ended is added up one last time and closed; a closed week
+  never changes, also when Claude deletes old transcripts. A week with no collection at all gets no row. When Project
+  management gives no session (removed, or its offer failed), nothing changes. When the clock is behind (a closed week
+  would end after now), nothing changes either. Known limit: the week that is running is not yet kept; if a transcript
+  is deleted before the week ends, its cost leaves that week.
+- After a change of the week start, the next collection cuts the running week at the new start (or takes it into the
+  new week when the new start lies before it), adds the cut weeks up again and makes their warnings again. No hour is
+  counted in two weeks.
+- The allowance of a project is `budget × percent / 100`, rounded to 4 places. A project is over when it has an
+  allowance, its use is above 0 and its use is at or above the allowance. So a percent of 0 warns at the first cent,
+  and no percent never warns. Percents need not add up to 100. Unassigned has a share only when the id `unassigned` is
+  given a percent.
+- `share.view` is the answer of `GET /api/share` and the one record of the offer `share`: the week, the budget, one
+  line for each project of Project management (`percent`, `allowance`, `use`, `left`, `over`, `warned_at`), the
+  `unassigned` line (null when it has no use and no percent), and up to 12 past weeks with the numbers they were closed
+  with. With Project management removed there is no project line. It computes `over` from the settings of now, so a new
+  budget shows at once; `warned_at` is the stored warning.
+- The three actions each say one line, write the store, and add one manifest entry (`claude_management.share_setting`
+  with `what`, `prev`, `new`), so `prune.py restore <stamp> --apply` puts the old value back. The same value again
+  writes nothing. A percent of a project that left the config can still be removed, by its id. Routes: `POST /api/share/budget` (`{"budget", "apply"}`), `/api/share/week-start`
+  (`{"day", "time", "utc_offset"?, "apply"}`) and `/api/share/percent` (`{"project", "percent", "apply"}`); a refusal
+  answers 400 with the sentence, a store that is down 503.
 
 **Project management** (`collector/components/project_management/`): every project on this Mac.
 - Files: `repos.py` (finds the repos: the folders of the sessions, of `~/.claude.json` and of the walk of
@@ -173,6 +219,10 @@ another writer) is tried again at the start of each pass, and its error clears w
   `prune.py archives` and `restore last` can pick it. Without Claude management, `archive` and `move` exit 1 with
   one sentence. `list` lists the last `snapshot.json` when one is on disk and exits 0; it exits 1 only when there
   is none. Without Project management, `relocate` exits 1 with one sentence.
+- `collector/share.py` is a command line only, for the weekly share: `show` prints what the offer `share` gives;
+  `budget`, `week-start` and `percent` run the actions of Claude management through `run_action` with a plan of their
+  own, so the dry run, the manifest and the undo line print as they do for `prune.py`. Without Claude management it
+  exits 1 with one sentence.
 - `collector/mcp_server.py` is a stdio MCP server with a single read-only tool (`stellaxis_snapshot`), registered
   only in the Claude desktop app, never in Claude Code, so it adds no always-on context. It asks the running
   `serve` process over HTTP (`/api/status`, `/api/refresh`) rather than collecting inline, because inline
@@ -207,7 +257,8 @@ The old keys are read until the owner applies the rename: `GET /api/projects/new
 
 API routes (the core's `GET /api/core`; each component's `handle`; and `unplaced/jarvis.py` for the `/api/jarvis`
 ones; all behind `core.server.host_ok`; POSTs need `application/json`):
-`GET /api/settings`, `POST /api/settings/preview` and `/api/settings/save` (Claude management); `GET /api/memory`
+`GET /api/settings`, `POST /api/settings/preview` and `/api/settings/save`, `GET /api/share`, `POST /api/share/budget`,
+`/api/share/week-start` and `/api/share/percent` (Claude management); `GET /api/memory`
 (Memory management); `GET /api/projects`; `GET` and `POST /api/projects/<id>/tasks`; `GET /api/projects/<id>/work` (plans,
 routines, tests); `POST /api/projects/<id>/tests/run`; `GET` and `POST /api/projects/new-names` (above);
 `POST /api/sessions/new` (`{"project", "folder", "prompt"}`);
@@ -248,7 +299,9 @@ Routes (`PAGES` in `collect.py`): `/` is `home.html` (what needs you, from `GET 
 built in `shell.html` from the same API; static links still work if it fails.
 
 `dashboard/home.html` and `project.html` are localhost only, not artifacts: they may use absolute `/api`
-paths and need no artifact path. `/reels/raw` runs only its own script (`reels_scripts` in `collect.py`
+paths and need no artifact path. Each shows one line from `GET /api/share`, and nothing when no budget is set: the
+project page a notice under its header (the use of the project's weekly share, or that it is used up), Home one entry
+in "needs you" for each project that is over. The Overview does not show the share. `/reels/raw` runs only its own script (`reels_scripts` in `collect.py`
 hashes the last script in the file), so that page can't use inline event handlers.
 
 `dashboard/index.html` (Overview) and `hierarchy.html` are authored as artifact bodies (no
@@ -292,6 +345,11 @@ gives the command.
 deletes one component folder (or all three), and runs a child Python on a fake home: it collects, serves on port 0,
 and the core and the other components must still answer. `IndependenceTest` checks that a component imports only
 the standard library, `core` and its own folder, and never names another component's tables or module.
+
+`tests/test_share.py` holds the weekly share. Its `ShareHome` is a fake home with two projects, a folder in no
+project and a clock the test sets (`at`); `turn` writes one assistant turn that costs a given number of dollars.
+It writes the config to the fake home and points `prune.ARCHIVE` at the fake archive, because the routes, `share.py`
+and `prune.py` read both from module state.
 
 `tests/test_e2e.py` builds a fake HOME (skills, agents, commands, a stdio fake MCP server, transcripts,
 a git worktree) in `setUpClass`, runs `collect.py run --probe` once as a subprocess, and asserts on the

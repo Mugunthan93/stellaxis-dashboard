@@ -45,6 +45,8 @@ Actions
 - An action is `fn(plan, ctx, **args)` and returns True on success.
 - An action shows what it will do first: with `plan.apply` false it changes nothing.
 - An action sets `plan.result` to what its route answers, and says what it skipped with `plan.note`.
+- An action refuses a bad value with `plan.note(<one plain sentence>)` and `return False`, and writes nothing. Its route
+  answers 400 with the note.
 - An action lists in `fn.private` the arguments the action log must not hold.
 - A component runs its own action with `ctx.act(action, args, apply)`, so it gets the dry run, the manifest and the
   log line. A way in may hand the action its own plan (`plan=`).
@@ -60,5 +62,8 @@ Routes
 ## What each component reads from another
 
 - `claude_management` reads `project_management.repos`: the list of repos, to find the `.claude` folder of each repo.
+- `claude_management` reads `project_management.sessions`: which session belongs to which project, to count use against
+  each weekly share. It is read in round three, after Project management wrote it in round two.
+- `claude_management` reads `project_management.projects`: the id and name of each project, for the lines of the share.
 - `project_management` reads `claude_management.sessions`: the cost of each session.
 - `memory_management` reads nothing from another component.

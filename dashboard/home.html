@@ -252,17 +252,18 @@ function addLog(what) {
 }
 
 // Needs you: approvals (oldest first), then sessions waiting, then failed tests.
-let titles = {}, appr = [], waiting = [], failed = [], apKey = "", idxOk = null;
+let titles = {}, appr = [], waiting = [], failed = [], spent = [], shareEnd = "", apKey = "", idxOk = null;
+const cents = n => "$" + (n || 0).toFixed(2), newWeek = iso => new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 function drawNeeds() {
-  const n = appr.length + waiting.length + failed.length;
+  const n = appr.length + waiting.length + failed.length + spent.length;
   $("ny-count").textContent = n ? plural(n, "item") : "";
   $("ny-empty").hidden = n > 0;
   $("needs-you").classList.toggle("alert", n > 0);
   const parts = [appr.length && plural(appr.length, "approval"), waiting.length && plural(waiting.length, "session") + " waiting for you",
-    failed.length && plural(failed.length, "failed test run")].filter(Boolean);
+    failed.length && plural(failed.length, "failed test run"), spent.length && (spent.length === 1 ? "1 project over its weekly share" : spent.length + " projects over their weekly share")].filter(Boolean);
   $("finding").textContent = parts.length ? parts.join(", ") + "." : idxOk === false ? "Couldn't check sessions." : "All clear. Nothing needs you right now.";
   $("finding").classList.toggle("alert", parts.length > 0);
-  const key = JSON.stringify([appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]), waiting.map(x => x.s.id), failed.map(x => x.t.repo + x.t.finished)]);
+  const key = JSON.stringify([appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]), waiting.map(x => x.s.id), failed.map(x => x.t.repo + x.t.finished), spent.map(x => [x.id, x.use, x.allowance]), shareEnd]);
   if (key === apKey) return;
   apKey = key;
   $("ny-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || "Session " + a.session_id.slice(0, 8))} wants to run ${esc(a.tool)}</span>`
@@ -273,7 +274,9 @@ function drawNeeds() {
     + waiting.map(({ s, w, b }) => `<li><span class="t">${esc(label(s))} is waiting for you</span>`
       + `<span class="m">${esc(w.name)} · ${esc(b.name)} · ${esc(ago(s.last_ts))}</span></li>`).join("")
     + failed.map(({ w, t }) => `<li><span class="t">Tests failed in ${esc(w.name)}</span>`
-      + `<span class="m"><span class="mono">${esc(t.repo)}</span> · ${esc(ago(t.finished))}</span></li>`).join("");
+      + `<span class="m"><span class="mono">${esc(t.repo)}</span> · ${esc(ago(t.finished))}</span></li>`).join("")
+    + spent.map(x => `<li><span class="t">${esc(x.name)} has used all of its weekly share</span>`
+      + `<span class="m">${esc(cents(x.use))} of ${esc(cents(x.allowance))} · a new week starts ${esc(newWeek(shareEnd))}</span></li>`).join("");
 }
 async function tickAppr() {
   try { const r = await fetch("/api/approvals", { cache: "no-store" }); if (!r.ok) throw 0; appr = await r.json(); } catch { return; }
@@ -293,6 +296,12 @@ async function tick() {
   let d;
   try { const r = await fetch("/api/projects", { cache: "no-store" }); if (!r.ok) throw 0; d = await r.json(); idxOk = true; $("ws-load").hidden = true; }
   catch { idxOk = false; $("ws-load").hidden = false; drawNeeds(); return; }
+  try {  // the lines over their weekly share; a failed fetch keeps the last answer
+    const r = await fetch("/api/share", { cache: "no-store" }); if (!r.ok) throw 0;
+    const sh = await r.json();
+    spent = sh.budget == null ? [] : [...sh.projects, sh.unassigned].filter(x => x && x.over && x.allowance != null);
+    shareEnd = sh.week.end;
+  } catch {}
   const sess = [];
   for (const w of d.projects) for (const r of w.repos)
     for (const b of r.branches) for (const s of b.sessions) if (!s.archived) sess.push({ s, w, b });

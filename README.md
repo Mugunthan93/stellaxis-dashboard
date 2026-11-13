@@ -15,14 +15,14 @@ Stellaxis is one **core** and a few **components**. The words come from `CONTEXT
   - **actions** are what it can do; an action shows a dry run first, and every applied action is logged.
 - One component reads another's records only through what the other offers. It never reads the other's source.
 - The **store** is one SQLite file, `~/.stellaxis/stellaxis.db`. Each component has its own tables.
-- The **ways in** reach the core: the pages on localhost, `prune.py`, the desktop MCP tool, Jarvis.
+- The **ways in** reach the core: the pages on localhost, `prune.py`, `share.py`, the desktop MCP tool, Jarvis.
 - The core runs with no component. Remove one component folder and the rest still runs.
 
 The components today:
 
 | Component | What it does | What it reads from another component |
 |---|---|---|
-| Claude management | Reads the transcripts and the Claude setup, prices the use, writes `snapshot.json`. Archives and moves items, saves settings files. | The list of repos, from Project management. |
+| Claude management | Reads the transcripts and the Claude setup, prices the use, writes `snapshot.json`. Archives and moves items, saves settings files. Keeps the weekly share of each project and warns when one is used up. | The list of repos, the projects, and which session belongs to which project, from Project management. |
 | Project management | Finds the repos and sessions, groups them into projects, writes `projects.json`. Runs the command centre (tasks, approvals, sessions, tests). Moves a project folder (`relocate`). | The cost of each session, from Claude management. |
 | Memory management | Measures where the disk space goes, in the background. Read only. | Nothing. |
 
@@ -41,6 +41,7 @@ The components today:
  │ (any browser)        (desktop only)    └─► Stellaxis artifact
  │                                                        │
  │ prune.py  list · archive · move · relocate · restore   │
+ │ share.py  show · budget · week-start · percent         │
  │      ◄── stellaxis-auditor agent / skill               │
  └────────────────────────────────────────────────────────┘
 ```
@@ -106,6 +107,30 @@ JSON configs are backed up before edits. A save on the Settings page also writes
 `prune.py archives` lists it and `restore` can undo it. "last" is the newest archive, and that can be a settings
 save: run `restore last` without `--apply` first to see what it would undo.
 
+## The weekly share
+
+You set one weekly budget in USD and give each project a percent of it. Stellaxis adds up what each project cost in
+the week, in the same notional API prices as everywhere else. When a project has used all of its share, Stellaxis
+warns you. It never stops any work. A folder in no project counts as "unassigned" and has no share unless you give
+it one.
+
+```bash
+python3 ~/.stellaxis/bin/share.py show                      # this week's use for each project, and past weeks
+python3 ~/.stellaxis/bin/share.py budget 3000               # dry run: says what would change
+python3 ~/.stellaxis/bin/share.py budget 3000 --apply
+python3 ~/.stellaxis/bin/share.py week-start friday 02:30 --apply   # your local time; the week is kept in UTC
+python3 ~/.stellaxis/bin/share.py percent parthub 40 --apply
+python3 ~/.stellaxis/bin/share.py percent parthub none --apply      # remove the share again
+```
+
+- Every setting is a dry run until `--apply`. An applied one prints its undo line (`prune.py restore <stamp> --apply`).
+- The week must start on a whole hour in UTC. In India that means a time at half past, like 02:30. Another time is
+  refused, with the nearest times that work.
+- The percents need not add up to 100. A percent of 0 means "warn at the first cent". No percent means "never warn".
+- Where you see it: one line under the title of the project's page, and one entry in "needs you" on Home for each
+  project that is over. Nothing shows while no budget is set. `GET /api/share` gives the numbers.
+- A week that has ended keeps its numbers. `show` lists the past weeks.
+
 ## Layout
 
 ```
@@ -122,9 +147,11 @@ collector/components/claude_management/
   usage.py                what each transcript line adds; one row per session
   setup.py                the Claude setup: skills, agents, commands, plugins, MCP servers, CLAUDE.md
   snapshot.py             joins setup and use, prices them, writes the totals
-  records.py              its tables: sessions and items
+  records.py              its tables: sessions, items and the weekly share
   trim.py                 the actions archive and move
   settings.py             the /api/settings routes and the action save_settings
+  share.py                the weekly share: the week, the adding up, the warnings, the answer
+  share_set.py            the actions that set the budget, the week start and a percent; the /api/share routes
 collector/components/project_management/
   __init__.py             the component: readers, records, offers, actions, routes
   repos.py                finds the repos of this Mac
@@ -138,6 +165,7 @@ collector/components/memory_management/
   records.py              its tables: runs, folders, skipped
 collector/collect.py      a way in: runs a collection, serves the pages on localhost
 collector/prune.py        a way in: the command line for list, archive, move, relocate, restore, purge
+collector/share.py        a way in: the command line for the weekly share
 collector/mcp_server.py   a way in: stdio MCP server for the desktop app, one read-only tool
 collector/install.sh      macOS service and desktop MCP registration
 dashboard/index.html      Overview (same file is the artifact and the localhost page)

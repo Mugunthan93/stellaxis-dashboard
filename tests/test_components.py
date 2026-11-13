@@ -33,8 +33,9 @@ def get(path):
     c.request("GET", path); r = c.getresponse(); return r.status, r.read().decode()
 core = json.loads(get("/api/core")[1])
 out = {"components": {c["name"]: c["error"] for c in core["components"]},
-       "codes": {p: get(p)[0] for p in ("/overview", "/api/projects", "/api/settings", "/api/memory", "/api/status")},
+       "codes": {p: get(p)[0] for p in ("/overview", "/api/projects", "/api/settings", "/api/memory", "/api/status", "/api/share")},
        "status": json.loads(get("/api/status")[1])}
+out["share"] = json.loads(get("/api/share")[1]) if out["codes"]["/api/share"] == 200 else None
 snap_f, index_f = collect.STX_HOME / "snapshot.json", collect.STX_HOME / "projects.json"
 out["snapshot"], out["index"] = snap_f.exists(), index_f.exists()
 snap = json.loads(snap_f.read_text()) if out["snapshot"] else {}
@@ -87,6 +88,7 @@ srv.shutdown(); print(json.dumps(out))
         self.assertEqual((out["status"]["phase"], out["status"]["index_error"]), ("idle", None))
         self.assertEqual((out["codes"]["/overview"], out["codes"]["/api/projects"], out["codes"]["/api/memory"]), (200, 200, 200))
         self.assertEqual(out["codes"]["/api/settings"], 404)
+        self.assertEqual(out["codes"]["/api/share"], 404)
         self.assertEqual((out["snapshot"], out["index_sessions"]), (False, {"s1": 0}))
 
     def test_without_project_management(self):
@@ -95,6 +97,8 @@ srv.shutdown(); print(json.dumps(out))
         self.assertEqual((out["status"]["phase"], out["status"]["index_error"]), ("idle", None))
         self.assertEqual((out["codes"]["/overview"], out["codes"]["/api/settings"], out["codes"]["/api/memory"]), (200, 200, 200))
         self.assertEqual(out["codes"]["/api/projects"], 404)
+        self.assertEqual(out["codes"]["/api/share"], 200)
+        self.assertEqual((out["share"]["projects"], out["share"]["unassigned"], out["share"]["budget"]), ([], None, None))
         self.assertIn("skill:user:foo", out["items"])
         self.assertGreater(out["snapshot_sessions"]["s1"], 0)
         self.assertFalse(out["index"])
@@ -106,6 +110,9 @@ srv.shutdown(); print(json.dumps(out))
         self.assertEqual((out["codes"]["/api/projects"], out["codes"]["/api/settings"], out["codes"]["/api/memory"]), (200, 200, 404))
         self.assertTrue(out["snapshot"] and out["index"])
         self.assertGreater(out["index_sessions"]["s1"], 0)
+        self.assertEqual(out["codes"]["/api/share"], 200)
+        self.assertEqual([l["id"] for l in out["share"]["projects"]], [])
+        self.assertGreater(out["share"]["unassigned"]["use"], 0)
 
     def test_with_no_component_at_all(self):
         cwd, env = self.copy(*NAMES)
@@ -130,6 +137,11 @@ srv.shutdown(); print(json.dumps(out))
         for args in (["list"], ["archive", "skill:user:foo"]):
             self.assertIn("Claude management", self.prune_says("claude_management", *args), args)
 
+    def test_share_says_so_when_claude_management_is_gone(self):
+        cwd, env = self.copy("claude_management")
+        r = subprocess.run([sys.executable, "share.py", "show"], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (1, "", "Claude management is not loaded\n"))
+
     def test_prune_relocate_says_so_when_project_management_is_gone(self):
         self.assertEqual(self.prune_says("project_management", "relocate", "~/code/app", "~/code/app2"),   # ~ is the fake home
                          "Project management is not loaded")
@@ -149,6 +161,8 @@ class BrokenOneTest(unittest.TestCase):
             files = {n: (stx / n).read_bytes() for n in ("snapshot.json", "history.jsonl", "projects.json")}
             with closing(sqlite3.connect(stx / "stellaxis.db")) as db:
                 files["items"] = db.execute("SELECT * FROM claude_management_items ORDER BY id").fetchall()
+                for t in ("weeks", "use"):
+                    files[t] = db.execute(f"SELECT * FROM claude_management_share_{t} ORDER BY 1, 2").fetchall()
             return files
 
         run = lambda: subprocess.run([sys.executable, "collect.py", "run"], cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
@@ -168,6 +182,12 @@ class BrokenOneTest(unittest.TestCase):
         err = json.loads((stx / "status.json").read_text())["index_error"]
         self.assertIn("project_management: SyntaxError", err)
         self.assertIn("claude_management: RuntimeError: project_management did not load", err)
+
+    def test_project_management_broken_keeps_the_weeks_and_the_use_of_the_share(self):
+        stx, before, after = self.two_passes("project_management", "repos.py")
+        self.assertTrue(before["weeks"] and before["use"])
+        for key in ("weeks", "use"):
+            self.assertEqual(after[key], before[key], key)
 
     def test_collect_run_names_a_failed_component_also_when_a_snapshot_was_written(self):
         cwd, env = self.copy()

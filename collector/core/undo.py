@@ -131,10 +131,15 @@ HANDLERS: dict[str, Callable[[dict, bool, Callable], bool]] = {
     "move": _move, "json_del": _json_del, "json_add": _json_add, "json_set": _json_set}
 
 
-def restore(name: str, apply: bool, archive: Path, handlers: dict | None = None, on_applied=None, out=print) -> None:
-    table = {**HANDLERS, **(handlers or {})}
+def folder_of(name: str, archive: Path) -> Path:
+    """The archive folder a restore of this name works on: the newest one with a manifest for "last"."""
     dirs = sorted(d for d in archive.iterdir() if (d / "manifest.json").exists()) if archive.exists() else []
-    d = dirs[-1] if name == "last" and dirs else archive / name
+    return dirs[-1] if name == "last" and dirs else archive / name
+
+
+def restore(name: str, apply: bool, archive: Path, handlers: dict | None = None, on_applied=None, out=print) -> Path:
+    table = {**HANDLERS, **(handlers or {})}
+    d = folder_of(name, archive)
     man = read_json(d / "manifest.json")
     if not man:
         raise RestoreError(f"no manifest in {d}")
@@ -152,3 +157,4 @@ def restore(name: str, apply: bool, archive: Path, handlers: dict | None = None,
             on_applied()
     else:
         out("\nNothing changed. Re-run with --apply to execute.")
+    return d

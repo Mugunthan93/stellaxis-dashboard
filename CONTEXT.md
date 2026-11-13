@@ -68,8 +68,14 @@ _Avoid_: MCP server (use it only when the technical detail matters)
 **Claude plan**:
 The Claude subscription of the owner. It has a limit on use for each week.
 
+**Weekly budget**:
+The amount the owner sets for one week of Claude use, in USD. Its unit is the cost Stellaxis works out for each session, because the real limit of the **Claude plan** cannot be read. The owner also sets the day and time the week starts.
+
 **Weekly share**:
-The part of the weekly limit that the owner gives to one project. When a project uses all of its weekly share, Stellaxis warns the owner. It does not stop work.
+The part of the **weekly budget** that the owner gives to one project, as a percent. The percents need not add up to 100. When a project uses all of its weekly share, Stellaxis warns the owner. It does not stop work.
+
+**Warning**:
+A record that one project used all of its weekly share in one week. It is made once for a project and a week, and it is shown on the pages only.
 
 **Memory management**:
 Component 4. It knows what takes disk space on this Mac, and it cleans safely. Here "memory" means disk space only. Rules: it never touches work that is in use, it never asks the owner to close an application, it never treats the project dump in `~/Archive` as disposable, and it shows what it will remove before it removes it.
@@ -92,7 +98,7 @@ A written statement of how one component relates to another. Each new component 
 - **Stellaxis** and **Claude management**: Claude management lives in the core. Stellaxis gives its own plugin to Claude, so Claude management manages that plugin like every other plugin.
 - **Project management** and **Claude management**, installed things: Claude management owns every installed **skill** and **plugin** and knows where each one is installed. The **project list** shows the skills and plugins of each project, but does not own them.
 - **Project management** and **Claude management**, the kit: the **project kit** is made of Claude things (an agent, skills, routines). Claude management installs them in each project.
-- **Project management** and **Claude management**, the plan: Claude management owns the **Claude plan** and each **weekly share**. Project management gives the projects and their **sessions**, which use the share.
+- **Project management** and **Claude management**, the plan: Claude management owns the **Claude plan** and each **weekly share**. Project management gives the projects, and which **session** belongs to which project; the sessions use the share. The use of **unassigned** folders is its own line and has no share unless the owner gives it one.
 - **Project management** and **Claude management**, connectors: Claude management owns every **connector**. The **project list** shows which connectors each project uses. Each connector adds load to every session, so a connector that no project uses takes from every **weekly share**.
 - **Project management** and **Claude management**, cost and repos: Project management reads the cost of each **session** from Claude management. Claude management reads the list of **repos** from Project management.
 - **Stellaxis** and **Memory management**: Memory management lives in the core. The data of Stellaxis itself takes disk space, so Memory management counts it like all other data.
@@ -110,3 +116,5 @@ A written statement of how one component relates to another. Each new component 
 - Open: the owner named skills, plugins and connectors. Agents are assumed to be in **Claude management** too, until the owner says no.
 - Open: "connector" is assumed to mean both kinds, account and local, until the owner says no.
 - What happens when a project uses all of its **weekly share**. Resolved: Stellaxis warns the owner only.
+- How a **warning** reaches the owner. Resolved (2026-11-12): it is shown on the pages only, on the project's page and on Home.
+- "week" for the **weekly budget**. Resolved (2026-11-12): it starts Friday 02:30 in India (Thursday 21:00 UTC) until the owner changes it.
