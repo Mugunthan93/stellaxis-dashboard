@@ -3,8 +3,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Home as Jarvis's HUD: a reactor core in the middle that shows what Jarvis is doing, what needs you on the
-   right, your projects as gauges on the left, the briefing underneath. Data: /api/projects,
+/* Home as Jarvis's HUD: his hologram in the middle (jarvis-orb.js) moves with your voice and shows what he is
+   doing; cards slide out of it on both sides when he has something to show; the panels and the briefing are
+   underneath. On leaving for another page the hologram flies to the top left, where shell.html keeps a small
+   one, and comes back from there. Data: /api/projects,
    /api/approvals, /api/jarvis, /api/jarvis/ask. A HUD is dark by nature, so this page keeps its own dark
    palette in both themes (like /reels/ keeps its own look). */
 :root {
@@ -38,9 +40,8 @@ a { color: var(--hud); }
 @media (max-width: 520px) { .clock { text-align: left; } }
 .clock b { display: block; font: 600 1.6rem/1 var(--tech); letter-spacing: 0.06em; color: var(--ink); font-variant-numeric: tabular-nums; }
 
-/* Three columns on desktop: projects | core | needs you. */
-.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
-@media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .core-col { grid-column: 1 / -1; order: -1; } }
+/* Under the stage: projects and sessions | what needs you and the activity. */
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 700px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 .col { display: grid; gap: 16px; min-width: 0; }
 
@@ -69,29 +70,42 @@ a { color: var(--hud); }
 .list .m { font-size: 0.78rem; color: var(--muted); }
 .list li.run { border-left-color: var(--ok); }
 
-/* The core: rings turn at their own speeds; the state changes their colour and pace. */
-.core-col { display: grid; gap: 12px; justify-items: center; min-width: 0; }
-.reactor { position: relative; width: min(100%, 420px); aspect-ratio: 1; color: var(--hud); }
-.reactor svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 6px rgba(79, 216, 255, 0.55)); }
-.reactor .r { transform-origin: 200px 200px; transform-box: view-box; }
-.spin-a { animation: spin 40s linear infinite; }
-.spin-b { animation: spin 22s linear infinite reverse; }
-.spin-c { animation: spin 9s linear infinite; }
-.pulse { animation: breathe 4s ease-in-out infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes breathe { 50% { opacity: 0.55; } }
-.center { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; }
-.center b { font: 700 1.5rem/1 var(--tech); letter-spacing: 0.2em; color: var(--ink); }
-.center span { margin-top: 6px; font: 600 0.72rem/1 var(--tech); letter-spacing: 0.24em; text-transform: uppercase; color: var(--hud); }
-[data-state="listening"] .reactor { color: var(--alert); }
-[data-state="listening"] .reactor svg { filter: drop-shadow(0 0 8px rgba(255, 159, 67, 0.6)); }
-[data-state="listening"] .center span, [data-state="error"] .center span { color: var(--alert); }
-[data-state="thinking"] .spin-a { animation-duration: 6s; }
-[data-state="thinking"] .spin-b { animation-duration: 3s; }
-[data-state="thinking"] .spin-c { animation-duration: 1.2s; }
-[data-state="speaking"] .pulse, [data-state="listening"] .pulse { animation-duration: 0.9s; }
-[data-state="error"] .reactor { color: var(--bad); }
-.wave { width: min(100%, 420px); height: 44px; display: block; }
+/* The stage: the hologram, and a lane on each side for the cards it sends out. */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 28px; align-items: center; min-height: min(80dvh, 780px); }
+.core-col { display: grid; gap: 10px; justify-items: center; min-width: 0; }
+.holo { position: relative; width: min(100%, 480px); aspect-ratio: 1 / 1.12; }
+.holo canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.center { display: grid; justify-items: center; gap: 6px; text-align: center; margin-top: -6px; }
+.center b { font: 700 1.5rem/1 var(--tech); letter-spacing: 0.32em; margin-right: -0.32em; color: var(--ink); }
+.center span { font: 600 0.72rem/1 var(--tech); letter-spacing: 0.24em; text-transform: uppercase; color: var(--alert); }
+[data-state="error"] .center span { color: var(--bad); }
+
+/* A card leaves the hologram, stays, and goes back: slower out than in, with a little blur (the toast of transitions.dev, sideways). */
+.lane { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; align-content: center; min-width: 0; }
+.lane.left { justify-items: end; } .lane.right { justify-items: start; }
+.note { --from: 56px; position: relative; display: grid; gap: 2px; width: min(100%, 34ch); padding: 10px 14px; background: var(--panel);
+  border: 1px solid var(--hud-line); border-right: 2px solid var(--hud); overflow-wrap: anywhere;
+  opacity: 0; transform: translateX(var(--from)) scale(0.94); filter: blur(3px);
+  transition: opacity .25s var(--ease), transform .25s var(--ease), filter .25s var(--ease); --ease: cubic-bezier(0.22, 1, 0.36, 1); }
+.lane.right .note { --from: -56px; border-right-width: 1px; border-left: 2px solid var(--hud); }
+.note.in { opacity: 1; transform: none; filter: none; transition-duration: .45s; }
+.note::before { content: ""; position: absolute; top: 50%; right: -22px; width: 20px; height: 1px; background: linear-gradient(90deg, var(--hud), transparent); }
+.lane.right .note::before { right: auto; left: -22px; transform: scaleX(-1); }
+.note .k { font: 600 0.68rem/1.3 var(--tech); letter-spacing: 0.16em; text-transform: uppercase; color: var(--hud); }
+.note .t { font-weight: 600; }
+.note .m { font-size: 0.78rem; color: var(--muted); }
+.note.ok { border-color: rgba(79, 240, 165, 0.4); } .note.ok .k { color: var(--ok); }
+.note.alert { border-color: var(--alert); background: linear-gradient(var(--alert-dim), var(--alert-dim)), var(--panel); }
+.note.alert .k { color: var(--alert); } .note.alert::before { background: linear-gradient(90deg, var(--alert), transparent); }
+@media (max-width: 900px) {
+  .stage { grid-template-columns: minmax(0, 1fr); min-height: 0; } .core-col { order: -1; }
+  .lane.left, .lane.right { justify-items: stretch; } .note { width: 100%; } .note::before { display: none; }
+}
+/* Leaving for another page and coming back: everything but the hologram fades while it flies (fly() below). */
+.holo { z-index: 5; transform-origin: 50% 44%; }
+.strip, .wake, .lane, .center, .wave, .say, .hint, .turns, .grid, .brief { transition: opacity .45s ease; }
+.away :is(.strip, .wake, .lane, .center, .wave, .say, .hint, .turns, .grid, .brief) { opacity: 0; transition-duration: .25s; }
+.wave { width: min(100%, 420px); height: 36px; display: block; }
 .say { margin: 0; min-height: 1.5em; text-align: center; color: var(--muted); }
 
 .hint { margin: 0; max-width: 46ch; text-align: center; font-size: 0.84rem; color: var(--muted); }
@@ -127,7 +141,7 @@ a { color: var(--hud); }
 .brief code { font: 0.86em var(--mono); color: var(--hud); }
 .lead { color: var(--muted); font-size: 0.86rem; }
 .lead p { margin: 0 0 2px; }
-@media (prefers-reduced-motion: reduce) { .spin-a, .spin-b, .spin-c, .pulse { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .note { transition: none !important; } }
 </style>
 
 <div class="hud" id="jarvis" data-state="idle">
@@ -137,6 +151,20 @@ a { color: var(--hud); }
   </header>
   <p class="bad" id="live-note" hidden>Live status is unavailable, so sessions waiting for you can't be shown.</p>
   <p class="wake" id="wake" hidden></p>
+
+  <div class="stage">
+    <ul class="lane left" id="lane-l" role="log" aria-label="From Jarvis"></ul>
+    <div class="core-col">
+      <div class="holo" aria-hidden="true"><canvas id="holo"></canvas></div>
+      <div class="center"><b>JARVIS</b><span id="core-word">Ready</span></div>
+      <canvas class="wave" id="wave" width="840" height="72" aria-hidden="true"></canvas>
+      <p class="say" id="jv-state" aria-live="polite">Starting the microphone…</p>
+      <p class="hint" id="hint">Say <b>"Jarvis"</b>, then your question. Try "Jarvis, what's running?", "Jarvis, show PartHub",
+        "Jarvis, open overview" or "Jarvis, read the briefing".</p>
+      <ul class="turns" id="jv-turns" aria-live="polite"></ul>
+    </div>
+    <ul class="lane right" id="lane-r" aria-hidden="true"></ul>
+  </div>
 
   <div class="grid">
     <div class="col">
@@ -150,28 +178,6 @@ a { color: var(--hud); }
         <ul class="list" id="running"></ul>
         <p class="empty" id="run-empty">Loading sessions…</p>
       </section>
-    </div>
-
-    <div class="core-col">
-      <div class="reactor" aria-hidden="true">
-        <svg viewBox="0 0 400 400" fill="none" stroke="currentColor">
-          <g class="r spin-a"><circle cx="200" cy="200" r="192" stroke-width="1" stroke-dasharray="2 7" opacity="0.7"/></g>
-          <g class="r" id="ticks" opacity="0.8"></g>
-          <g class="r spin-b"><circle cx="200" cy="200" r="150" stroke-width="7" stroke-dasharray="54 16" opacity="0.55"/></g>
-          <circle cx="200" cy="200" r="132" stroke-width="1" opacity="0.6"/>
-          <g class="r spin-c"><circle cx="200" cy="200" r="116" stroke-width="10" stroke-dasharray="180 549" stroke-linecap="butt"/>
-            <circle cx="200" cy="200" r="116" stroke-width="10" stroke-dasharray="60 669" stroke-dashoffset="-360" opacity="0.6"/></g>
-          <g class="r spin-a"><circle cx="200" cy="200" r="98" stroke-width="2" stroke-dasharray="1 5"/></g>
-          <g class="pulse"><circle cx="200" cy="200" r="84" stroke-width="2"/>
-            <circle cx="200" cy="200" r="84" fill="currentColor" fill-opacity="0.08" stroke="none"/></g>
-        </svg>
-        <div class="center"><b>JARVIS</b><span id="core-word">Ready</span></div>
-      </div>
-      <canvas class="wave" id="wave" width="840" height="88" aria-hidden="true"></canvas>
-      <p class="say" id="jv-state" aria-live="polite">Starting the microphone…</p>
-      <p class="hint" id="hint">Say <b>"Jarvis"</b>, then your question. Try "Jarvis, what's running?", "Jarvis, show PartHub",
-        "Jarvis, read the briefing" or "Jarvis, go home".</p>
-      <ul class="turns" id="jv-turns" aria-live="polite"></ul>
     </div>
 
     <div class="col">
@@ -195,6 +201,7 @@ a { color: var(--hud); }
     <p class="empty" id="br-none" hidden>No briefing yet. Ask Jarvis for one in Claude with the jarvis agent.</p>
   </section>
 </div>
+<script src="jarvis-orb.js"></script>
 <script>
 (() => {
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -209,19 +216,64 @@ const money = n => "$" + Math.round(n || 0).toLocaleString();
 const label = s => s.title || s.id.slice(0, 8);
 const $ = id => document.getElementById(id);
 
-// Clock and the reactor's tick ring.
+// Clock.
 function clock() {
   const d = new Date();
   $("clock").textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   $("date").textContent = d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
 }
 clock(); setInterval(clock, 1000);
-$("ticks").innerHTML = Array.from({ length: 120 }, (_, i) => {
-  const a = i * Math.PI / 60, long = i % 10 === 0, r1 = long ? 162 : 168, r2 = 176;
-  return `<line x1="${200 + r1 * Math.cos(a)}" y1="${200 + r1 * Math.sin(a)}" x2="${200 + r2 * Math.cos(a)}" y2="${200 + r2 * Math.sin(a)}" stroke-width="${long ? 2 : 1}"/>`;
-}).join("");
+// The hologram follows the microphone's loudness and Jarvis's state.
+const lvBuf = new Uint8Array(512);
+JarvisOrb($("holo"), { state: () => $("jarvis").dataset.state, level: () => {
+  if (!analyser) return 0;
+  analyser.getByteTimeDomainData(lvBuf);
+  let sum = 0; for (const v of lvBuf) sum += (v - 128) ** 2;
+  return Math.min(1, Math.sqrt(sum / lvBuf.length) / 128 * 6);
+} });
 
-// The wave under the core: the microphone's level while listening, a low idle line otherwise.
+// Leaving and coming back. The hologram shrinks to where shell.html draws its small one (CORNER: the middle and
+// the width of the sphere there), and on a return from another page it grows back from that corner.
+const CORNER = { x: 47, y: 53, w: 37 }, calm = matchMedia("(prefers-reduced-motion: reduce)");
+function fly(back) {
+  if (calm.matches) return Promise.resolve();
+  const h = $("holo").parentElement, t0 = performance.now();
+  if (back) setTimeout(() => $("jarvis").classList.remove("away"), 60); else $("jarvis").classList.add("away");
+  return new Promise(done => (function step() {
+    const p = Math.min(1, (performance.now() - t0) / 800), e = 1 - (1 - p) ** 4, k = back ? 1 - e : e;
+    h.style.transform = "";  // measured afresh each frame: the page under it may still be settling
+    const r = h.getBoundingClientRect();
+    if (k) h.style.transform = `translate(${(CORNER.x - r.left - r.width / 2) * k}px, ${(CORNER.y - r.top - r.height * 0.44) * k}px) scale(${1 + (CORNER.w / (r.width * 0.66) - 1) * k})`;
+    if (p < 1) requestAnimationFrame(step); else done();
+  })());
+}
+try { if (new URL(document.referrer).origin === location.origin && new URL(document.referrer).pathname !== "/" && !calm.matches) { $("jarvis").classList.add("away"); fly(true); } } catch { /* opened directly */ }
+addEventListener("pageshow", e => { if (e.persisted) fly(true); });  // back from the browser's page cache
+
+// Cards: one slides out of the hologram into a lane. A passing one goes back after 9s (left); one that needs you
+// stays until it is dealt with (right).
+const held = new Map();
+function card(lane, kind, k, t, m) {
+  const li = document.createElement("li");
+  li.className = "note " + kind;
+  li.innerHTML = `<span class="k">${esc(k)}</span><span class="t">${esc(t)}</span>` + (m ? `<span class="m">${esc(m)}</span>` : "");
+  $(lane).prepend(li);
+  setTimeout(() => li.classList.add("in"), 30);
+  return li;
+}
+const dismiss = li => { li.classList.remove("in"); setTimeout(() => li.remove(), 300); };
+function notify(kind, k, t, m) {
+  const li = card("lane-l", kind, k, t, m);
+  [...$("lane-l").children].slice(4).forEach(dismiss);
+  setTimeout(() => dismiss(li), 9000);
+}
+function hold(items) {
+  const keys = new Set(items.slice(0, 4).map(i => i.key));
+  for (const [key, li] of held) if (!keys.has(key)) { dismiss(li); held.delete(key); }
+  for (const i of items.slice(0, 4)) if (!held.has(i.key)) held.set(i.key, card("lane-r", "alert", i.k, i.t, i.m));
+}
+
+// The wave under the hologram: the microphone's level while listening, a low idle line otherwise.
 const wave = $("wave"), wctx = wave.getContext("2d");
 let analyser = null, waveRaf = 0;
 function drawWave() {
@@ -249,6 +301,7 @@ function addLog(what) {
   log.unshift({ at: hm(), what }); log.length = Math.min(log.length, 12);
   $("log-empty").hidden = true;
   $("log").innerHTML = log.map(l => `<li><span class="at">${esc(l.at)}</span><span>${esc(l.what)}</span></li>`).join("");
+  notify("", "Jarvis", what);
 }
 
 // Needs you: approvals (oldest first), then sessions waiting, then failed tests.
@@ -266,6 +319,9 @@ function drawNeeds() {
   const key = JSON.stringify([appr.map(a => [a.id, a.summary, a.cwd, a.extra, titles[a.session_id] || ""]), waiting.map(x => x.s.id), failed.map(x => x.t.repo + x.t.finished), spent.map(x => [x.id, x.use, x.allowance]), shareEnd]);
   if (key === apKey) return;
   apKey = key;
+  hold([...appr.map(a => ({ key: "a" + a.id, k: "Approval", t: (titles[a.session_id] || "A session") + " wants to run " + a.tool, m: String(a.summary || "").slice(0, 90) })),
+    ...waiting.map(({ s, w }) => ({ key: "w" + s.id, k: "Waiting for you", t: label(s), m: w.name })),
+    ...failed.map(({ w, t }) => ({ key: "f" + t.repo + t.finished, k: "Tests failed", t: w.name, m: t.repo }))]);
   $("ny-list").innerHTML = appr.map(a => `<li><span class="t">${esc(titles[a.session_id] || "Session " + a.session_id.slice(0, 8))} wants to run ${esc(a.tool)}</span>`
       + `<pre>${esc(a.summary)}</pre>`
       + `<span class="m">${a.cwd ? "In <span class=\"mono\">" + esc(a.cwd) + "</span> · " : ""}${esc(ago(a.at))}</span>`
@@ -311,6 +367,13 @@ async function tick() {
   const run = sess.filter(x => x.s.status === "running");
   $("live-note").hidden = d.live_ok !== false;
   idx = { ws: d.projects.filter(w => w.repos.length), sess, run };
+  const now = new Map(run.map(x => [x.s.id, x]));
+  if (!before) notify("ok", "Online", plural(run.length, "session") + " running", plural(idx.ws.length, "project"));
+  else {
+    for (const [id, x] of now) if (!before.has(id)) notify("ok", "Started", label(x.s), x.w.name);
+    for (const [id, x] of before) if (!now.has(id) && !waiting.some(y => y.s.id === id)) notify("", "Finished", label(x.s), x.w.name);
+  }
+  before = now;
   drawLeft();
   $("run-count").textContent = run.length ? String(run.length) : "";
   $("run-empty").hidden = run.length > 0;
@@ -320,7 +383,7 @@ async function tick() {
   drawNeeds();
 }
 // The left panel: every project as a gauge, or one project's latest sessions after "Jarvis, show <name>".
-let idx = { ws: [], sess: [], run: [] }, focus = null;
+let idx = { ws: [], sess: [], run: [] }, focus = null, before = null;
 function drawLeft() {
   const w = idx.ws.find(x => x.id === focus);
   if (w) {
@@ -402,6 +465,7 @@ async function speak(text) {
   awakeUntil = Date.now() + 8000;  // a follow-up needs no "Jarvis"
   setState("idle", "Go on, or wait for \"Jarvis\".");
 }
+const PAGES = { overview: "/overview", hierarchy: "/hierarchy", settings: "/settings", reels: "/reels/", skills: "/skills" };
 const norm = s => s.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
 async function command(text) {
   const t = norm(text);
@@ -414,6 +478,8 @@ async function command(text) {
   if (/^what (needs|is waiting for) (me|you)/.test(t)) return speak($("finding").textContent);
   const m = t.match(/^(?:show|open|go to|switch to) ?(?:me )?(.+)$/);  // Whisper sometimes runs words together
   if (m) {
+    const name = m[1].replace(/^the /, "").replace(/ ?(page|dashboard)$/, ""), page = PAGES[name];
+    if (page) { await speak("Opening " + name + "."); await fly(false); location.href = page; return; }
     const sq = s => norm(s).replace(/ /g, ""), want = sq(m[1].replace(/^the /, "").replace(/ ?project$/, ""));
     const w = idx.ws.find(x => sq(x.name) === want) || idx.ws.find(x => sq(x.name).includes(want) || want.includes(sq(x.name)));
     if (w) {
