@@ -36,6 +36,11 @@ def _week(day: int, hour: int) -> str:
     return f"{DAYS[day].capitalize()} {hour:02d}:00 UTC"
 
 
+def _label(names: dict, project: str) -> str:
+    """PartHub (parthub); a project that left the config is named by its id."""
+    return f"{names.get(project, 'Unassigned' if project == UNASSIGNED else project)} ({project})"
+
+
 def mac_offset() -> str:
     """The Mac's own UTC offset at this moment, as +HH:MM."""
     minutes = int(dt.datetime.now().astimezone().utcoffset().total_seconds() // 60)
@@ -101,12 +106,12 @@ def set_percent(plan, ctx, project, percent) -> bool:
         return False
     names = share.project_names(ctx)
     ids = list(names) + ([] if UNASSIGNED in names else [UNASSIGNED])
-    if project not in ids:
-        plan.note(f"No project has the id '{project}'. The ids are: {', '.join(ids)}.")
-        return False
-    new, label = None if percent is None else float(percent), f"{names.get(project, 'Unassigned')} ({project})"
+    new, label = None if percent is None else float(percent), _label(names, project)
     with closing(ctx.db()) as db, db:
         every = share.percents(db)
+        if project not in ids and not (new is None and project in every):   # the share of a project that left the config can still be removed
+            plan.note(f"No project has the id '{project}'. The ids are: {', '.join(ids)}.")
+            return False
         prev = every.get(project)
         plan.result = {"what": "percent", "project": project, "prev": prev, "new": new}
         if new == prev:
@@ -138,7 +143,7 @@ def undo_setting(entry: dict, apply: bool, out, ctx) -> bool:
         else:
             project = entry["project"]
             now, text = share.percents(db).get(project), _percent
-            label = f"{share.project_names(ctx).get(project, 'Unassigned')} ({project})"
+            label = _label(share.project_names(ctx), project)
         out(f"{pre(apply)}{label}: {text(now)} goes back to {text(prev)}" + ("" if now == new else " (it was changed again after this action)"))
         if apply:
             if what == "budget":

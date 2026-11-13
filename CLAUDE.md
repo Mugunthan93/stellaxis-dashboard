@@ -27,7 +27,7 @@ python3 collector/prune.py list --unused-days 30
 python3 collector/prune.py relocate <src> <dest>   # move a project folder (dry run without --apply)
 python3 collector/share.py show                           # the weekly share: this week's use for each project
 python3 collector/share.py budget <amount|none> [--apply] # the three settings are a dry run without --apply
-python3 collector/share.py week-start <day> <HH:MM> [--utc-offset +05:30] [--apply]
+python3 collector/share.py week-start <day> <HH:MM> [--utc-offset=+05:30] [--apply]
 python3 collector/share.py percent <project id> <percent|none> [--apply]
 ```
 
@@ -122,7 +122,9 @@ project has used all of its share. It never stops work: no hook, no block.
   `share.update` adds up every open week fresh from the hourly costs (a session that moves to another project takes its
   cost along, and nothing counts twice). A week that has ended is added up one last time and closed; a closed week
   never changes, also when Claude deletes old transcripts. A week with no collection at all gets no row. When Project
-  management gives no session (removed, or its offer failed), nothing changes.
+  management gives no session (removed, or its offer failed), nothing changes. When the clock is behind (a closed week
+  would end after now), nothing changes either. Known limit: the week that is running is not yet kept; if a transcript
+  is deleted before the week ends, its cost leaves that week.
 - After a change of the week start, the next collection cuts the running week at the new start (or takes it into the
   new week when the new start lies before it), adds the cut weeks up again and makes their warnings again. No hour is
   counted in two weeks.
@@ -137,7 +139,7 @@ project has used all of its share. It never stops work: no hook, no block.
   budget shows at once; `warned_at` is the stored warning.
 - The three actions each say one line, write the store, and add one manifest entry (`claude_management.share_setting`
   with `what`, `prev`, `new`), so `prune.py restore <stamp> --apply` puts the old value back. The same value again
-  writes nothing. Routes: `POST /api/share/budget` (`{"budget", "apply"}`), `/api/share/week-start`
+  writes nothing. A percent of a project that left the config can still be removed, by its id. Routes: `POST /api/share/budget` (`{"budget", "apply"}`), `/api/share/week-start`
   (`{"day", "time", "utc_offset"?, "apply"}`) and `/api/share/percent` (`{"project", "percent", "apply"}`); a refusal
   answers 400 with the sentence, a store that is down 503.
 

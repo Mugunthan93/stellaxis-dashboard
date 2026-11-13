@@ -3,7 +3,7 @@
 
   python3 share.py show
   python3 share.py budget <amount|none> [--apply]
-  python3 share.py week-start <day> <HH:MM> [--utc-offset +05:30] [--apply]
+  python3 share.py week-start <day> <HH:MM> [--utc-offset=+05:30] [--apply]
   python3 share.py percent <project id> <percent|none> [--apply]
 
 Every setting command is a dry run until --apply. An applied one can be undone with: python3 prune.py restore <stamp> --apply

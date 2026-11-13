@@ -226,6 +226,19 @@ class ActionsTest(ShareHome):
         r = self.act("set_percent", project="unassigned", percent=10)
         self.assertEqual(r["steps"], ["Unassigned (unassigned): no share becomes 10% of the weekly budget"])
 
+    def test_the_share_of_a_project_that_left_the_config_can_be_removed_and_is_named_by_its_id(self):
+        self.act("set_percent", project="parts", percent=40)
+        self.cfg["projects"] = self.cfg["projects"][1:]              # PartHub leaves the config
+        r = self.act("set_percent", project="parts", percent=10)
+        self.assertEqual((r["ok"], r["notes"]), (False, ["No project has the id 'parts'. The ids are: curl, unassigned."]))
+        r = self.act("set_percent", project="parts", percent=None)
+        self.assertEqual((r["ok"], r["steps"]), (True, ["parts (parts): 40% becomes no share"]))
+        self.assertEqual(self.percents(), {})
+        said = []
+        self.restore(r["manifest"], out=said.append)
+        self.assertEqual(said[-1].strip(), "parts (parts): no share goes back to 40%")
+        self.assertEqual(self.percents(), {"parts": 40.0})
+
     def test_a_percent_outside_0_to_100_or_an_unknown_project_is_refused(self):
         for bad in (101, -1, "40", True, float("nan")):
             r = self.act("set_percent", project="parts", percent=bad)
@@ -266,7 +279,7 @@ class ReaderTest(ShareHome):
     def warnings(self):
         return self.sql("SELECT week, project, at FROM claude_management_share_warnings ORDER BY week, project")
 
-    def warned_in_w1(self):                              # budget 10, parts 40% ($4.00): warned in W1 at the second pass
+    def warned_in_w1(self):                              # budget 10, parts 40% ($4.00): warned in W1 at the first pass
         self.act("set_budget", budget=10)
         self.act("set_percent", project="parts", percent=40)
         self.turn("a", self.parts, "2026-11-06T09:00:00Z", 4)
@@ -333,6 +346,24 @@ class ReaderTest(ShareHome):
         self.at("2026-11-13T12:00:00Z")
         self.collect()
         self.assertEqual(self.use(W1), {"parts": 3.0})
+
+    def test_a_clock_that_is_behind_changes_nothing(self):
+        self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)
+        self.at("2026-11-06T10:00:00Z")
+        self.collect()
+        self.turn("a", self.parts, "2026-11-13T09:00:00Z", 4)
+        self.at("2026-11-13T10:00:00Z")
+        self.collect()                                              # closes week 1
+        tables = ("weeks", "use", "warnings")
+        before = [self.sql(f"SELECT * FROM claude_management_share_{t} ORDER BY 1, 2") for t in tables]
+        self.assertEqual(self.weeks(), [(W1, W2, 1), (W2, "2026-11-19T21:00:00Z", 0)])
+        self.at("2001-01-01T00:00:00Z")                             # a Mac that starts with a reset clock
+        self.collect()
+        self.assertEqual([self.sql(f"SELECT * FROM claude_management_share_{t} ORDER BY 1, 2") for t in tables], before)
+        self.at("2026-11-13T11:00:00Z")                             # the clock is right again: the pass goes on
+        self.collect()
+        self.assertEqual((self.use(W1), self.use(W2)), ({"parts": 3.0}, {"parts": 4.0}))
+        self.assertEqual(self.sql("SELECT updated FROM claude_management_share_weeks WHERE starts = ?", W2), [("2026-11-13T11:00:00Z",)])
 
     def test_a_pass_after_a_long_gap_closes_the_old_week_and_makes_no_week_for_the_gap(self):
         self.turn("a", self.parts, "2026-11-06T09:00:00Z", 3)

@@ -121,7 +121,7 @@ def view(ctx, names: dict, now: dt.datetime) -> dict:
 def update(ctx, placed: list, now: dt.datetime) -> None:
     """The pass of one collection, in one transaction: add up the cost of each project in every open week and make the
     warnings. `placed` is what Project management lists as sessions; with none, nothing changes. A closed week is never
-    touched again. With the store down there is nothing to do and no error."""
+    touched again. With the store down, or the clock behind a closed week, there is nothing to do and no error."""
     if not placed:
         return
     try:
@@ -133,6 +133,8 @@ def update(ctx, placed: list, now: dt.datetime) -> None:
     with closing(db), db:
         plan, pct = setting(db), percents(db)
         start, end = (iso(t) for t in bounds(now, plan["day"], plan["hour"]))
+        if db.execute("SELECT 1 FROM claude_management_share_weeks WHERE starts > ? AND closed = 1 AND ends > ?", (start, stamp)).fetchone():
+            return   # a closed week cannot end after now: the clock is behind, and a pass would delete weeks that cannot be added up again
         for (week,) in db.execute("SELECT starts FROM claude_management_share_weeks WHERE starts > ?", (start,)).fetchall():
             for table in ("weeks", "use", "warnings"):
                 db.execute(f"DELETE FROM claude_management_share_{table} WHERE {'starts' if table == 'weeks' else 'week'} = ?", (week,))
