@@ -164,10 +164,10 @@ class E2E(unittest.TestCase):
         self.assertEqual(p["worktree_of"], "~/code/mesell")
         self.assertFalse(any("worktrees" in i["id"] for i in self.snap["items"]))
 
-    def test_workspace_index_holds_every_session(self):
+    def test_project_index_holds_every_session(self):
         def ids():
-            idx = json.loads((self.home / ".stellaxis" / "workspaces.json").read_text())
-            return {s["id"] for w in idx["workspaces"] for r in w["repos"] for b in r["branches"] for s in b["sessions"]}
+            idx = json.loads((self.home / ".stellaxis" / "projects.json").read_text())
+            return {s["id"] for w in idx["projects"] for r in w["repos"] for b in r["branches"] for s in b["sessions"]}
         n = len(self.snap["sessions"])
         self.assertGreater(n, 1)
         self.assertEqual(ids(), {s["id"] for s in self.snap["sessions"]})
@@ -186,6 +186,11 @@ class E2E(unittest.TestCase):
         st = json.loads((self.home / ".stellaxis" / "status.json").read_text())
         self.assertEqual(st["phase"], "idle")
         self.assertIn("last_snapshot", st)
+
+    def test_core_store(self):
+        stx = self.home / ".stellaxis"
+        self.assertTrue((stx / "stellaxis.db").is_file())
+        self.assertIsNone(json.loads((stx / "status.json").read_text())["core_error"])
 
     def test_usage(self):
         self.assertEqual(self.items["skill:user:foo"]["usage"]["calls"], 1)

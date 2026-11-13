@@ -1,7 +1,7 @@
 # Stellaxis design system
 
 The rules every dashboard page follows, taken from the pages as they are. Read this before changing
-UI. `dashboard/home.html`, `workspace.html`, `index.html`, `hierarchy.html`, `settings.html` and `skills.html` each
+UI. `dashboard/home.html`, `project.html`, `index.html`, `hierarchy.html`, `settings.html` and `skills.html` each
 carry the same tokens in `:root`; a colour or font changes in all six plus `shell.html`, or not at all. `/reels/` has its
 own Instagram-style look and is not covered here.
 

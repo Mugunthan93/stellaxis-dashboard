@@ -3,6 +3,7 @@
   python3 library.py harvest [--refresh]        download new repos named in the reel notes, rebuild the catalog
   python3 library.py catalog                    rebuild catalog.json offline (after installs, or new notes)
   python3 library.py search <words...>          best matches by name, description, use case, tags
+  python3 library.py match [words...]           skills that fit a whole message; with no words, the prompt hook
   python3 library.py show <id|name>             one skill: where it came from, its files, its SKILL.md
   python3 library.py install <id|name> [--project DIR] [--force]
 
@@ -10,7 +11,7 @@ Stdlib + git. Data lives in $SKILLS_HOME (default ~/Knowledge/skills): repos/<ow
 only the skill folders), repos.json (per-repo result), catalog.json (what the dashboard's /skills page reads).
 Downloaded skills are untrusted: nothing here runs any file from them; skills that ship scripts are flagged.
 """
-import argparse, concurrent.futures, datetime, json, os, re, shutil, subprocess, sys
+import argparse, concurrent.futures, datetime, json, math, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 HOME = Path(os.path.expanduser(os.environ.get("SKILLS_HOME", "~/Knowledge/skills")))
@@ -297,6 +298,90 @@ def search(words):
         print(f"    use case: {', '.join(s['use_cases']) or '-'}")
 
 
+# Words that say nothing about which skill fits: grammar, plus words nearly every request or skill uses.
+STOP = set("""the and for with that this from have has had not but are was were will would can could should you your
+our their them they she his her its into onto out about over under after before then than there here what when where
+which who whom why how all any some more most much many few lot very just also too only even still yet now new one two
+get got give make made let lets need want like use used using work works help please thank thanks does did done doing
+being been see look show tell say said know think try tried run add put set take keep going able way thing things
+something anything everything time today app apps project projects code file files claude skill skills session
+sessions message every each per may might must shall yes okay sure find write end fix page
+create build full whole complete current simple good better best great nice check verify trigger change update""".split())
+SUFFIXES = ("ions", "ion", "ing", "ed", "es", "s", "e")
+
+
+def stems(text):
+    """Lower-case word roots worth matching on: 'animations', 'animate' and 'animated' all become 'animat'."""
+    out = []
+    for w in re.findall(r"[a-z][a-z0-9]{2,}", text.lower()):
+        if w in STOP:
+            continue
+        for suf in SUFFIXES:
+            if w.endswith(suf) and len(w) - len(suf) >= 3:
+                w = w[:-len(suf)]
+                break
+        if w not in STOP:
+            out.append(w)
+    return out
+
+
+def match(text, limit=3):
+    """Skills that fit a whole message, best first: [(skill, matched words)]. Rare words count for more than common
+    ones, a word in the skill's name counts most, and a skill needs two matching words (or its own name)."""
+    words = set(stems(text))
+    cat = skills()
+    if not words or not cat:
+        return []
+    # name and description only: tags and use cases come from the reel, so a whole repo shares them
+    bags = [(s, set(stems(s["name"].replace("-", " "))), set(stems(s["description"]))) for s in cat]
+    df = {}
+    for _, name, desc in bags:
+        for w in words & (name | desc):
+            df[w] = df.get(w, 0) + 1
+    common = max(5, len(cat) * 0.3)
+    idf = {w: math.log(1 + len(cat) / n) for w, n in df.items() if n <= common}
+    best = {}
+    for s, name, desc in bags:
+        hit = {w: 5 if w in name else 2 for w in idf if w in name or w in desc}
+        if len(hit) < 2 and not (len(name) > 1 and name <= words):
+            continue
+        score = sum(idf[w] * weight for w, weight in hit.items()) * (1.8 if s["installed_globally"] else 1)  # already usable, so offer it first
+        if s["path"].startswith(".") or "/." in s["path"]:
+            score *= 0.4  # a repo's own maintenance skills (.agents/, .claude/), rarely what another project wants
+        if score > best.get(s["name"], (0,))[0]:
+            best[s["name"]] = (score, s, sorted(hit))
+    ranked = sorted(best.values(), key=lambda x: (-x[0], x[1]["name"]))
+    return [(s, hit) for score, s, hit in ranked[:limit] if score >= ranked[0][0] * 0.6]
+
+
+def match_lines(found):
+    """One line per match. Only the name, id and flags: descriptions are third-party text and stay out of a session."""
+    lines = []
+    for s, hit in found:
+        name = re.sub(r"[^A-Za-z0-9_.-]", "", s["name"])[:60]
+        if s["installed_globally"]:
+            how = "installed in every session: use it with the Skill tool"
+        else:
+            how = "in the library: install with the skill-library skill" + (
+                "; ships scripts, so name them and ask the owner first" if s["has_scripts"] else "")
+        lines.append(f"- {name} [{s['id']}] ({how}). Matched: {', '.join(hit)}")
+    return lines
+
+
+def prompt_hook():
+    """UserPromptSubmit hook: read the hook's JSON on stdin and hand the session the skills that fit the message.
+    Says nothing when nothing fits, and never fails the prompt."""
+    try:
+        text = str(json.load(sys.stdin).get("prompt") or "")
+        found = [] if text.startswith("/") else match(text)
+        if found:
+            note = ("Skill Library: skills that may fit this message, from a keyword match. Use one only if it really "
+                    "fits the task; otherwise ignore this note.\n" + "\n".join(match_lines(found)))
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": note}}))
+    except Exception:
+        pass
+
+
 def show(key):
     s = find(key)
     root = repo_dir(s["repo"]) / s["path"]
@@ -343,6 +428,7 @@ def main():
     h = sub.add_parser("harvest"); h.add_argument("--refresh", action="store_true")
     sub.add_parser("catalog")
     s = sub.add_parser("search"); s.add_argument("words", nargs="+")
+    m = sub.add_parser("match"); m.add_argument("words", nargs="*")
     sh = sub.add_parser("show"); sh.add_argument("key")
     i = sub.add_parser("install"); i.add_argument("key"); i.add_argument("--project"); i.add_argument("--force", action="store_true")
     a = ap.parse_args()
@@ -352,6 +438,8 @@ def main():
         build_catalog()
     elif a.cmd == "search":
         search(a.words)
+    elif a.cmd == "match":  # with words: print the matches; without: act as the UserPromptSubmit hook
+        print("\n".join(match_lines(match(" ".join(a.words)))) or "No match.") if a.words else prompt_hook()
     elif a.cmd == "show":
         show(a.key)
     else:

@@ -3,16 +3,26 @@
 Usage: python3 build_dashboard.py   (stdlib only; read-only on the notes)
 Open with: open ~/Knowledge/reels/dashboard.html
 """
-import base64, glob, html, json, os, re
+import base64, glob, html, json, os, re, subprocess
 
 R = os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels"))  # the notes; code lives in the repo
 TOPICS = ["Claude Code & skills", "AI coding tools", "AI agents & LLM apps", "Models & research",
           "AI security", "AI for design & UI", "AI industry & trends"]
+# A second set of notes (REELS_HOME elsewhere) names itself in $REELS_HOME/.site.json: {"title", "avatar", "topics"}.
+try:
+    with open(os.path.join(R, ".site.json"), encoding="utf-8") as _f:
+        SITE = json.load(_f)
+except (OSError, ValueError):
+    SITE = {}
+TITLE, AVATAR, TOPICS = SITE.get("title", "AI Reel Knowledge"), SITE.get("avatar", "AI"), SITE.get("topics", TOPICS)
 
 
 def read(name):
     p = os.path.join(R, name)
-    return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+    if not os.path.exists(p):
+        return ""
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
 
 NOTE_TAG = re.compile(r'</?(?:details|summary)>|</a>|<a href="https://[^"<>\s]+">'
@@ -92,7 +102,8 @@ def md(text):
 
 
 def parse_note(path):
-    raw = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
     fm, body = {}, raw
     if raw.startswith("---"):
         head, body = raw[3:].split("\n---\n", 1)
@@ -272,7 +283,7 @@ def main():
     i_acts = icon('<rect x="3" y="3" width="18" height="18" rx="4"/><path d="m8 12 3 3 5-6"/>')
     i_x = icon('<path d="M6 6l12 12M18 6 6 18"/>')
 
-    head = """<title>AI Reel Knowledge</title>
+    head = f"""<title>{html.escape(TITLE)}</title>
 <meta name="claude:viewport-fit-sides" content="cover">"""
     style = """<style>
 /* Instagram's layout language (profile header, story row, 3-column 4:5 grid, post view, tab bar) on our own content.
@@ -498,7 +509,7 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
     content = f"""<nav class="tabs" aria-label="Sections">{tab('reels', i_grid, 'Reels')}{tab('next', i_next, 'Next')}{tab('projects', i_proj, 'Projects')}{tab('actions', i_acts, 'Actions')}</nav>
 <main>
 <section data-v="reels" id="reels">
-<header class="profile"><div class="avatar" aria-hidden="true">AI</div><h1>AI Reel Knowledge</h1>
+<header class="profile"><div class="avatar" aria-hidden="true">{html.escape(AVATAR)}</div><h1>{html.escape(TITLE)}</h1>
 <ul class="stats"><li><a href="#reels"><b>{len(notes)}</b> reels</a></li><li><a href="#actions"><b>{len(open_actions)}</b> to try</a></li><li><a href="#projects"><b>{len(proj_cards)}</b> projects</a></li></ul>
 <p class="bio">What your saved reels add up to. Updated <span style="white-space:nowrap">{last_date}</span>.</p></header>
 <div class="storyrow" aria-label="What's changing in AI">{''.join(stories)}</div>
@@ -536,23 +547,37 @@ dialog::backdrop { background:rgba(0,0,0,.65) }
                "trends": [plain_text(m) for m in re.findall(r"^- \*\*(.+?)\*\*", trends, re.M)],
                "projects": proj_rows,
                "artifact_url": read(".tools/artifact_url.txt").strip()}
-    open(os.path.join(R, "summary.json"), "w", encoding="utf-8").write(json.dumps(summary, indent=1, ensure_ascii=False))
+    with open(os.path.join(R, "summary.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(summary, indent=1, ensure_ascii=False))
 
     # Local copy is a full document; the artifact copy is a fragment (the publisher adds the skeleton).
     local = f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n{head}\n{style}</head><body>\n{content}</body></html>\n'
-    open(os.path.join(R, "dashboard.html"), "w", encoding="utf-8").write(local)
+    with open(os.path.join(R, "dashboard.html"), "w", encoding="utf-8") as f:
+        f.write(local)
     os.makedirs(os.path.join(R, ".tools", "artifact"), exist_ok=True)
     # Artifact copy embeds the covers as data: URIs so it is one self-contained file.
     # A cover can appear several times, so only its first <img> carries the bytes; a small script fills the rest.
     seen = set()
+    def small(path):
+        """A 320px-wide copy of a cover, made once with macOS sips: full covers put the page over the 16MB limit."""
+        out = os.path.join(R, "images", ".small", os.path.basename(path))
+        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(path):
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            done = subprocess.run(["/usr/bin/sips", "--resampleWidth", "320", "-s", "format", "jpeg", "-s", "formatOptions", "45", path, "--out", out], capture_output=True)
+            if done.returncode or not os.path.exists(out):
+                return path
+        return out
     def embed(m):
         if m.group(1) in seen:
             return f'data-from="{m.group(1)}"'
         seen.add(m.group(1))
-        return f'data-cover="{m.group(1)}" src="data:image/jpeg;base64,' + base64.b64encode(open(os.path.join(R, m.group(1)), "rb").read()).decode() + '"'
+        with open(small(os.path.join(R, m.group(1))), "rb") as f:
+            data = f.read()
+        return f'data-cover="{m.group(1)}" src="data:image/jpeg;base64,' + base64.b64encode(data).decode() + '"'
     art = re.sub(r'src="(images/[\w-]+\.jpg)"', embed, content)
     art += """<script>document.querySelectorAll('img[data-from]').forEach(function (i) { i.src = document.querySelector('img[data-cover="' + i.dataset.from + '"]').src; });</script>\n"""
-    open(os.path.join(R, ".tools", "artifact", "index.html"), "w", encoding="utf-8").write(f"{head}\n{style}\n{art}")
+    with open(os.path.join(R, ".tools", "artifact", "index.html"), "w", encoding="utf-8") as f:
+        f.write(f"{head}\n{style}\n{art}")
     print(f"dashboard.html + .tools/artifact/index.html: {len(notes)} notes, {len(open_actions)} open actions")
 
 

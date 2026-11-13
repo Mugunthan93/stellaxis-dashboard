@@ -1,10 +1,13 @@
-"""Command centre: group folders into configured workspaces.
+"""Command centre: group folders into configured projects.
 
-A workspace is {"id", "name", "folders": [path]}; a path belongs to the first workspace with a folder that
+A project is {"id", "name", "repos": [path]}; a path belongs to the first project with a repo that
 is the path itself or a parent of it (whole path components, so ph-admin-old is not under ph-admin).
+A path in no project belongs to UNASSIGNED.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -18,31 +21,35 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import settings_api
+from core import util
+from core.server import ApiError, host_ok, read_body, send_json
 
+UNASSIGNED = "unassigned"
+INDEX_FILE = "projects.json"
 
 def _norm(p: str) -> Path:
     return Path(os.path.normpath(os.path.expanduser(p)))
 
 
-def _entries(wss) -> list[dict]:
-    """The usable config workspaces: a config entry with no id is skipped."""
-    return [w for w in wss if isinstance(w, dict) and isinstance(w.get("id"), str) and w["id"]] if isinstance(wss, list) else []
+def _entries(entries) -> list[dict]:
+    """The usable config projects: a config entry with no id is skipped."""
+    return [e for e in entries if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"]] if isinstance(entries, list) else []
 
 
-def _folders(w: dict) -> list[str]:
-    fs = w.get("folders")
-    return [f for f in fs if isinstance(f, str)] if isinstance(fs, list) else []
+def _repos(p: dict) -> list[str]:
+    rs = p.get("repos")
+    return [r for r in rs if isinstance(r, str)] if isinstance(rs, list) else []
 
 
-def assign(path: str, workspaces: list[dict]) -> str:
+def assign(path: str, projects: list[dict]) -> str:
+    """The id of the project this path belongs to, else UNASSIGNED."""
     p = _norm(path)
-    for w in _entries(workspaces):
-        for f in _folders(w):
-            root = _norm(f)
+    for e in _entries(projects):
+        for r in _repos(e):
+            root = _norm(r)
             if p == root or root in p.parents:
-                return w["id"]
-    return "other"
+                return e["id"]
+    return UNASSIGNED
 
 
 def app_records(base: Path) -> dict[str, dict]:
@@ -103,19 +110,19 @@ def repo_states(paths: list[str]) -> dict[str, dict]:
     return {p: _STATE_CACHE[p][1] for p in paths}
 
 
-def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str | None = None) -> dict:
-    """Every session grouped workspace > repo > branch, sessions newest first; `now` (ISO) is for tests."""
-    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
+def build_index(sessions: list, folders: list, app: dict, cfg: dict, now: str | None = None) -> dict:
+    """Every session grouped project > repo > branch, sessions newest first; `now` (ISO) is for tests."""
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else util.now()
     cut = (now_dt - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
-    wss = _entries(cfg.get("workspaces"))
-    by_path = {p["path"]: p for p in projects}
-    tree: dict = {}  # workspace id > repo path > branch > [session]
+    entries = _entries(cfg.get("projects"))
+    by_path = {f["path"]: f for f in folders}
+    tree: dict = {}  # project id > repo path > branch > [session]
     cost = {}
     for s in sessions:
         proj = by_path.get(s["project"]) or {}
         repo = proj.get("worktree_of") or s["project"].split("/.claude/worktrees/")[0]  # deleted worktrees have no worktree_of
         a = app.get(s["id"]) or {}
-        wid = assign(repo, wss)
+        wid = assign(repo, entries)
         row = {"id": s["id"], "title": a.get("title") or "", "first_ts": s.get("first_ts"), "last_ts": s.get("last_ts"),
                "cost": s.get("cost") or 0, "app_id": a.get("app_id"), "archived": bool(a.get("archived")),
                "path": proj.get("abs") or s["project"]}
@@ -123,14 +130,14 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
         tree.setdefault(wid, {}).setdefault(repo, {}).setdefault(branch, []).append(row)
         if (s.get("last_ts") or "")[:19] >= cut:
             cost[wid] = cost.get(wid, 0) + row["cost"]
-    for w in wss:  # a configured folder with no sessions is a repo with no branches, so it can still be reached
-        for f in _folders(w):
-            root, repos = _norm(f), tree.setdefault(assign(f, wss), {})
+    for e in entries:  # a configured repo with no sessions is a repo with no branches, so it can still be reached
+        for f in _repos(e):
+            root, repos = _norm(f), tree.setdefault(assign(f, entries), {})
             if root.is_dir() and not any(root == _norm(r) or root in _norm(r).parents for r in repos):
                 repos[f] = {}
     states = repo_states([str(_norm(r)) for repos in tree.values() for r in repos])
     out = []
-    for w in [*wss, {"id": "other", "name": "Other"}]:
+    for w in [*entries, {"id": UNASSIGNED, "name": "Unassigned"}]:
         repos = []
         for repo, branches in tree.get(w["id"], {}).items():
             bl = []
@@ -142,7 +149,7 @@ def build_index(sessions: list, projects: list, app: dict, cfg: dict, now: str |
             repos.append({"path": repo, "abs": str(ab), "exists": ab.exists(), "state": states[str(ab)], "branches": bl})
         out.append({"id": w["id"], "name": w.get("name") or w["id"], "cost_30d": round(cost.get(w["id"], 0), 2),
                     "repos": repos})
-    return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "workspaces": out}
+    return {"generated_at": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "projects": out}
 
 
 def live(claude_bin: str, timeout: float = 5) -> list[dict] | None:
@@ -166,26 +173,47 @@ def status_of(row: dict | None) -> str:
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MAX_PROMPT = 4000
-ApiError = settings_api.ApiError
 
 
 def _bin(cfg: dict) -> str:
     return os.path.expanduser(cfg.get("claude_bin") or "~/.local/bin/claude")
 
 
+_PLACES: contextvars.ContextVar = contextvars.ContextVar("stellaxis_places", default=None)  # (home, claude_dir) while a component call runs
+
+
+@contextlib.contextmanager
+def at(ctx):
+    """Inside it the two folders are the ctx's; outside it they come from the environment."""
+    token = _PLACES.set((Path(ctx.home), Path(ctx.claude_dir)))
+    try:
+        yield
+    finally:
+        _PLACES.reset(token)
+
+
 def _claude_dir() -> Path:
+    places = _PLACES.get()
+    if places:
+        return places[1]
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
 
 
 def _home() -> Path:
+    places = _PLACES.get()
+    if places:
+        return places[0]
     return Path(os.environ.get("STELLAXIS_HOME", "~/.stellaxis")).expanduser()
+
+
+index_fallback = None  # set by the component: (home) -> dict | None, the index from an older file; used only while INDEX_FILE cannot be read
 
 
 def _index() -> dict:
     try:
-        return json.loads((_home() / "workspaces.json").read_text())
+        return json.loads((_home() / INDEX_FILE).read_text())
     except (OSError, ValueError):
-        return {"workspaces": []}
+        return (index_fallback and index_fallback(_home())) or {"projects": []}
 
 
 def _prompt(body: dict) -> str:
@@ -305,7 +333,7 @@ def message(session_id: str, prompt: str, cfg: dict) -> dict:
             raise ApiError(409, "this session is open but has no message socket; open it to talk to it")
         relay(sock, prompt + RELAY_NOTE, cfg)
         return {"via": "relay"}
-    path = next((s.get("path") for w in _index().get("workspaces", []) for r in w.get("repos", [])
+    path = next((s.get("path") for w in _index().get("projects", []) for r in w.get("repos", [])
                  for b in r.get("branches", []) for s in b.get("sessions", []) if s.get("id") == session_id), None)
     folder = _norm(path) if path else None
     if not folder or not folder.is_dir():
@@ -338,13 +366,13 @@ def last_reply(session_id: str) -> dict:
 
 def _new_session(body: dict, cfg: dict) -> dict:
     prompt = _prompt(body)
-    w = next((w for w in _index().get("workspaces", []) if w.get("id") == body.get("workspace")), None)
+    w = next((w for w in _index().get("projects", []) if w.get("id") == body.get("project")), None)
     if not w:
-        raise ApiError(404, "unknown workspace")
+        raise ApiError(404, "unknown project")
     folder = body.get("folder")
     ok = {_norm(r["path"]) for r in w.get("repos", []) if r.get("path") and _norm(r["path"]).is_dir()}
     if not isinstance(folder, str) or _norm(folder) not in ok:
-        raise ApiError(403, "that folder is not one of this workspace's repos")
+        raise ApiError(403, "that folder is not one of this project's repos")
     return start(str(_norm(folder)), prompt, cfg)
 
 
@@ -463,7 +491,7 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
     if not (path == "/api/approvals" and method == "GET" or m and method == "POST"):
         return False
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if method == "GET":
             out = pending()
@@ -472,7 +500,7 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
                 raise ApiError(400, "session id must be a uuid")
             if not sess and not APPROVAL_ID_RE.fullmatch(m.group(1)):
                 raise ApiError(404, "no such request")
-            body = settings_api.read_body(handler)
+            body = read_body(handler)
             if sess:
                 on = _bool(body, "on")
                 if on:
@@ -481,24 +509,27 @@ def _approvals(handler, method: str, path: str, cfg: dict) -> bool:
             else:
                 decide(m.group(1), _bool(body, "allow"))
             out = {}
-        settings_api._send(handler, 200, out)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
-# --- task lists: $STELLAXIS_HOME/tasks/<workspace id>.md; "- [ ] text" / "- [x] text" lines, every other line is left alone ---
+# --- task lists: $STELLAXIS_HOME/tasks/<project id>.md; "- [ ] text" / "- [x] text" lines, every other line is left alone ---
 TASK_RE = re.compile(r"- \[([ x])\] (.*?)(\r?\n)?")
 MAX_TASK = 500
 _TASK_LOCK = threading.Lock()  # one read-modify-write at a time
 
 
-def _task_file(ws: str) -> Path:
-    if not isinstance(ws, str) or not re.fullmatch(r"[\w-]+", ws):
-        raise ApiError(404, "unknown workspace")
-    return _home() / "tasks" / (ws + ".md")
+def _task_file(pid: str) -> Path:
+    if not isinstance(pid, str) or not re.fullmatch(r"[\w-]+", pid):
+        raise ApiError(404, "unknown project")
+    d = _home() / "tasks"
+    if pid == UNASSIGNED and not (d / (pid + ".md")).exists() and (d / "other.md").exists():
+        return d / "other.md"  # the list from before the group was renamed, used until it is moved
+    return d / (pid + ".md")
 
 
 def _task_raw(f: Path) -> bytes:
@@ -524,13 +555,13 @@ def _task_rows(lines: list[str]) -> list[dict]:
     return rows
 
 
-def read_tasks(ws: str) -> list[dict]:
-    return _task_rows(_task_lines(_task_raw(_task_file(ws))))
+def read_tasks(pid: str) -> list[dict]:
+    return _task_rows(_task_lines(_task_raw(_task_file(pid))))
 
 
-def write_task(ws: str, op: dict) -> list[dict]:
+def write_task(pid: str, op: dict) -> list[dict]:
     """op: {"add": text}, {"toggle": line, "expect": text} or {"remove": line, "expect": text}; line is 1-based."""
-    f = _task_file(ws)
+    _task_file(pid)  # a bad project id is refused here; the file is chosen again under the lock
     kinds = [k for k in ("add", "toggle", "remove") if k in op]
     if len(kinds) != 1:
         raise ApiError(400, "send one of add, toggle or remove")
@@ -544,6 +575,7 @@ def write_task(ws: str, op: dict) -> list[dict]:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1 or not isinstance(op.get("expect"), str):
             raise ApiError(400, f"send {{\"{kind}\": line, \"expect\": text}}")
     with _TASK_LOCK:
+        f = _task_file(pid)
         f.parent.mkdir(parents=True, exist_ok=True)
         for _ in range(2):  # another program may edit the file between our read and our replace: redo once
             raw = _task_raw(f)
@@ -573,23 +605,23 @@ def write_task(ws: str, op: dict) -> list[dict]:
         raise ApiError(409, "the task file keeps changing; try again")
 
 
-def _tasks(handler, method: str, ws: str, cfg: dict) -> bool:
-    """GET and POST /api/workspaces/<id>/tasks; <id> must be a configured workspace or `other`."""
+def _tasks(handler, method: str, pid: str, cfg: dict) -> bool:
+    """GET and POST /api/projects/<id>/tasks; <id> must be a configured project or UNASSIGNED."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        if ws != "other" and not any(isinstance(w, dict) and w.get("id") == ws for w in cfg.get("workspaces") or []):
-            raise ApiError(404, "unknown workspace")
-        out = read_tasks(ws) if method == "GET" else write_task(ws, settings_api.read_body(handler))
-        settings_api._send(handler, 200, out)
+        if pid != UNASSIGNED and not any(isinstance(p, dict) and p.get("id") == pid for p in cfg.get("projects") or []):
+            raise ApiError(404, "unknown project")
+        out = read_tasks(pid) if method == "GET" else write_task(pid, read_body(handler))
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
-# --- plans and routines: docs plan files in a workspace's repos, and <claude dir>/scheduled-tasks/<name>/SKILL.md ---
+# --- plans and routines: docs plan files in a project's repos, and <claude dir>/scheduled-tasks/<name>/SKILL.md ---
 PLAN_DIRS = ("docs/plans", "docs/superpowers/plans")
 MAX_PLANS = 200
 
@@ -623,10 +655,10 @@ def plans(repos: list[str]) -> list[dict]:
             for m, repo, f in found[:MAX_PLANS]]
 
 
-def routines(ws: dict, cfg: dict) -> list[dict]:
-    """{"name", "description"} for each routine the workspace lists whose SKILL.md exists; frontmatter is read line by line."""
+def routines(project: dict, cfg: dict) -> list[dict]:
+    """{"name", "description"} for each routine the project lists whose SKILL.md exists; frontmatter is read line by line."""
     out = []
-    for name in ws.get("routines") or []:
+    for name in project.get("routines") or []:
         if not isinstance(name, str) or not re.fullmatch(r"[\w-]+", name):
             continue
         try:
@@ -645,21 +677,21 @@ def routines(ws: dict, cfg: dict) -> list[dict]:
     return out
 
 
-def _work(handler, ws: str, cfg: dict) -> bool:
-    """GET /api/workspaces/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured workspace or `other`."""
+def _work(handler, pid: str, cfg: dict) -> bool:
+    """GET /api/projects/<id>/work: {"plans", "routines", "tests"}; <id> must be a configured project or UNASSIGNED."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
-        if ws != "other" and not w:
-            raise ApiError(404, "unknown workspace")
-        entry = next((e for e in _index().get("workspaces", []) if e.get("id") == ws), {})
+        w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
+        if pid != UNASSIGNED and not w:
+            raise ApiError(404, "unknown project")
+        entry = next((e for e in _index().get("projects", []) if e.get("id") == pid), {})
         repos = [r["abs"] for r in entry.get("repos", []) if isinstance(r.get("abs"), str) and _norm(r["abs"]).is_dir()]
-        settings_api._send(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
+        send_json(handler, 200, {"plans": plans(repos), "routines": routines(w or {}, cfg), "tests": test_results(w or {})})
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
@@ -676,9 +708,9 @@ def _test_file(repo: str) -> Path:
     return _home() / "test-results" / (hashlib.sha1(str(_norm(repo)).encode()).hexdigest()[:16] + ".json")
 
 
-def _test_argv(repo: str, ws: dict) -> list[str] | None:
+def _test_argv(repo: str, project: dict) -> list[str] | None:
     """The configured command for this repo (keys compared after expanduser/normpath), or None."""
-    for k, v in (ws.get("tests") or {}).items():
+    for k, v in (project.get("tests") or {}).items():
         if isinstance(k, str) and _norm(k) == _norm(repo) and isinstance(v, list) and v and all(isinstance(a, str) for a in v):
             return v
     return None
@@ -750,9 +782,9 @@ def _run_one(argv: list[str], repo: str, f: Path) -> None:
             _RUNNING.pop(f.name, None)
 
 
-def run_tests(repo: str, ws: dict) -> dict:
-    """Start the configured test command for `repo` (a workspace dict with "tests"). 403 if not configured, 409 if running."""
-    argv = _test_argv(repo, ws)
+def run_tests(repo: str, project: dict) -> dict:
+    """Start the configured test command for `repo` (a project dict with "tests"). 403 if not configured, 409 if running."""
+    argv = _test_argv(repo, project)
     if argv is None:
         raise ApiError(403, "no test command is configured for this repo")
     f = _test_file(repo)
@@ -769,11 +801,11 @@ def run_tests(repo: str, ws: dict) -> dict:
     return {"started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
-def test_results(ws: dict) -> list[dict]:
+def test_results(project: dict) -> list[dict]:
     """One row per configured repo: {"repo", "running", "ok" (None before any run), "finished", "tail"}."""
     out = []
-    for repo in (ws.get("tests") or {}):
-        if _test_argv(repo, ws) is None:
+    for repo in (project.get("tests") or {}):
+        if _test_argv(repo, project) is None:
             continue
         f = _test_file(repo)
         with _RUN_LOCK:
@@ -787,271 +819,78 @@ def test_results(ws: dict) -> list[dict]:
     return out
 
 
-def _test_run(handler, ws: str, cfg: dict) -> bool:
-    """POST /api/workspaces/<id>/tests/run {"repo"}: the command comes from config only."""
+def _test_run(handler, pid: str, cfg: dict) -> bool:
+    """POST /api/projects/<id>/tests/run {"repo"}: the command comes from config only."""
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
-        w = next((w for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("id") == ws), None)
+        w = next((w for w in cfg.get("projects") or [] if isinstance(w, dict) and w.get("id") == pid), None)
         if not w:
-            raise ApiError(404, "unknown workspace")
-        repo = settings_api.read_body(handler).get("repo")
+            raise ApiError(404, "unknown project")
+        repo = read_body(handler).get("repo")
         if not isinstance(repo, str) or not repo or "\0" in repo:
             raise ApiError(400, "repo must be a path")
-        settings_api._send(handler, 200, run_tests(repo, w))
+        send_json(handler, 200, run_tests(repo, w))
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
-def _jarvis(handler) -> bool:
-    """GET /api/jarvis: the last briefing the Jarvis agent wrote, {"text", "written"}; both null when there is none."""
-    try:
-        if not settings_api.host_ok(handler):
-            raise ApiError(403, "only same-origin localhost requests are answered")
-        p = _home() / "jarvis" / "briefing.md"
-        try:
-            with p.open("rb") as f:
-                text = f.read(200_000).decode("utf-8", "replace")
-            written = datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()
-        except FileNotFoundError:
-            text = written = None
-        settings_api._send(handler, 200, {"text": text, "written": written})
-    except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
-    except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
-    return True
-
-
-# --- asking Jarvis: speech > ffmpeg (16 kHz wav) > whisper-cli > a headless Claude that may only read ---
-MAX_AUDIO = 10 * 1024 * 1024
-_ASK_LOCK = threading.Lock()  # one question at a time; the Mac is often busy
-JARVIS_ASK = ("You are Jarvis, the owner's assistant for every project on this Mac. The user message is what the "
-              "owner just asked, typed or heard by speech recognition, so allow for mishearing. Answer from the "
-              "briefing and status below; read files (session transcripts under ~/.claude/projects, repos under "
-              "~/code) only when those don't cover it. Your answer is read aloud: one to four short, plain "
-              "sentences, no Markdown, no lists. Say so when you don't know. You can only read, so never say you "
-              "did or changed anything.")
-
-
-def _tool(cfg: dict, key: str, default: str) -> str:
-    return os.path.expanduser(cfg.get(key) or default)
-
-
-def transcribe(audio: bytes, cfg: dict) -> str:
-    """Text Whisper heard in a recording (any format ffmpeg reads); "" when it heard nothing."""
-    with tempfile.TemporaryDirectory() as d:
-        src, wav = Path(d) / "in", Path(d) / "in.wav"
-        src.write_bytes(audio)
-        _dbg = _home() / "jarvis" / "heard"; _dbg.mkdir(parents=True, exist_ok=True)  # TEMP: diagnosing blank text
-        (_dbg / f"{int(time.time())}.wav").write_bytes(audio)
-        try:
-            subprocess.run([_tool(cfg, "ffmpeg_bin", "/opt/homebrew/bin/ffmpeg"), "-nostdin", "-loglevel", "error",
-                            "-i", str(src), "-ar", "16000", "-ac", "1", str(wav)],
-                           capture_output=True, timeout=30, check=True)
-            r = subprocess.run([_tool(cfg, "whisper_bin", "/opt/homebrew/bin/whisper-cli"),
-                                "-m", _tool(cfg, "whisper_model", "~/.stellaxis/models/ggml-base.en.bin"),
-                                "-f", str(wav), "-nt", "-np", "-l", "en", "--prompt",  # names it would mishear
-                                ", ".join(["Jarvis", "Stellaxis", *(str(w.get("name")) for w in cfg.get("workspaces") or [] if isinstance(w, dict) and w.get("name"))])],
-                               capture_output=True, text=True, timeout=60, check=True)
-        except (OSError, subprocess.SubprocessError) as e:
-            raise ApiError(502, f"couldn't turn the recording into text: {e}")
-    text = " ".join(r.stdout.split())
-    return "" if re.fullmatch(r"(\[[^\]]*\]|\([^)]*\)|\s)*", text) else text  # [BLANK_AUDIO], (silence)
-
-
-def _ask_context(cfg: dict) -> str:
-    """The latest briefing, the last 7 days of sessions with live status, and open approvals, for Jarvis."""
-    out = []
-    try:
-        out.append("# Latest briefing\n" + (_home() / "jarvis" / "briefing.md").read_text()[:20000])
-    except OSError:
-        out.append("# Latest briefing\nNone written yet.")
-    status = {a.get("sessionId"): a.get("status") for a in live(_bin(cfg)) or [] if isinstance(a, dict)}
-    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    rows = []
-    for w in _index().get("workspaces", []):
-        for r in w.get("repos", []):
-            for b in r.get("branches", []):
-                for s in b.get("sessions", []):
-                    if str(s.get("last_ts") or "") >= since and not s.get("archived"):
-                        rows.append(f"{w.get('name')} | {r.get('path')} | {b.get('name')} | {s.get('title') or s.get('id')} "
-                                    f"| {status.get(s.get('id'), 'closed')} | last {s.get('last_ts')} | ${s.get('cost') or 0:.2f} | id {s.get('id')}")
-    out.append("# Sessions active in the last 7 days\nworkspace | repo | branch | title | status | last active | cost | id\n"
-               + "\n".join(rows[:400]))
-    appr = pending()
-    out.append("# Waiting for the owner's approval\n" + ("\n".join(f"{a['tool']}: {a['summary'][:300]}" for a in appr) or "None."))
-    return "\n\n".join(out)[:80000]
-
-
-def ask(question: str, cfg: dict) -> str:
-    """Jarvis's spoken answer to one question, from a headless Claude limited to reading files."""
-    args = [_bin(cfg), "-p", "--model", "claude-haiku-5-5", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
-            "--no-session-persistence", "--strict-mcp-config", "--append-system-prompt", JARVIS_ASK + "\n\n" + _ask_context(cfg)]
-    try:
-        r = subprocess.run(args, input=question, capture_output=True, text=True, timeout=150, cwd=str(_home()),
-                           env={**os.environ, "ENABLE_TOOL_SEARCH": "false"})
-    except (OSError, subprocess.SubprocessError) as e:
-        raise ApiError(502, f"Jarvis couldn't answer: {e}")
-    if r.returncode or not r.stdout.strip():
-        raise ApiError(502, "Jarvis couldn't answer: " + ((r.stderr or r.stdout).strip()[:200] or "no reply"))
-    return r.stdout.strip()
-
-
-def _audio(handler) -> bytes:
-    try:
-        n = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        n = -1
-    if not 0 < n <= MAX_AUDIO:
-        raise ApiError(413 if n > MAX_AUDIO else 400, "send a recording of up to 10 MB")
-    return handler.rfile.read(n)
-
-
-_HEAR_LOCK = threading.Lock()
-_SAY_LOCK = threading.Lock()
-_saying: list = []  # the `say` process now speaking, so hush can end it
-
-
-def say(text: str, cfg: dict) -> None:
-    """Speak text through the Mac's own voice (no browser needed) and return when it is done or hushed."""
-    if not _SAY_LOCK.acquire(blocking=False):
-        raise ApiError(429, "Jarvis is already speaking.")
-    try:
-        p = subprocess.Popen([_tool(cfg, "say_bin", "/usr/bin/say"), "-f", "-"], stdin=subprocess.PIPE,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
-        _saying[:] = [p]
-        try:
-            p.communicate(text, timeout=180)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    except OSError as e:
-        raise ApiError(502, f"couldn't speak: {e}")
-    finally:
-        _saying.clear()
-        _SAY_LOCK.release()
-
-
-def _jarvis_voice(handler, path: str, cfg: dict) -> bool:
-    """POST /api/jarvis/hear (a recording: {"heard"}), /api/jarvis/say ({"text"}: returns when spoken) and
-    /api/jarvis/hush (stops speaking)."""
-    try:
-        if not settings_api.host_ok(handler):
-            raise ApiError(403, "only same-origin localhost requests are answered")
-        if path == "/api/jarvis/hear":
-            if not handler.headers.get("Content-Type", "").startswith("audio/"):
-                raise ApiError(415, "send audio/*")
-            audio = _audio(handler)
-            if not _HEAR_LOCK.acquire(blocking=False):
-                raise ApiError(429, "still hearing the last recording")
-            try:
-                out = {"heard": transcribe(audio, cfg)}
-                print(f"jarvis heard {len(audio)} bytes: {out['heard']!r}", flush=True)  # in serve.log
-            finally:
-                _HEAR_LOCK.release()
-        elif path == "/api/jarvis/say":
-            text = _prompt({"prompt": settings_api.read_body(handler).get("text")})
-            say(text, cfg)
-            out = {}
-        else:
-            for p in list(_saying):
-                p.kill()
-            out = {}
-        settings_api._send(handler, 200, out)
-    except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
-    except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
-    return True
-
-
-def _jarvis_ask(handler, cfg: dict) -> bool:
-    """POST /api/jarvis/ask with a recording (Content-Type audio/*) or JSON {"question"}: {"heard", "answer"}."""
-    try:
-        if not settings_api.host_ok(handler):
-            raise ApiError(403, "only same-origin localhost requests are answered")
-        if handler.headers.get("Content-Type", "").startswith("audio/"):
-            audio = _audio(handler)
-            question = None
-        else:
-            q = settings_api.read_body(handler).get("question")
-            question = _prompt({"prompt": q})
-        if not _ASK_LOCK.acquire(blocking=False):
-            raise ApiError(429, "Jarvis is still answering the last question.")
-        try:
-            if question is None:
-                question = transcribe(audio, cfg)
-                if not question:
-                    raise ApiError(422, "I didn't catch that. Hold the button while you speak.")
-            out = {"heard": question, "answer": ask(question, cfg)}
-        finally:
-            _ASK_LOCK.release()
-        settings_api._send(handler, 200, out)
-    except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
-    except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
-    return True
-
-
-def handle(handler, method: str, cfg: dict) -> bool:
-    """Serve /api/workspaces, /api/workspaces/<id>/tasks and /work, /api/sessions/*, /api/approvals/* and /api/jarvis. False when the path is not ours."""
-    path = handler.path.split("?")[0]
+def handle(handler, method: str, cfg: dict, path: str | None = None, fix=None) -> bool:
+    """Serve /api/projects, /api/projects/<id>/tasks, /work and /tests/run, /api/sessions/* and /api/approvals/*.
+    False when the path is not ours. `path` is the path to route on (default: the handler's, without the query);
+    `fix` is applied to the JSON body of POST /api/sessions/new before it is used."""
+    path = path or handler.path.split("?")[0]
     if path.startswith("/api/approvals") and _approvals(handler, method, path, cfg):
         return True
-    if path == "/api/jarvis" and method == "GET":
-        return _jarvis(handler)
-    if path == "/api/jarvis/ask" and method == "POST":
-        return _jarvis_ask(handler, cfg)
-    if path in ("/api/jarvis/hear", "/api/jarvis/say", "/api/jarvis/hush") and method == "POST":
-        return _jarvis_voice(handler, path, cfg)
-    t = re.fullmatch(r"/api/workspaces/(.+)/tasks", path)
+    t = re.fullmatch(r"/api/projects/(.+)/tasks", path)
     if t and method in ("GET", "POST"):
         return _tasks(handler, method, t.group(1), cfg)
-    k = re.fullmatch(r"/api/workspaces/(.+)/work", path)
+    k = re.fullmatch(r"/api/projects/(.+)/work", path)
     if k and method == "GET":
         return _work(handler, k.group(1), cfg)
-    r = re.fullmatch(r"/api/workspaces/(.+)/tests/run", path)
+    r = re.fullmatch(r"/api/projects/(.+)/tests/run", path)
     if r and method == "POST":
         return _test_run(handler, r.group(1), cfg)
     m = re.fullmatch(r"/api/sessions/([^/]+)/(message|reply)", path)
-    if not (path == "/api/workspaces" and method == "GET" or path == "/api/sessions/new" and method == "POST"
+    if not (path == "/api/projects" and method == "GET" or path == "/api/sessions/new" and method == "POST"
             or m and method == ("POST" if m.group(2) == "message" else "GET")):
         return False
-    if path == "/api/workspaces":
-        return _list(handler, cfg)
+    if path == "/api/projects":
+        send_json(handler, 200, listing(cfg))
+        return True
     try:
-        if not settings_api.host_ok(handler):
+        if not host_ok(handler):
             raise ApiError(403, "only same-origin localhost requests are answered")
         if m and not UUID_RE.fullmatch(m.group(1)):
             raise ApiError(400, "session id must be a uuid")
         if method == "GET":
             out = last_reply(m.group(1))
         elif m:
-            body = settings_api.read_body(handler)
+            body = read_body(handler)
             out = message(m.group(1), _prompt(body), cfg)
         else:
-            out = _new_session(settings_api.read_body(handler), cfg)
-        settings_api._send(handler, 200, out)
+            body = read_body(handler)
+            out = _new_session(fix(body) if fix else body, cfg)
+        send_json(handler, 200, out)
     except ApiError as e:
-        settings_api._send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        settings_api._send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True
 
 
-def _list(handler, cfg: dict) -> bool:
-    """GET /api/workspaces: the index plus live status per session."""
+def listing(cfg: dict) -> dict:
+    """The index plus live status per session: what GET /api/projects answers."""
     idx = _index()
     on = _appr_dir() / "on"
     rows = live(_bin(cfg))
     clear_stale(rows)
     by_id = {r.get("sessionId"): r for r in rows or [] if isinstance(r, dict)}
-    conf = {c.get("id"): c for c in cfg.get("workspaces") or [] if isinstance(c, dict)}
-    for w in idx.get("workspaces", []):
+    conf = {c.get("id"): c for c in cfg.get("projects") or [] if isinstance(c, dict)}
+    for w in idx.get("projects", []):
         w["tests_failed"] = [{"repo": t["repo"], "finished": t["finished"]} for t in test_results(conf.get(w.get("id")) or {}) if t["ok"] is False]
         for repo in w.get("repos", []):
             for b in repo.get("branches", []):
@@ -1060,5 +899,4 @@ def _list(handler, cfg: dict) -> bool:
                     s["approve"] = bool(UUID_RE.fullmatch(str(s["id"])) and (on / s["id"]).is_file())
     idx["live_ok"] = rows is not None
     idx["approve_ready"] = approve_ready()
-    settings_api._send(handler, 200, idx)
-    return True
+    return idx

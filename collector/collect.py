@@ -12,33 +12,29 @@ from __future__ import annotations
 
 import argparse
 import base64
-import collections
 import datetime as dt
 import hashlib
 import http.server
 import json
 import mimetypes
 import os
-import re
-import socket
-import subprocess
 import sys
 import threading
 import time
 import urllib.parse
-import zlib
 from pathlib import Path
 
-import settings_api
-import workspaces
+from core import server as core_server
+from core import util as core_util
+from core.app import Core
+from core.util import parse_duration, read_json, write_json, short_path
+from unplaced import jarvis
 
 VERSION = "0.2.2"
 HOME = Path.home()
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
-CLAUDE_JSON = (CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json"
 STX_HOME = Path(os.environ.get("STELLAXIS_HOME", HOME / ".stellaxis")).expanduser()
 REPO_DIR = Path(__file__).resolve().parent.parent
-BYTES_PER_TOKEN = 3.7  # rough estimate for prose/JSON; measured baselines use real API token counts
 
 DEFAULT_CONFIG = {
     "interval": "1m",            # collection interval: "30s", "1m", "15m", "1h"
@@ -55,9 +51,9 @@ DEFAULT_CONFIG = {
     "probe_timeout": 20,
     "max_sessions": 400,          # sessions kept in snapshot (newest first)
     "series_days": 30,
-    "workspaces": [],             # [{id, name, folders: [path]}]: folders grouped into a project
+    "projects": [],               # [{id, name, repos: [path], tests, routines}]: repos grouped into a project
     "claude_bin": "~/.local/bin/claude",
-    "projects": [],               # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
+    "project_notes": [],          # your own notes: [{name, summary, path, facts: {k: v}, links: [{label, url}], open: [...]}]
     # USD per million tokens. cache_write_5m = 1.25x input, cache_write_1h = 2x input.
     # Longest matching prefix of the model id wins. Notional on a Max plan.
     "pricing": {
@@ -78,67 +74,11 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------------------- utilities
 
 def now_utc() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return core_util.now()
 
 
 def iso(t: dt.datetime | None) -> str | None:
     return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if t else None
-
-
-def parse_ts(s) -> dt.datetime | None:
-    if not s or not isinstance(s, str):
-        return None
-    try:
-        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def parse_duration(s, default=60) -> int:
-    if isinstance(s, (int, float)):
-        return int(s)
-    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", str(s or ""))
-    if not m:
-        return default
-    return int(float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)])
-
-
-def tok(n_bytes: int) -> int:
-    return int(round((n_bytes or 0) / BYTES_PER_TOKEN))
-
-
-def read_text(p: Path, limit: int = 2_000_000) -> str:
-    try:
-        with open(p, "r", encoding="utf-8", errors="replace") as f:
-            return f.read(limit)
-    except OSError:
-        return ""
-
-
-def read_json(p: Path, default=None):
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return default
-
-
-def write_json(p: Path, data, indent=None):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=indent, default=list)
-    os.replace(tmp, p)
-
-
-def short_path(p) -> str:
-    s = str(p)
-    h = str(HOME)
-    return "~" + s[len(h):] if s == h or s.startswith(h + os.sep) else s
-
-
-def norm_mcp(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]", "_", name or "")
 
 
 _status_at = 0.0
@@ -168,688 +108,14 @@ def load_config() -> dict:
     return cfg
 
 
-def price_for(model: str, pricing: dict):
-    best = None
-    for prefix in pricing:
-        if (model or "").startswith(prefix) and (best is None or len(prefix) > len(best)):
-            best = prefix
-    return pricing.get(best) if best else None
-
-
-def rebuild_extra(model: str, w5: int, w1: int, pricing: dict) -> float:
-    """What rewriting these tokens cost above reading them from the cache."""
-    written = cost_of(model, [0, w5, w1, 0, 0], pricing)
-    return max(0.0, written - cost_of(model, [0, 0, 0, w5 + w1, 0], pricing))
-
-
-def cost_of(model: str, t: list, pricing: dict) -> float:
-    """t = [input, cache_write_5m, cache_write_1h, cache_read, output]"""
-    p = price_for(model, pricing)
-    if not p:
-        return 0.0
-    i, w5, w1, r, o = t
-    return (i * p["in"] + w5 * p["in"] * 1.25 + w1 * p["in"] * 2.0
-            + r * p.get("cache_read", p["in"] * 0.1) + o * p["out"]) / 1e6
-
-
-# ---------------------------------------------------------------- frontmatter
-
-def frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
-        return {}, text
-    end = re.search(r"^---\s*$", text[3:], re.M)
-    if not end:
-        return {}, text
-    raw, body = text[3:3 + end.start()], text[3 + end.end():]
-    meta, key, block = {}, None, None
-    for line in raw.splitlines():
-        if block is not None and (line.startswith((" ", "\t")) or not line.strip()):
-            meta[key] = (meta[key] + ("\n" if block == "|" else " ") + line.strip()).strip()
-            continue
-        block = None
-        m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*)$", line)
-        if not m:
-            continue
-        key, val = m.group(1), m.group(2).strip()
-        if val in ("|", ">", "|-", ">-"):
-            block, meta[key] = val[0], ""
-            continue
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-            val = val[1:-1]
-        meta[key] = val
-    return meta, body
-
-
-# ---------------------------------------------------------------- usage (incremental transcript parsing)
-
-CMD_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
-LISTING_LINE = re.compile(r"^- (\S+?)(?::\s|:$| \(|$)")
-# Measured on real transcripts: turns under an hour apart keep the cache, past an hour 84% rebuild it.
-CACHE_TTL_SECONDS = 3600
-CACHE_LOSS_MIN_CONTEXT = 20000
-
-
-def new_file_state(path: str) -> dict:
-    return {"path": path, "offset": 0, "size": 0, "session": None, "cwd": None, "first_ts": None,
-            "last_ts": None, "entrypoint": None, "version": None, "branch": None,
-            "sidechain": "/subagents/" in path, "models": {}, "hourly": {}, "baseline": None,
-            "calls": {}, "mcp_tools": {}, "agent_tokens": {}, "context": {}, "recent": {},
-            "pending": {}, "turns": 0, "prompts": 0, "last_turn": None, "cache_losses": []}
-
-
-def _bump(d: dict, k: str, n: int = 1):
-    d[k] = d.get(k, 0) + n
-
-
-def _parse_listing(lines) -> dict:
-    out, cur = {}, None
-    for line in lines:
-        m = LISTING_LINE.match(line)
-        if m:
-            cur = m.group(1)
-            out[cur] = out.get(cur, 0) + len(line.encode()) + 1
-        elif cur:
-            out[cur] += len(line.encode()) + 1
-    return out
-
-
-def _attachment(st: dict, a: dict):
-    t = a.get("type")
-    ctx = st["context"]
-    if t == "skill_listing" and isinstance(a.get("content"), str):
-        listing = _parse_listing(a["content"].splitlines())
-        ctx["skills"] = listing if a.get("isInitial") else {**ctx.get("skills", {}), **listing}
-    elif t == "agent_listing_delta":
-        lines = a.get("addedLines") or []
-        lines = lines if isinstance(lines, list) else str(lines).splitlines()
-        ctx.setdefault("agents", {}).update(_parse_listing(lines))
-        if a.get("builtInTypes"):
-            ctx["agents_builtin"] = sorted(set(ctx.get("agents_builtin", [])) | set(a["builtInTypes"]))
-    elif t == "mcp_instructions_delta":
-        names, blocks = a.get("addedNames") or [], a.get("addedBlocks") or []
-        mi = ctx.setdefault("mcp_instructions", {})
-        for n, b in zip(names, blocks):
-            mi[norm_mcp(n)] = len(str(b).encode())
-    elif t == "deferred_tools_delta":
-        names = ctx.setdefault("deferred_names", {})  # by name: a resumed session announces the same tools again
-        names.update((n, len(n) + 1) for n in (a.get("addedNames") or []) + (a.get("readdedNames") or []))
-        for n in a.get("removedNames") or []:
-            names.pop(n, None)
-        dfr = ctx["deferred"] = {}
-        for name, size in names.items():
-            parts = name.split("__")
-            key = norm_mcp(parts[1]) if name.startswith("mcp__") and len(parts) > 2 else "builtin"
-            dfr[key] = dfr.get(key, 0) + size
-        for k in ("pendingMcpServers", "needsAuthMcpServers"):
-            if a.get(k):
-                ctx[k] = sorted(set(a[k]))
-    elif t == "prompt_snapshot" and isinstance(a.get("tools"), list):
-        tools = {}
-        for x in a["tools"]:
-            if not isinstance(x, dict):
-                continue
-            name = x.get("name", "")
-            srv = x.get("server")
-            if not srv and name.startswith("mcp__"):
-                srv = name.split("__")[1]
-            key = norm_mcp(srv) if srv else "builtin"
-            tools[key] = tools.get(key, 0) + len(json.dumps(x).encode())
-        sysp = a.get("systemPrompt")
-        sys_bytes = len(json.dumps(sysp).encode()) if sysp is not None else 0
-        if sum(tools.values()) >= sum(ctx.get("tools", {}).values()):
-            ctx["tools"] = tools
-            ctx["system"] = sys_bytes
-
-
-def _cache_loss(st: dict, ts, model: str, row: list):
-    """Record a turn that rebuilt the cache after idling past its TTL: the previous context came back as writes."""
-    last, st["last_turn"] = st["last_turn"], [ts, row[1] + row[2] + row[3]]
-    if not last or last[1] < CACHE_LOSS_MIN_CONTEXT or row[1] + row[2] <= last[1] / 2 or row[3] >= last[1] / 2:
-        return
-    a, b = parse_ts(last[0]), parse_ts(ts)
-    if a and b and (b - a).total_seconds() >= CACHE_TTL_SECONDS:
-        st["cache_losses"].append([ts, round((b - a).total_seconds() / 60), model, row[1], row[2]])
-
-
-def _line(st: dict, d: dict, ids: dict, owner: int):
-    t = d.get("type")
-    ts = d.get("timestamp")
-    if ts:
-        st["first_ts"] = st["first_ts"] or ts
-        st["last_ts"] = ts
-    st["session"] = st["session"] or d.get("sessionId")
-    st["cwd"] = st["cwd"] or d.get("cwd")
-    st["entrypoint"] = st["entrypoint"] or d.get("entrypoint")
-    st["version"] = d.get("version") or st["version"]
-    st["branch"] = d.get("gitBranch") or st["branch"]
-    if t == "assistant":
-        m = d.get("message") or {}
-        mid = m.get("id") or d.get("requestId") or d.get("uuid")
-        u = m.get("usage") or {}
-        if mid and u and mid in st["recent"]:
-            # Streamed copies of one call share an id; only the last carries the final output count.
-            model, hour, out = st["recent"][mid]
-            extra = (u.get("output_tokens") or 0) - out
-            if extra > 0:
-                st["recent"][mid][2] += extra
-                st["models"][model][4] += extra
-                if hour:
-                    st["hourly"][hour][model][4] += extra
-        elif mid and u and mid[-16:] in ids:
-            return  # resumed and forked sessions replay old calls, in this file or another one
-        elif mid and u:
-            cc = u.get("cache_creation") or {}
-            cw_total = u.get("cache_creation_input_tokens") or 0
-            w1 = cc.get("ephemeral_1h_input_tokens") or 0
-            w5 = cc.get("ephemeral_5m_input_tokens") if cc else cw_total
-            w5 = w5 or max(0, cw_total - w1)
-            row = [u.get("input_tokens") or 0, w5, w1, u.get("cache_read_input_tokens") or 0,
-                   u.get("output_tokens") or 0]
-            model = m.get("model") or "unknown"
-            if model == "<synthetic>":
-                return
-            ids[mid[-16:]] = owner
-            st["recent"][mid] = [model, (ts or "")[:13], row[4]]
-            if len(st["recent"]) > 60:
-                del st["recent"][next(iter(st["recent"]))]
-            mm = st["models"].setdefault(model, [0, 0, 0, 0, 0, 0])
-            for i in range(5):
-                mm[i] += row[i]
-            mm[5] += 1
-            hour = (ts or "")[:13]
-            if hour:
-                hm = st["hourly"].setdefault(hour, {}).setdefault(model, [0, 0, 0, 0, 0])
-                for i in range(5):
-                    hm[i] += row[i]
-            st["turns"] += 1
-            if ts and not d.get("isSidechain"):
-                _cache_loss(st, ts, model, row)
-            if st["baseline"] is None and not d.get("isSidechain"):
-                st["baseline"] = {"tokens": row[0] + row[1] + row[2] + row[3], "model": model, "ts": ts}
-        for b in m.get("content") or []:
-            if not isinstance(b, dict) or b.get("type") != "tool_use":
-                continue
-            name, inp = b.get("name") or "", b.get("input") or {}
-            if name == "Skill":
-                _bump(st["calls"], "skill:" + str(inp.get("skill") or inp.get("name") or "?").lstrip("/"))
-            elif name == "SlashCommand":
-                _bump(st["calls"], "slash:" + str(inp.get("command") or "?").lstrip("/").split()[0])
-            elif name in ("Agent", "Task"):
-                typ = str(inp.get("subagent_type") or "general-purpose")
-                _bump(st["calls"], "agent:" + typ)
-                if b.get("id"):
-                    st["pending"][b["id"]] = typ
-                    if len(st["pending"]) > 200:
-                        st["pending"].pop(next(iter(st["pending"])))
-            elif name.startswith("mcp__"):
-                parts = name.split("__")
-                srv = norm_mcp(parts[1]) if len(parts) > 2 else name
-                _bump(st["calls"], "mcp:" + srv)
-                _bump(st["mcp_tools"].setdefault(srv, {}), "__".join(parts[2:]) or "?")
-            _bump(st["calls"], "tool:" + name)
-    elif t == "user":
-        m = d.get("message") or {}
-        c = m.get("content")
-        texts = [c] if isinstance(c, str) else [x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text"]
-        for txt in texts:
-            for cmd in CMD_RE.findall(txt or ""):
-                _bump(st["calls"], "slash:" + cmd)
-        if d.get("origin", {}).get("kind") == "human" or (isinstance(c, str) and not d.get("isMeta")):
-            st["prompts"] += 1
-        tur = d.get("toolUseResult")
-        if isinstance(c, list) and isinstance(tur, dict) and (tur.get("totalTokens") or tur.get("agentId")):
-            for x in c:
-                if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("tool_use_id") in st["pending"]:
-                    typ = st["pending"].pop(x["tool_use_id"])
-                    _bump(st["agent_tokens"], typ, int(tur.get("totalTokens") or 0))
-    elif t == "attachment" and isinstance(d.get("attachment"), dict):
-        _attachment(st, d["attachment"])
-
-
-def _owner(key: str) -> int:
-    return zlib.crc32(key.encode())
-
-
-def parse_transcripts(cache: dict) -> dict:
-    files = cache.setdefault("files", {})
-    ids = cache.setdefault("ids", {})  # call id -> owning file, across all files; a replay is not new usage
-    proj_root = CLAUDE_DIR / "projects"
-    found, seen = [], set()
-    for p in proj_root.rglob("*.jsonl") if proj_root.exists() else []:
-        seen.add(str(p))
-        try:
-            s = p.stat()
-        except OSError:
-            continue
-        found.append((s.st_mtime, str(p), s.st_size, p))
-    found.sort(key=lambda x: x[:3])  # oldest first, so the original of a replay is the one counted
-    sizes = {k: size for _, k, size, _ in found}
-    stale = {k for k, st in files.items()
-             if k not in seen or sizes.get(k, st["size"]) < st["size"] or st.get("v") != VERSION}
-    if stale:
-        gone = {_owner(k) for k in stale}
-        cache["ids"] = ids = {i: o for i, o in ids.items() if o not in gone}
-    for _, key, size, p in found:
-        st = files.get(key)
-        if st is None or key in stale:
-            st = files[key] = new_file_state(key)
-            st["v"] = VERSION
-        if size == st["offset"]:
-            continue
-        try:
-            with open(p, "rb") as f:
-                f.seek(st["offset"])
-                chunk = f.read(size - st["offset"])
-        except OSError:
-            continue
-        last_nl = chunk.rfind(b"\n")
-        if last_nl < 0:
-            continue
-        for raw in chunk[:last_nl].splitlines():
-            try:
-                _line(st, json.loads(raw), ids, _owner(key))
-            except (ValueError, TypeError, AttributeError):
-                continue
-        st["offset"] += last_nl + 1
-        st["size"] = size
-    for k in list(files):
-        if k not in seen:
-            del files[k]
-    return files
-
-
-# ---------------------------------------------------------------- inventory
-
-def item(kind, name, scope, path=None, always=0, on_use=0, **kw) -> dict:
-    scope_key = scope if not kw.get("scope_path") else f"{scope}:{kw['scope_path']}"
-    if kw.get("plugin"):
-        scope_key += f":{kw['plugin']}"
-    d = {"id": f"{kind}:{scope_key}:{name}", "kind": kind, "name": name, "scope": scope,
-         "path": short_path(path) if path else None, "bytes_always": always, "bytes_on_use": on_use,
-         "tokens_always": tok(always), "tokens_on_use": tok(on_use), "removable": True}
-    d.update(kw)
-    return d
-
-
-def resolve_imports(path: Path, depth=0, seen=None) -> tuple[int, list]:
-    """Bytes of a CLAUDE.md plus its @imports (recursive)."""
-    seen = seen or set()
-    rp = path.resolve()
-    if rp in seen or depth > 5 or not path.is_file():
-        return 0, []
-    seen.add(rp)
-    text = read_text(path)
-    total, imports = len(text.encode()), []
-    in_code = False
-    for line in text.splitlines():
-        if line.strip().startswith("```"):
-            in_code = not in_code
-        if in_code:
-            continue
-        for m in re.finditer(r"(?:^|\s)@((?:~|\.{1,2})?/?[\w./-]+\.\w+)", line):
-            ref = m.group(1)
-            target = Path(os.path.expanduser(ref)) if ref.startswith("~") else (path.parent / ref)
-            if target.is_file():
-                b, sub = resolve_imports(target, depth + 1, seen)
-                total += b
-                imports.append(short_path(target))
-                imports += sub
-    return total, imports
-
-
-def scan_skill_dir(base: Path, scope: str, scope_path=None, plugin=None, prefix="") -> list:
-    out = []
-    if not base.is_dir():
-        return out
-    for sk in sorted(base.iterdir()):
-        f = sk / "SKILL.md"
-        if not f.is_file():
-            continue
-        text = read_text(f)
-        meta, body = frontmatter(text)
-        name = prefix + (meta.get("name") or sk.name)
-        desc = meta.get("description", "")
-        listing = len(f"- {name}: {desc}".encode())
-        if str(meta.get("disable-model-invocation", "")).lower() == "true":
-            listing = 0
-        aliases = sorted({name, prefix + sk.name} | ({"anthropic-skills:" + sk.name} if scope == "account" else set()))
-        out.append(item("skill", name, scope, f, listing, len(text.encode()), scope_path=scope_path,
-                        plugin=plugin, description=desc[:300], dir=short_path(sk), aliases=aliases))
-    return out
-
-
-def _origin(url: str) -> str:
-    """Scheme and host only: hosted MCP URLs can carry their credential in the path."""
-    u = urllib.parse.urlsplit(str(url))
-    return f"{u.scheme}://{u.hostname}" if u.hostname else ""
-
-
-def scan_md_dir(base: Path, kind: str, scope: str, scope_path=None, plugin=None, prefix="") -> list:
-    out = []
-    if not base.is_dir():
-        return out
-    for f in sorted(base.rglob("*.md")):
-        text = read_text(f)
-        meta, body = frontmatter(text)
-        rel = f.relative_to(base).with_suffix("")
-        name = prefix + (meta.get("name") or ":".join(rel.parts))
-        desc = meta.get("description", "")
-        if kind == "agent":
-            tools = meta.get("tools")
-            listing = len(f"- {name}: {desc} (Tools: {tools or '*'})".encode())
-        else:
-            listing = len(f"- {name}: {desc}".encode()) if desc else 0
-        out.append(item(kind, name, scope, f, listing, len(text.encode()), scope_path=scope_path,
-                        plugin=plugin, description=desc[:300], model=meta.get("model")))
-    return out
-
-
-def mcp_items(servers: dict, scope: str, path: Path, scope_path=None, plugin=None, disabled=()) -> list:
-    out = []
-    for name, conf in (servers or {}).items():
-        if not isinstance(conf, dict):
-            continue
-        transport = conf.get("type") or ("stdio" if conf.get("command") else "http" if conf.get("url") else "?")
-        target = _origin(conf["url"]) if conf.get("url") else " ".join([str(conf.get("command", ""))] + [str(a) for a in conf.get("args", [])][:4])
-        out.append(item("mcp", name, scope, path, 0, 0, scope_path=scope_path, plugin=plugin,
-                        transport=transport, target=target[:200], enabled=name not in disabled,
-                        conf_hash=hashlib.sha1(json.dumps(conf, sort_keys=True).encode()).hexdigest()[:12],
-                        _conf=conf))
-    return out
-
-
-def scan_plugin(root: Path, key: str, scope: str, enabled: bool, scope_path=None) -> list:
-    manifest = read_json(root / ".claude-plugin" / "plugin.json", {}) or {}
-    pname = manifest.get("name") or key.split("@")[0]
-    pre = pname + ":"
-    children = []
-    children += scan_skill_dir(root / "skills", scope, scope_path, plugin=key, prefix=pre)
-    children += scan_md_dir(root / "commands", "command", scope, scope_path, plugin=key, prefix=pre)
-    children += scan_md_dir(root / "agents", "agent", scope, scope_path, plugin=key, prefix=pre)
-    mcp = (read_json(root / ".mcp.json", {}) or {}).get("mcpServers") or {}
-    if isinstance(manifest.get("mcpServers"), dict):
-        mcp = {**mcp, **manifest["mcpServers"]}
-    children += mcp_items(mcp, scope, root / ".mcp.json", scope_path, plugin=key)
-    hooks = read_json(root / "hooks" / "hooks.json", {}) or {}
-    for c in children:
-        c["enabled"] = enabled and c.get("enabled", True)
-    always = sum(c["bytes_always"] for c in children) if enabled else 0
-    p = item("plugin", key, scope, root, always, 0, scope_path=scope_path, enabled=enabled,
-             version=manifest.get("version"), description=(manifest.get("description") or "")[:300],
-             children=[c["id"] for c in children], hooks=sorted((hooks.get("hooks") or {}).keys()))
-    return [p] + children
-
-
-def installed_plugins() -> list:
-    """[(key, installPath, scope, projectPath)] from installed_plugins.json (v1 or v2)."""
-    data = read_json(CLAUDE_DIR / "plugins" / "installed_plugins.json", {}) or {}
-    out = []
-    for key, val in (data.get("plugins") or {}).items():
-        entries = val if isinstance(val, list) else [val]
-        for e in entries:
-            if isinstance(e, dict) and e.get("installPath"):
-                out.append((key, Path(e["installPath"]).expanduser(), e.get("scope", "user"), e.get("projectPath")))
-    return out
-
-
-def worktree_of(P: Path):
-    """Main repo of a git worktree (its .git is a file pointing into <repo>/.git/worktrees/<name>)."""
-    g = P / ".git"
-    if g.is_file():
-        m = re.match(r"gitdir:\s*(.+)", read_text(g, 4096).strip())
-        if m:
-            gd = Path(m.group(1).strip())
-            gd = gd if gd.is_absolute() else (P / gd).resolve()
-            if gd.parent.name == "worktrees":
-                return short_path(gd.parent.parent.parent)
-    parts = P.parts
-    if ".claude" in parts and "worktrees" in parts:
-        i = parts.index(".claude")
-        return short_path(Path(*parts[:i]))
-    return None
-
-
-def discover_projects(cfg: dict, cache: dict, transcript_cwds: set, claude_json: dict) -> list:
-    roots = set(p for p in transcript_cwds if p)
-    roots |= set((claude_json.get("projects") or {}).keys())
-    walk = cache.get("walk") or {}
-    if time.time() - walk.get("at", 0) > parse_duration(cfg["rescan_every"], 3600):
-        found = set()
-        excl = set(cfg["exclude_dirs"])
-        for r in cfg["scan_roots"]:
-            base = Path(os.path.expanduser(r))
-            base_depth = len(base.parts)
-            for dirpath, dirnames, filenames in os.walk(base):
-                depth = len(Path(dirpath).parts) - base_depth
-                if depth <= 2:
-                    status("scanning folders", force=False, path=short_path(dirpath))
-                dirnames[:] = [d for d in dirnames if d not in excl and not (d.startswith(".") and d != ".claude")]
-                if depth >= cfg["scan_depth"]:
-                    dirnames[:] = [d for d in dirnames if d == ".claude"]
-                if Path(dirpath) == HOME:
-                    dirnames[:] = [d for d in dirnames if d != ".claude"]
-                    continue
-                if Path(dirpath).name == ".claude":
-                    dirnames[:] = []
-                    continue
-                if ".claude" in dirnames or "CLAUDE.md" in filenames or ".mcp.json" in filenames:
-                    found.add(dirpath)
-        walk = cache["walk"] = {"at": time.time(), "dirs": sorted(found)}
-    strong = set(roots)  # session cwds and ~/.claude.json projects always count
-    walked = set(walk.get("dirs", []))
-    for d in sorted(walked):
-        # a folder with only a nested CLAUDE.md inside another project is that project's lazy-loaded file
-        inside = any(d != r and d.startswith(r.rstrip(os.sep) + os.sep) for r in strong | walked)
-        if not inside or (Path(d) / ".claude").is_dir():
-            strong.add(d)
-    return sorted(r for r in strong if Path(r).is_dir() and Path(r) != HOME and not str(r).startswith(str(CLAUDE_DIR)))
-
-
-def inventory(cfg: dict, cache: dict, transcript_cwds: set) -> tuple[list, list, dict]:
-    items = []
-    cj = read_json(CLAUDE_JSON, {}) or {}
-    settings = read_json(CLAUDE_DIR / "settings.json", {}) or {}
-    settings_local = read_json(CLAUDE_DIR / "settings.local.json", {}) or {}
-    enabled_plugins = {**(settings.get("enabledPlugins") or {}), **(settings_local.get("enabledPlugins") or {})}
-
-    # user-level memory files
-    for f in [CLAUDE_DIR / "CLAUDE.md"]:
-        if f.is_file():
-            b, imports = resolve_imports(f)
-            items.append(item("claude_md", "~/.claude/CLAUDE.md", "user", f, b, 0, imports=imports))
-    rules = CLAUDE_DIR / "rules"
-    if rules.is_dir():
-        for f in sorted(rules.rglob("*.md")):
-            meta, _ = frontmatter(read_text(f))
-            b = len(read_text(f).encode())
-            cond = bool(meta.get("paths"))
-            items.append(item("rule", f.relative_to(rules).as_posix(), "user", f, 0 if cond else b, b if cond else 0,
-                              conditional=cond))
-    items += scan_skill_dir(CLAUDE_DIR / "skills", "user")
-    items += scan_md_dir(CLAUDE_DIR / "agents", "agent", "user")
-    items += scan_md_dir(CLAUDE_DIR / "commands", "command", "user")
-    items += mcp_items(cj.get("mcpServers"), "user", CLAUDE_JSON)
-
-    # account-synced (claude.ai) skills and plugins — managed in claude.ai, not on disk
-    for bucket in sorted((CLAUDE_DIR / "skills" / "synced").glob("*")) if (CLAUDE_DIR / "skills" / "synced").is_dir() else []:
-        if bucket.is_dir() and not bucket.name.startswith("."):
-            for it in scan_skill_dir(bucket, "account"):
-                it.update(removable=False, manage="claude.ai → Settings → Capabilities → Skills")
-                items.append(it)
-    for bucket in sorted((CLAUDE_DIR / "plugins" / "synced").glob("*")) if (CLAUDE_DIR / "plugins" / "synced").is_dir() else []:
-        if bucket.is_dir() and not bucket.name.startswith("."):
-            for pdir in sorted(bucket.iterdir()):
-                if (pdir / ".claude-plugin" / "plugin.json").is_file():
-                    for it in scan_plugin(pdir, pdir.name, "account", True):
-                        it.update(removable=False, manage="claude.ai → Settings → Plugins")
-                        items.append(it)
-
-    # installed plugins
-    for key, ipath, pscope, ppath in installed_plugins():
-        if not ipath.is_dir():
-            continue
-        enabled = bool(enabled_plugins.get(key, False))
-        if pscope in ("project", "local") and ppath:
-            ps = read_json(Path(ppath) / ".claude" / "settings.json", {}) or {}
-            pl = read_json(Path(ppath) / ".claude" / "settings.local.json", {}) or {}
-            enabled = bool({**(ps.get("enabledPlugins") or {}), **(pl.get("enabledPlugins") or {})}.get(key, enabled))
-        items += scan_plugin(ipath, key, pscope if pscope != "user" else "user", enabled,
-                             scope_path=short_path(ppath) if ppath and pscope != "user" else None)
-
-    # projects
-    projects = []
-    for proj in discover_projects(cfg, cache, transcript_cwds, cj):
-        status("reading project", force=False, path=short_path(proj))
-        P = Path(proj)
-        sp = short_path(P)
-        wt = worktree_of(P)
-        if wt:
-            # a worktree's .claude/ is a checkout of the main repo's files; count its sessions, not its items
-            projects.append({"path": sp, "abs": str(P), "items": [], "ancestor_claude_md": [], "has_git": True,
-                             "worktree_of": wt})
-            continue
-        pitems = []
-        for rel in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]:
-            f = P / rel
-            if f.is_file():
-                b, imports = resolve_imports(f)
-                pitems.append(item("claude_md", rel, "project", f, b, 0, scope_path=sp, imports=imports))
-        pr = P / ".claude" / "rules"
-        if pr.is_dir():
-            for f in sorted(pr.rglob("*.md")):
-                meta, _ = frontmatter(read_text(f))
-                b = len(read_text(f).encode())
-                cond = bool(meta.get("paths"))
-                pitems.append(item("rule", f.relative_to(pr).as_posix(), "project", f, 0 if cond else b,
-                                   b if cond else 0, scope_path=sp, conditional=cond))
-        pitems += scan_skill_dir(P / ".claude" / "skills", "project", sp)
-        pitems += scan_md_dir(P / ".claude" / "agents", "agent", "project", sp)
-        pitems += scan_md_dir(P / ".claude" / "commands", "command", "project", sp)
-        ps = read_json(P / ".claude" / "settings.json", {}) or {}
-        pl = read_json(P / ".claude" / "settings.local.json", {}) or {}
-        disabled = set(ps.get("disabledMcpjsonServers") or []) | set(pl.get("disabledMcpjsonServers") or [])
-        pitems += mcp_items((read_json(P / ".mcp.json", {}) or {}).get("mcpServers"), "project", P / ".mcp.json", sp,
-                            disabled=disabled)
-        pj = (cj.get("projects") or {}).get(proj) or {}
-        pitems += mcp_items(pj.get("mcpServers"), "local", CLAUDE_JSON, sp, disabled=set(pj.get("disabledMcpServers") or []))
-        # ancestor CLAUDE.md files are loaded too
-        ancestors = []
-        for anc in P.parents:
-            if anc == HOME or len(anc.parts) <= 1:
-                break
-            f = anc / "CLAUDE.md"
-            if f.is_file():
-                ancestors.append(short_path(f))
-        # auto-memory
-        enc = re.sub(r"[^A-Za-z0-9]", "-", str(P))
-        mem = CLAUDE_DIR / "projects" / enc / "memory" / "MEMORY.md"
-        if mem.is_file():
-            pitems.append(item("memory", "MEMORY.md", "project", mem, min(len(read_text(mem).encode()), 25_000), 0,
-                               scope_path=sp))
-        nested = 0
-        for dirpath, dirnames, filenames in os.walk(P):
-            depth = len(Path(dirpath).parts) - len(P.parts)
-            dirnames[:] = [d for d in dirnames if d not in cfg["exclude_dirs"] and not d.startswith(".")]
-            if depth >= 4:
-                dirnames[:] = []
-            if depth > 0 and "CLAUDE.md" in filenames:
-                f = Path(dirpath) / "CLAUDE.md"
-                pitems.append(item("claude_md", str(f.relative_to(P)), "project", f, 0, len(read_text(f).encode()),
-                                   scope_path=sp, conditional=True, note="loaded when Claude reads files in that folder"))
-                nested += 1
-        items += pitems
-        projects.append({"path": sp, "abs": str(P), "items": [i["id"] for i in pitems], "ancestor_claude_md": ancestors,
-                         "has_git": (P / ".git").exists()})
-    return items, projects, {"settings": settings, "claude_json_projects": len(cj.get("projects") or {}),
-                             "hooks": sorted((settings.get("hooks") or {}).keys()),
-                             "enabled_plugins": enabled_plugins}
-
-
-# ---------------------------------------------------------------- MCP schema probe (stdio only)
-
-def probe_stdio(conf: dict, timeout: int) -> dict:
-    cmd = [conf["command"]] + [str(a) for a in conf.get("args", [])]
-    env = {**os.environ, **{k: str(v) for k, v in (conf.get("env") or {}).items()}}
-    msgs = [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "stellaxis", "version": VERSION}}},
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-    ]
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                env=env, cwd=conf.get("cwd") or None)
-    except OSError as e:
-        return {"error": str(e)[:200]}
-    out = {"error": "timeout"}
-    try:
-        proc.stdin.write((json.dumps(msgs[0]) + "\n").encode())
-        proc.stdin.flush()
-        deadline = time.time() + timeout
-        sent_list = False
-        while time.time() < deadline:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if r.get("id") == 1 and not sent_list:
-                instr = (r.get("result") or {}).get("instructions") or ""
-                proc.stdin.write((json.dumps(msgs[1]) + "\n" + json.dumps(msgs[2]) + "\n").encode())
-                proc.stdin.flush()
-                sent_list = True
-            elif r.get("id") == 2:
-                tools = (r.get("result") or {}).get("tools") or []
-                out = {"tools": len(tools), "schema_bytes": len(json.dumps(tools).encode()),
-                       "instructions_bytes": len(instr.encode()), "tool_names": [t.get("name") for t in tools][:200]}
-                break
-    except OSError as e:
-        out = {"error": str(e)[:200]}
-    finally:
-        try:
-            proc.kill()
-        except OSError:
-            pass
-    return out
-
-
-def run_probes(items: list, cfg: dict, cache: dict, force=False):
-    probes = cache.setdefault("probes", {})
-    if not cfg.get("probe_mcp"):
-        return probes
-    max_age = parse_duration(cfg["probe_every"], 86400)
-    for it in items:
-        conf = it.get("_conf")
-        if it["kind"] != "mcp" or not conf or not conf.get("command"):
-            continue
-        if it["scope"] == "project":  # a cloned repo's .mcp.json is not trusted until Claude Code asks; never run it here
-            continue
-        h = it["conf_hash"]
-        if not force and h in probes and time.time() - probes[h].get("at", 0) < max_age:
-            continue
-        status("probing MCP server", server=it["name"], scope=it["scope"])
-        res = probe_stdio(conf, int(cfg.get("probe_timeout", 20)))
-        res["at"] = time.time()
-        probes[h] = res
-    return probes
-
-
-# ---------------------------------------------------------------- snapshot assembly
-
-def interactive(s: dict) -> bool:
-    """Full sessions load Claude's built-in tool schemas. Scripted runs (claude -p, Agent SDK) and one-turn
-    desktop helpers don't, and would drag baseline medians down to ~1K."""
-    return not (s.get("entrypoint") or "").startswith("sdk") and bool((s.get("measured_context") or {}).get("tools_builtin"))
-
-
 def project_notes(cfg: dict) -> list:
-    """The user's hand-written project cards from config.json, trimmed to plain strings."""
+    """The user's hand-written project cards from config.json, trimmed to plain strings: "project_notes" when it has
+    entries, else the entries of "projects" with no id (where the cards were kept before)."""
     def txt(v, n=500):
         return str(v)[:n] if v is not None else ""
+    cards = cfg.get("project_notes") or [p for p in cfg.get("projects") or [] if isinstance(p, dict) and not p.get("id")]
     out = []
-    for p in cfg.get("projects") or []:
+    for p in cards:
         if not isinstance(p, dict) or not p.get("name"):
             continue
         facts = p.get("facts") if isinstance(p.get("facts"), dict) else {}
@@ -872,446 +138,85 @@ def reels_summary() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def build_snapshot(cfg: dict, cache: dict) -> dict:
-    t0 = time.time()
-    files = parse_transcripts(cache)
-    cwds = {st["cwd"] for st in files.values() if st.get("cwd")}
-    items, projects, meta = inventory(cfg, cache, cwds)
-    probes = run_probes(items, cfg, cache) if cfg.get("_probe_now") else cache.get("probes", {})
-    pricing = cfg["pricing"]
-    now = now_utc()
-
-    # --- merge transcript files into sessions
-    sessions = {}
-    for st in files.values():
-        sid = st.get("session") or Path(st["path"]).stem
-        s = sessions.setdefault(sid, {"id": sid, "project": None, "first_ts": None, "last_ts": None, "models": {},
-                                      "calls": collections.Counter(), "mcp_tools": {}, "agent_tokens": collections.Counter(),
-                                      "baseline": None, "context": {}, "subagent_files": 0, "entrypoint": None,
-                                      "version": None, "branch": None, "turns": 0, "prompts": 0, "hourly": {},
-                                      "cache_losses": []})
-        if st["sidechain"]:
-            s["subagent_files"] += 1
-        else:
-            s["project"] = s["project"] or st.get("cwd")
-            s["baseline"] = s["baseline"] or st.get("baseline")
-            if st["context"]:
-                s["context"] = st["context"]
-            s["entrypoint"] = s["entrypoint"] or st.get("entrypoint")
-            s["branch"] = st.get("branch") or s["branch"]
-            s["prompts"] += st["prompts"]
-        s["project"] = s["project"] or st.get("cwd")
-        s["version"] = st.get("version") or s["version"]
-        for k in ("first_ts",):
-            if st.get(k) and (not s[k] or st[k] < s[k]):
-                s[k] = st[k]
-        if st.get("last_ts") and (not s["last_ts"] or st["last_ts"] > s["last_ts"]):
-            s["last_ts"] = st["last_ts"]
-        for model, row in st["models"].items():
-            mm = s["models"].setdefault(model, [0] * 6)
-            for i in range(6):
-                mm[i] += row[i]
-        for hour, per in st["hourly"].items():
-            hh = s["hourly"].setdefault(hour, {})
-            for model, row in per.items():
-                hm = hh.setdefault(model, [0] * 5)
-                for i in range(5):
-                    hm[i] += row[i]
-        s["calls"].update(st["calls"])
-        s["agent_tokens"].update(st["agent_tokens"])
-        for srv, tools in st["mcp_tools"].items():
-            c = s["mcp_tools"].setdefault(srv, collections.Counter())
-            c.update(tools)
-        s["turns"] += st["turns"]
-        s["cache_losses"] += st["cache_losses"]
-
-    # --- per-session totals
-    sess_list = []
-    for s in sessions.values():
-        tokens = [0] * 5
-        cost = 0.0
-        for model, row in s["models"].items():
-            for i in range(5):
-                tokens[i] += row[i]
-            cost += cost_of(model, row[:5], pricing)
-        ctx = s["context"]
-        measured = None
-        if ctx:
-            measured = {
-                "system": tok(ctx.get("system", 0)),
-                "tools_builtin": tok((ctx.get("tools") or {}).get("builtin", 0)),
-                "tools_mcp": {k: tok(v) for k, v in (ctx.get("tools") or {}).items() if k != "builtin"},
-                "skills": tok(sum((ctx.get("skills") or {}).values())),
-                "agents": tok(sum((ctx.get("agents") or {}).values())),
-                "mcp_instructions": tok(sum((ctx.get("mcp_instructions") or {}).values())),
-                "deferred": tok(sum((ctx.get("deferred") or {}).values())),
-                "skill_count": len(ctx.get("skills") or {}),
-                "pending_mcp": ctx.get("pendingMcpServers") or [], "needs_auth_mcp": ctx.get("needsAuthMcpServers") or [],
-            }
-        losses = [{"session": s["id"], "project": short_path(s["project"]) if s["project"] else "(unknown)", "ts": ts,
-                   "idle_min": idle, "model": model, "tokens": w5 + w1,
-                   "extra_cost": round(rebuild_extra(model, w5, w1, pricing), 4)}
-                  for ts, idle, model, w5, w1 in s["cache_losses"]]
-        sess_list.append({
-            "id": s["id"], "project": short_path(s["project"]) if s["project"] else "(unknown)",
-            "first_ts": s["first_ts"], "last_ts": s["last_ts"], "entrypoint": s["entrypoint"], "version": s["version"],
-            "branch": s["branch"], "models": sorted(s["models"]), "turns": s["turns"], "prompts": s["prompts"],
-            "subagent_files": s["subagent_files"],
-            "tokens": {"input": tokens[0], "cache_write": tokens[1] + tokens[2], "cache_read": tokens[3],
-                       "output": tokens[4], "total": sum(tokens)},
-            "cost": round(cost, 4),
-            "baseline_tokens": (s["baseline"] or {}).get("tokens"),
-            "cache_lost": {"count": len(losses), "tokens": sum(x["tokens"] for x in losses),
-                           "extra_cost": round(sum(x["extra_cost"] for x in losses), 4)} if losses else None,
-            "_losses": losses,
-            "measured_context": measured,
-            "skills": {k[6:]: v for k, v in s["calls"].items() if k.startswith("skill:")},
-            "slash": {k[6:]: v for k, v in s["calls"].items() if k.startswith("slash:")},
-            "agents": {k[6:]: v for k, v in s["calls"].items() if k.startswith("agent:")},
-            "agent_tokens": dict(s["agent_tokens"]),
-            "mcp": {k[4:]: v for k, v in s["calls"].items() if k.startswith("mcp:")},
-            "mcp_tools": {k: dict(v) for k, v in s["mcp_tools"].items()},
-            "tools": {k[5:]: v for k, v in s["calls"].items() if k.startswith("tool:")},
-            "_hourly": s["hourly"], "_ctx": ctx,
-        })
-    sess_list.sort(key=lambda x: x["last_ts"] or "", reverse=True)
-    cfg["_sessions_all"] = sess_list  # uncapped, for the workspace index
-
-    # --- synthesize items seen only in measured context (built-ins, claude.ai connectors)
-    by_kind_name = collections.defaultdict(list)
-    for it in items:
-        for alias in it.get("aliases") or [it["name"]]:
-            by_kind_name[(it["kind"], alias)].append(it)
-        if it["kind"] == "mcp":
-            by_kind_name[("mcp", norm_mcp(it["name"]))].append(it)
-            if it.get("plugin"):
-                by_kind_name[("mcp", norm_mcp(f"plugin_{it['plugin'].split('@')[0]}_{it['name']}"))].append(it)
-                by_kind_name[("mcp", norm_mcp(f"plugin:{it['plugin'].split('@')[0]}:{it['name']}"))].append(it)
-    latest_ctx = next((s["_ctx"] for s in sess_list if s["_ctx"].get("skills") or s["_ctx"].get("tools")), {})
-    for name, b in (latest_ctx.get("skills") or {}).items():
-        if (name, ) and not by_kind_name.get(("skill", name)) and not by_kind_name.get(("command", name)):
-            it = item("skill", name, "builtin", None, b, 0, removable=False, manage="bundled with Claude Code / account",
-                      measured=True, source="measured")
-            items.append(it)
-            by_kind_name[("skill", name)].append(it)
-    for name, b in (latest_ctx.get("agents") or {}).items():
-        if not by_kind_name.get(("agent", name)):
-            it = item("agent", name, "builtin", None, b, 0, removable=False, manage="built into Claude Code", measured=True,
-                      source="measured")
-            items.append(it)
-            by_kind_name[("agent", name)].append(it)
-    mcp_seen = set((latest_ctx.get("tools") or {}).keys()) | set((latest_ctx.get("deferred") or {}).keys()) | \
-        set((latest_ctx.get("mcp_instructions") or {}).keys())
-    mcp_seen.discard("builtin")
-    for srv in sorted(mcp_seen):
-        if not by_kind_name.get(("mcp", srv)):
-            it = item("mcp", srv, "connector", None, 0, 0, removable=False,
-                      manage="claude.ai → Settings → Connectors (or built into the host)", measured=True)
-            items.append(it)
-            by_kind_name[("mcp", srv)].append(it)
-
-    # --- always-on bytes for MCP: measured (schemas loaded upfront + deferred names + instructions) or probe
-    for it in items:
-        if it["kind"] != "mcp":
-            continue
-        keys = {norm_mcp(it["name"])}
-        if it.get("plugin"):
-            keys |= {norm_mcp(f"plugin_{it['plugin'].split('@')[0]}_{it['name']}"),
-                     norm_mcp(f"plugin:{it['plugin'].split('@')[0]}:{it['name']}")}
-        upfront = sum((latest_ctx.get("tools") or {}).get(k, 0) for k in keys)
-        deferred = sum((latest_ctx.get("deferred") or {}).get(k, 0) for k in keys)
-        instr = sum((latest_ctx.get("mcp_instructions") or {}).get(k, 0) for k in keys)
-        pr = probes.get(it.get("conf_hash") or "", {})
-        if upfront or deferred or instr:
-            it["bytes_always"] = upfront + deferred + instr
-            it["source"] = "measured"
-            it["detail"] = {"schema_upfront": tok(upfront), "deferred_names": tok(deferred), "instructions": tok(instr)}
-        elif pr.get("schema_bytes") is not None:
-            it["bytes_always"] = pr["schema_bytes"] + pr.get("instructions_bytes", 0)
-            it["source"] = "probe"
-            it["detail"] = {"tools": pr.get("tools"), "schema": tok(pr["schema_bytes"]),
-                            "instructions": tok(pr.get("instructions_bytes", 0)),
-                            "note": "upper bound; with tool search on, only names load until used"}
-        elif pr.get("error"):
-            it["source"] = "probe-failed"
-            it["detail"] = {"error": pr["error"]}
-        else:
-            it["source"] = "unknown"
-        if it.get("enabled") is False:
-            it["bytes_always"] = 0
-        it["tokens_always"] = tok(it["bytes_always"])
-        it.pop("_conf", None)
-    for it in items:
-        if it["kind"] in ("skill", "agent", "command") and it["scope"] != "builtin":
-            listing = (latest_ctx.get("agents") if it["kind"] == "agent" else latest_ctx.get("skills")) or {}
-            m = next((listing[a] for a in it.get("aliases") or [it["name"]] if a in listing), None)
-            if m:
-                it["bytes_always"], it["tokens_always"], it["source"] = m, tok(m), "measured"
-            else:
-                it.setdefault("source", "estimate")
-        it.setdefault("source", "file")
-    for it in items:  # plugins roll up their children
-        if it["kind"] == "plugin":
-            kids = [x for x in items if x["id"] in set(it.get("children") or [])]
-            it["bytes_always"] = sum(k["bytes_always"] for k in kids) if it.get("enabled") else 0
-            it["tokens_always"] = tok(it["bytes_always"])
-            it["source"] = "rollup"
-
-    # --- usage join
-    def usage_keys(it):
-        n = it["name"]
-        short = n.split(":", 1)[1] if ":" in n else n
-        k = it["kind"]
-        if k in ("skill", "command"):
-            names = set(it.get("aliases") or [n])
-            if it.get("plugin"):
-                names.add(short)
-            return [f"{c}:{x}" for x in sorted(names) for c in ("skill", "slash")]
-        if k == "agent":
-            return [f"agent:{n}"]
-        if k == "mcp":
-            ks = [f"mcp:{norm_mcp(n)}"]
-            if it.get("plugin"):
-                p = it["plugin"].split("@")[0]
-                ks += [f"mcp:{norm_mcp(f'plugin_{p}_{n}')}", f"mcp:{norm_mcp(f'plugin:{p}:{n}')}"]
-            return ks
-        return []
-
-    key_to_sessions = collections.defaultdict(list)
-    for s in sess_list:
-        for cat, field in (("skill", "skills"), ("slash", "slash"), ("agent", "agents"), ("mcp", "mcp")):
-            for name, n in s[field].items():
-                key_to_sessions[f"{cat}:{name}"].append((s, n))
-    for it in items:
-        calls, sids, projs, last, tokens = 0, set(), set(), None, 0
-        for key in filter(None, usage_keys(it)):
-            for s, n in key_to_sessions.get(key, []):
-                if s["id"] in sids and key.startswith("slash:"):
-                    continue
-                calls += n
-                sids.add(s["id"])
-                projs.add(s["project"])
-                last = max(last or "", s["last_ts"] or "")
-                if it["kind"] == "agent":
-                    tokens += s["agent_tokens"].get(it["name"], 0)
-        it["usage"] = {"calls": calls, "sessions": len(sids), "projects": sorted(projs), "last_used": last or None,
-                       "days_since_used": (now - parse_ts(last)).days if last and parse_ts(last) else None,
-                       "agent_tokens": tokens or None}
-    for it in items:
-        if it["kind"] == "plugin":
-            kids = [x for x in items if x["id"] in set(it.get("children") or [])]
-            last = max([k["usage"]["last_used"] or "" for k in kids] or [""]) or None
-            it["usage"] = {"calls": sum(k["usage"]["calls"] for k in kids),
-                           "sessions": len({p for k in kids for p in k["usage"]["projects"]}),
-                           "projects": sorted({p for k in kids for p in k["usage"]["projects"]}),
-                           "last_used": last, "days_since_used": (now - parse_ts(last)).days if last else None}
-
-    # --- duplicates (same kind+short name in several scopes)
-    dup = collections.defaultdict(list)
-    for it in items:
-        if it["kind"] in ("skill", "agent", "command", "mcp") and it["scope"] in ("user", "project", "local"):
-            dup[(it["kind"], it["name"].split(":")[-1].lower())].append(it["id"])
-    duplicates = [{"kind": k[0], "name": k[1], "items": v} for k, v in dup.items() if len(v) > 1]
-
-    # --- projects
-    proj_by_path = {p["path"]: p for p in projects}
-    for s in sess_list:
-        if s["project"] not in proj_by_path:
-            proj_by_path[s["project"]] = {"path": s["project"], "abs": None, "items": [], "ancestor_claude_md": [],
-                                          "missing": True}
-    user_always = sum(it["bytes_always"] for it in items if it["scope"] in ("user", "account", "builtin", "connector")
-                      and it["kind"] != "plugin" and (it.get("enabled", True)))
-    items_by_id = {it["id"]: it for it in items}
-    for p in proj_by_path.values():
-        ps = [s for s in sess_list if s["project"] == p["path"]]
-        own = sum(items_by_id[i]["bytes_always"] for i in p["items"] if i in items_by_id and items_by_id[i]["kind"] != "plugin")
-        bl = [s["baseline_tokens"] for s in ps if s["baseline_tokens"] and interactive(s)][:20]
-        p.update({
-            "sessions": len(ps), "last_active": ps[0]["last_ts"] if ps else None,
-            "tokens": sum(s["tokens"]["total"] for s in ps), "cost": round(sum(s["cost"] for s in ps), 2),
-            "own_always_tokens": tok(own), "est_always_tokens": tok(own + user_always),
-            "baseline_median": sorted(bl)[len(bl) // 2] if bl else None,
-            "counts": dict(collections.Counter(items_by_id[i]["kind"] for i in p["items"] if i in items_by_id)),
-        })
-    projects_out = sorted(proj_by_path.values(), key=lambda p: p.get("last_active") or "", reverse=True)
-
-    # --- time series (hourly for series_days) and totals
-    cutoff = (now - dt.timedelta(days=int(cfg["series_days"]))).strftime("%Y-%m-%dT%H")
-    hourly = collections.defaultdict(lambda: [0, 0, 0, 0, 0, 0.0])
-    for s in sess_list:
-        for hour, per in s["_hourly"].items():
-            if hour < cutoff:
-                continue
-            h = hourly[hour]
-            for model, row in per.items():
-                for i in range(5):
-                    h[i] += row[i]
-                h[5] += cost_of(model, row, pricing)
-    series = [{"t": h + ":00Z", "input": v[0], "cache_write": v[1] + v[2], "cache_read": v[3], "output": v[4],
-               "cost": round(v[5], 4)} for h, v in sorted(hourly.items())]
-
-    def window(days):
-        start = (now - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H")
-        rows = [r for r in series if r["t"][:13] >= start]
-        return {"tokens": sum(r["input"] + r["cache_write"] + r["cache_read"] + r["output"] for r in rows),
-                "cost": round(sum(r["cost"] for r in rows), 2),
-                "sessions": sum(1 for s in sess_list if (s["last_ts"] or "")[:13] >= start)}
-
-    recent_bl = [s["baseline_tokens"] for s in sess_list if s["baseline_tokens"] and interactive(s)][:30]
-    by_kind = collections.defaultdict(lambda: {"count": 0, "tokens_always": 0, "unused": 0})
-    for it in items:
-        if it["kind"] == "plugin":
-            continue
-        k = by_kind[it["kind"]]
-        k["count"] += 1
-        if it.get("enabled", True) and it["scope"] not in ("project", "local"):
-            k["tokens_always"] += it["tokens_always"]
-        if not it["usage"]["calls"] and it["kind"] in ("skill", "agent", "command", "mcp"):
-            k["unused"] += 1
-    active_cut = iso(now - dt.timedelta(seconds=max(300, 3 * parse_duration(cfg["interval"]))))
-
-    month = iso(now - dt.timedelta(days=30))
-    lost = [x for s in sess_list for x in s["_losses"] if x["ts"] >= month]
-    cache_loss = {"ttl_minutes": CACHE_TTL_SECONDS // 60, "days": 30, "count": len(lost),
-                  "sessions": len({x["session"] for x in lost}), "tokens": sum(x["tokens"] for x in lost),
-                  "extra_cost": round(sum(x["extra_cost"] for x in lost), 2),
-                  "worst": sorted(lost, key=lambda x: -x["extra_cost"])[:8]}
-
-    reels = reels_summary()
-    for rp in (reels or {}).get("projects", []):
-        same = [p for p in projects_out if rp.get("folder") and not p.get("worktree_of")
-                and p["path"].rsplit("/", 1)[-1] == rp["folder"]]
-        if same:  # backups and archives can share the folder name; ~/code is the home of real projects
-            best = max(same, key=lambda p: (p["path"] == f"~/code/{rp['folder']}", p["sessions"]))
-            best["reels"] = {"strong": rp["strong"], "total": rp["total"]}
-    for s in sess_list:
-        s.pop("_hourly", None)
-        s.pop("_ctx", None)
-        s.pop("_losses", None)
-    snap = {
-        "schema": 1, "collector_version": VERSION, "generated_at": iso(now), "host": socket.gethostname(),
-        "reels": reels, "cache_loss": cache_loss,
-        "interval": cfg["interval"], "claude_dir": short_path(CLAUDE_DIR),
-        "totals": {
-            "today": window(1), "week": window(7), "month": window(30),
-            "baseline_median": sorted(recent_bl)[len(recent_bl) // 2] if recent_bl else None,
-            "baseline_latest": recent_bl[0] if recent_bl else None,
-            "global_always_tokens_est": tok(user_always),
-            "by_kind": dict(by_kind), "sessions": len(sess_list),
-            "projects": sum(1 for p in projects_out if not p.get("worktree_of")),
-            "worktrees": sum(1 for p in projects_out if p.get("worktree_of")),
-            "active_sessions": sum(1 for s in sess_list if (s["last_ts"] or "") >= active_cut),
-        },
-        "latest_context": {
-            "system": tok(latest_ctx.get("system", 0)),
-            "tools_builtin": tok((latest_ctx.get("tools") or {}).get("builtin", 0)),
-            "tools_mcp": tok(sum(v for k, v in (latest_ctx.get("tools") or {}).items() if k != "builtin")),
-            "skills": tok(sum((latest_ctx.get("skills") or {}).values())),
-            "agents": tok(sum((latest_ctx.get("agents") or {}).values())),
-            "mcp_instructions": tok(sum((latest_ctx.get("mcp_instructions") or {}).values())),
-            "deferred": tok(sum((latest_ctx.get("deferred") or {}).values())),
-        } if latest_ctx else None,
-        "items": sorted(items, key=lambda x: -x["bytes_always"]),
-        "projects": projects_out,
-        "project_notes": project_notes(cfg),
-        "sessions": sess_list[: int(cfg["max_sessions"])],
-        "series": series,
-        "duplicates": duplicates,
-        "meta": {**{k: v for k, v in meta.items() if k != "settings"}, "elapsed_ms": int((time.time() - t0) * 1000),
-                 "transcript_files": len(files), "pricing": pricing},
-    }
-    return snap
-
-
-def append_history(snap: dict):
-    t = snap["totals"]
-    row = {"t": snap["generated_at"], "global_always": t["global_always_tokens_est"], "baseline": t["baseline_latest"],
-           "baseline_median": t["baseline_median"], "items": {k: v["count"] for k, v in t["by_kind"].items()},
-           "always_by_kind": {k: v["tokens_always"] for k, v in t["by_kind"].items()},
-           "today_tokens": t["today"]["tokens"], "today_cost": t["today"]["cost"]}
-    path = STX_HOME / "history.jsonl"
-    last = None
-    if path.exists():
-        with open(path, "rb") as f:
-            try:
-                f.seek(-4096, os.SEEK_END)
-            except OSError:
-                f.seek(0)
-            tail = f.read().splitlines()
-            last = json.loads(tail[-1]) if tail else None
-    sig = lambda r: json.dumps({k: v for k, v in (r or {}).items() if k not in ("t", "today_tokens", "today_cost")}, sort_keys=True)
-    hour_changed = not last or last["t"][:13] != row["t"][:13]
-    if sig(last) != sig(row) or hour_changed:
-        with open(path, "a") as f:
-            f.write(json.dumps(row) + "\n")
-
-
-def load_history(limit=2000) -> list:
-    path = STX_HOME / "history.jsonl"
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text().splitlines()[-limit:]:
-        try:
-            rows.append(json.loads(line))
-        except ValueError:
-            pass
-    return rows
-
-
 _lock = threading.Lock()
 
 
-def write_index(cfg: dict, snap: dict) -> str | None:
-    """workspaces.json: every session (not just the capped snapshot ones); never fails a collection, returns the error."""
-    sessions = cfg.pop("_sessions_all", None)
+_core: Core | None = None
+_core_lock = threading.Lock()
+
+
+def the_core() -> Core:
+    global _core
+    if _core is None:
+        with _core_lock:
+            if _core is None:
+                # ~/.claude.json, worked out here and not at import: tests point CLAUDE_DIR and the env at a fake home
+                _core = Core(STX_HOME, CLAUDE_DIR, Path(__file__).resolve().parent / "components",
+                             claude_json=(CLAUDE_DIR / ".claude.json") if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json")
+                _core.on_status = status
+    return _core
+
+
+def pass_error(core: Core, res: dict) -> str | None:
+    """Every component's error, as one string: the components that did not load, then the readers that failed."""
+    errs = [f"{c.name}: {c.error}" for c in core.components if c.error]
+    errs += [f"{name}: {e}" for name, comp in res["components"].items() for e in comp["errors"]]
+    return "; ".join(errs) or None
+
+
+last_error: str | None = None   # the errors of the last collection (pass_error), for the ways in that print them
+
+
+def _stamp(f: Path) -> int | None:
     try:
-        import workspaces
-        workspaces.clear_stale(workspaces.live(workspaces._bin(cfg)))
-        write_json(STX_HOME / "workspaces.json", workspaces.build_index(
-            sessions if sessions is not None else snap["sessions"], snap["projects"],
-            workspaces.app_records(workspaces.app_base()), cfg))
-    except Exception as e:  # noqa: BLE001
-        return f"{type(e).__name__}: {e}"
-    return None
+        return f.stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 def collect(cfg=None, probe=False) -> dict:
+    """One pass of the core as a collection: the snapshot this pass wrote, else {}. Its errors are kept in `last_error`."""
+    global last_error
     with _lock:
         cfg = cfg or load_config()
-        cfg["_probe_now"] = probe
         STX_HOME.mkdir(parents=True, exist_ok=True)
-        cache_path = STX_HOME / "cache.json"
-        cache = read_json(cache_path, {}) or {}
+        f = STX_HOME / "snapshot.json"
+        before = _stamp(f)
+        was = read_json(STX_HOME / "status.json", {})
+        was = was if isinstance(was, dict) else {}
         status("reading transcripts")
-        if probe:
-            # probe needs inventory first; run a pass to get items then probe
-            files = parse_transcripts(cache)
-            items, _, _ = inventory(cfg, cache, {st["cwd"] for st in files.values() if st.get("cwd")})
-            run_probes(items, cfg, cache)
-            cfg["_probe_now"] = False
-        snap = build_snapshot(cfg, cache)
-        snap["history"] = load_history()
-        write_json(cache_path, cache)
-        write_json(STX_HOME / "snapshot.json", snap)
-        append_history(snap)
-        snap["history"] = load_history()
-        write_json(STX_HOME / "snapshot.json", snap)
-        status("indexing workspaces")
-        err = write_index(cfg, snap)
-        status("idle", last_snapshot=snap["generated_at"], elapsed_ms=snap["meta"]["elapsed_ms"], index_error=err)
+        core = the_core()
+        res = core.run_pass(cfg, {"collector": {"version": VERSION, "probe": probe, "reels": reels_summary(),
+                                                "project_notes": project_notes(cfg)}})
+        after = _stamp(f)
+        snap = (read_json(f, {}) or {}) if after is not None and after != before else {}
+        last_error = pass_error(core, res)
+        last = ((snap.get("generated_at"), (snap.get("meta") or {}).get("elapsed_ms")) if snap   # no snapshot: keep the last one's
+                else (was.get("last_snapshot"), was.get("elapsed_ms")))
+        status("idle", last_snapshot=last[0], elapsed_ms=last[1], index_error=last_error, core_error=core.error)
         return snap
 
 
 # ---------------------------------------------------------------- serve
 
-PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/workspace": "workspace.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
+PAGES = {"/": "home.html", "/overview": "index.html", "/index.html": "index.html", "/project": "project.html", "/hierarchy": "hierarchy.html", "/hierarchy.html": "hierarchy.html",
          "/settings": "settings.html", "/settings.html": "settings.html", "/skills": "skills.html"}
 # Reel Brain's dashboard (built by reels/build_dashboard.py): /reels/ shows it inside the shell, /reels/raw is the page
 REELS_HOME = Path(os.path.expanduser(os.environ.get("REELS_HOME", "~/Knowledge/reels")))
 # Skill Library's catalog (built by skills_library/library.py), read by /skills through /api/skills
 SKILLS_HOME = Path(os.path.expanduser(os.environ.get("SKILLS_HOME", "~/Knowledge/skills")))
-REELS_FRAME = '<title>Reels · Stellaxis</title><iframe class="sx-frame" src="/reels/raw" title="Reel Brain dashboard"></iframe>'
+# A second set of notes, built by the same script with REELS_HOME pointing here: social media and digital marketing
+MARKETING_HOME = Path(os.path.expanduser(os.environ.get("MARKETING_REELS_HOME", "~/Knowledge/marketing-reels")))
+REEL_SETS = {"reels": "Reels", "marketing": "Marketing"}  # first part of the address -> name in the tab
+
+
+def reel_home(name: str) -> Path:
+    return REELS_HOME if name == "reels" else MARKETING_HOME
+
+
+def reels_frame(name: str) -> str:
+    return (f'<title>{REEL_SETS[name]} · Stellaxis</title><iframe class="sx-frame" src="/{name}/raw" '
+            f'title="{REEL_SETS[name]} reel notes"></iframe>')
 
 
 def reels_scripts(body: bytes) -> str:
@@ -1348,16 +253,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # the API through its parent frame, so only the page's own script may run: script-src blocks injected scripts
         # and event handlers. Not a sandbox, the app's browser pane refuses images inside sandboxed frames.
         raw = (getattr(self, "reels_csp", "script-src 'none'; ") + "connect-src 'none'; form-action 'none'; base-uri 'none'; "
-               if self.path.split("?")[0] == "/reels/raw" else "")
+               if self.path.split("?")[0] in ("/reels/raw", "/marketing/raw") else "")
         self.send_header("Content-Security-Policy", raw + "frame-ancestors 'self'")
         super().end_headers()
 
     def do_GET(self):
-        if not settings_api.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
+        if not core_server.host_ok(self):  # DNS rebinding: a hostile domain resolving to 127.0.0.1
             return self.send_error(403)
-        if settings_api.handle(self, "GET"):
+        if core_server.handle(the_core(), self, "GET", load_config()):
             return
-        if workspaces.handle(self, "GET", load_config()):
+        if jarvis.handle(self, "GET", load_config(), the_core()):
             return
         if self.path.split("?")[0] in ("/snapshot.json", "/api/snapshot", "/api/skills"):
             f = SKILLS_HOME / "catalog.json" if self.path.split("?")[0] == "/api/skills" else STX_HOME / "snapshot.json"
@@ -1369,15 +274,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         path = self.path.split("?")[0]
-        if path == "/reels":
-            self.send_response(301)
-            self.send_header("Location", "/reels/")
-            self.end_headers()
-            return
-        if path == "/reels/":
-            return self.send_body(shell_page(REELS_FRAME), "text/html; charset=utf-8")
-        if path == "/reels/raw" or path.startswith("/reels/images/"):
-            return self.send_reels(path)
+        name = path.split("/")[1]
+        if name in REEL_SETS:
+            if path == "/" + name:
+                self.send_response(301)
+                self.send_header("Location", f"/{name}/")
+                self.end_headers()
+                return
+            if path == f"/{name}/":
+                return self.send_body(shell_page(reels_frame(name)), "text/html; charset=utf-8")
+            if path == f"/{name}/raw" or path.startswith(f"/{name}/images/"):
+                return self.send_reels(name, path)
         page_file = PAGES.get(path)
         if page_file:
             # pages are authored as artifact bodies; give them the same skeleton the artifact host adds
@@ -1406,31 +313,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_reels(self, path):
-        if path == "/reels/raw":
-            f, ctype = REELS_HOME / "dashboard.html", "text/html; charset=utf-8"
+    def send_reels(self, which, path):
+        home = reel_home(which)
+        if path == f"/{which}/raw":
+            f, ctype = home / "dashboard.html", "text/html; charset=utf-8"
         else:
-            name = urllib.parse.unquote(path[len("/reels/images/"):])
-            f = REELS_HOME / "images" / name
+            name = urllib.parse.unquote(path[len(f"/{which}/images/"):])
+            f = home / "images" / name
             if "/" in name or name.startswith(".") or f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
                 return self.send_error(404)
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if not f.is_file():
             return self.send_error(404, "Reel Brain dashboard not built yet (run reels/build_dashboard.py)")
         body = f.read_bytes()
-        if path == "/reels/raw":
+        if path == f"/{which}/raw":
             self.reels_csp = reels_scripts(body)
         self.send_body(body, ctype, "no-store" if ctype.startswith("text/html") else "max-age=3600")
 
     def do_POST(self):
-        if not settings_api.host_ok(self):
+        if not core_server.host_ok(self):
             return self.send_error(403)
-        if not settings_api.handle(self, "POST") and not workspaces.handle(self, "POST", load_config()):
-            self.send_error(404)
+        if core_server.handle(the_core(), self, "POST", load_config()):
+            return
+        if jarvis.handle(self, "POST", load_config(), the_core()):
+            return
+        self.send_error(404)
 
 
 def serve():
     cfg = load_config()
+    the_core().service = True  # the components are imported here, on the main thread, before any thread starts
     last_probe = 0.0
 
     def loop():
@@ -1440,10 +352,15 @@ def serve():
             probe = c.get("probe_mcp") and time.time() - last_probe > parse_duration(c["probe_every"], 86400)
             try:
                 snap = collect(c, probe=bool(probe))
-                if probe:
+                if probe and snap:   # a pass that wrote no snapshot probes again next time
                     last_probe = time.time()
-                print(f"[{snap['generated_at']}] {snap['totals']['sessions']} sessions, "
-                      f"{len(snap['items'])} items, {snap['meta']['elapsed_ms']} ms", flush=True)
+                if snap:
+                    print(f"[{snap['generated_at']}] {snap['totals']['sessions']} sessions, "
+                          f"{len(snap['items'])} items, {snap['meta']['elapsed_ms']} ms", flush=True)
+                else:
+                    print("no snapshot was written", flush=True)
+                if last_error:
+                    print(f"collect failed: {last_error}", file=sys.stderr, flush=True)
             except Exception as e:  # keep the daemon alive
                 print(f"collect failed: {e!r}", file=sys.stderr, flush=True)
             time.sleep(max(10, parse_duration(c["interval"], 60)))
@@ -1482,11 +399,16 @@ def main():
         serve()
         return
     snap = collect(probe=a.probe) if a.cmd == "run" else read_json(STX_HOME / "snapshot.json", {})
+    if a.cmd == "run" and not snap and last_error:
+        print(f"collect failed: {last_error}", file=sys.stderr, flush=True)
+        sys.exit(1)
     if a.json:
         json.dump(snap, sys.stdout, indent=1, default=list)
     elif snap:
         print_summary(snap)
         print(f"\nsnapshot: {short_path(STX_HOME / 'snapshot.json')}")
+    if a.cmd == "run" and last_error:   # a snapshot was written, but a component failed
+        print(f"collect: {last_error}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

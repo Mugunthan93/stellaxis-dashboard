@@ -24,7 +24,9 @@
 .sx-side { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; gap: 22px; padding: 22px 14px 16px;
   background: var(--sx-bg); border-right: 1px solid var(--sx-line); box-shadow: var(--sx-shadow); overflow-y: auto;
   font: 400 14px/1.45 "Instrument Sans", "Helvetica Neue", system-ui, sans-serif; color: var(--sx-ink); z-index: 10; }
-.sx-brand { display: grid; gap: 2px; padding: 0 10px; text-decoration: none; color: inherit; }
+.sx-brand { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; align-items: center; padding: 0 10px; text-decoration: none; color: inherit; }
+/* Jarvis's hologram, small. On Home it fills the middle; home.html flies it to this corner on leaving and back from it on return (CORNER there). */
+.sx-orb { grid-row: span 2; width: 46px; height: 46px; border-radius: 50%; background: #040a0f; }
 .sx-brand b { font: 700 1.32rem/1.1 "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif; letter-spacing: -0.02em; }
 .sx-brand span { font-size: 0.8rem; color: var(--sx-muted); }
 
@@ -82,12 +84,13 @@
 <div class="sx-app">
   <aside class="sx-side" aria-label="Stellaxis">
     <a class="sx-brand" href="/">
+      <canvas class="sx-orb" id="sx-orb" aria-hidden="true"></canvas>
       <b>Stellaxis</b>
       <span>Home for every project on this Mac</span>
     </a>
     <nav class="sx-nav" aria-label="Pages">
       <div class="sx-group">
-        <h2>Workspace</h2>
+        <h2>Projects</h2>
         <a class="sx-link" href="/" data-match="^/$">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-6.5 8 6.5"/><path d="M6 9.5V19h12V9.5"/><path d="M10 19v-5h4v5"/></svg>
           Home</a>
@@ -110,6 +113,9 @@
         <a class="sx-link" href="/reels/" data-match="^/reels">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 9h17M8 4l2.5 5M13.5 4l2.5 5"/><path d="M10.5 12.5v4.5l3.8-2.25z"/></svg>
           Reels</a>
+        <a class="sx-link" href="/marketing/" data-match="^/marketing">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z"/><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M7 14l1.2 5h2.3"/></svg>
+          Marketing</a>
         <a class="sx-link" href="/skills" data-match="^/skills">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5a2 2 0 0 1 2 2V20H7a2 2 0 0 1-2-2z"/><path d="M5 18a2 2 0 0 1 2-2h9.5"/><path d="M19.5 7v13"/><path d="M9 8.5h4M9 11.5h3"/></svg>
           Skills</a>
@@ -124,6 +130,8 @@
 <!--PAGE-->
   </main>
 </div>
+<script src="/jarvis-orb.js"></script>
+<script>if (window.JarvisOrb) JarvisOrb(document.getElementById("sx-orb"), { small: true });</script>
 <script>
 (() => {
   const path = location.pathname;
@@ -139,9 +147,9 @@
     try {
       const st = await (await fetch("/api/status", { cache: "no-store" })).json();
       const busy = st.phase && st.phase !== "idle";
-      const failed = !busy && st.index_error;
+      const failed = !busy && (st.index_error || st.core_error);
       box.dataset.state = failed ? "down" : busy ? "busy" : "ok";
-      text.textContent = failed ? "Workspace index failed: " + String(st.index_error).slice(0, 120) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
+      text.textContent = failed ? (st.index_error ? "A component failed: " + String(st.index_error).slice(0, 120) : "Store failed: " + String(st.core_error).slice(0, 120)) : busy ? "Collecting: " + st.phase : "Collector idle · " + (st.last_snapshot ? "updated " + ago(st.last_snapshot) : "no snapshot yet");
     } catch {
       box.dataset.state = "down";
       text.textContent = "Collector unreachable";
@@ -149,14 +157,14 @@
   }
   poll();
   setInterval(poll, 30000);
-  // workspace links come from the API; if it fails the static links above still work
+  // project links come from the API; if it fails the static links above still work
   (async () => {
     try {
-      const d = await (await fetch("/api/workspaces", { cache: "no-store" })).json();
+      const d = await (await fetch("/api/projects", { cache: "no-store" })).json();
       const cur = new URLSearchParams(location.search).get("id");
       const esc = v => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-      document.getElementById("sx-ws").innerHTML = d.workspaces.filter(w => w.repos.length).map(w =>
-        `<a class="sx-link" href="/workspace?id=${encodeURIComponent(w.id)}"${path === "/workspace" && cur === w.id ? ' aria-current="page"' : ""}>`
+      document.getElementById("sx-ws").innerHTML = d.projects.filter(w => w.repos.length).map(w =>
+        `<a class="sx-link" href="/project?id=${encodeURIComponent(w.id)}"${path === "/project" && cur === w.id ? ' aria-current="page"' : ""}>`
         + `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>${esc(w.name)}</a>`).join("");
     } catch {}
   })();

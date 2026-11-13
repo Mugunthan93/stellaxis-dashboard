@@ -1,9 +1,10 @@
-"""Read and save Claude Code settings files for the dashboard's Settings page.
+"""Read and save Claude Code settings files for the dashboard's Settings page (from settings_api.py).
 
 Scopes: user (~/.claude/settings.json, every session on this Mac), project (<repo>/.claude/settings.json)
 and local (<repo>/.claude/settings.local.json). Saves validate, back up the old file next to it as
 <name>.bak-<stamp>, keep the file's existing JSON formatting, and replace it atomically. A save whose
 content is unchanged writes the original bytes back, so a no-op save is byte-for-byte identical.
+A save is the action `save_settings`: its manifest lets `prune.py restore` put the old file back.
 
   GET  /api/settings?scope=user|project|local&project=<path>
   POST /api/settings/preview   {scope, project, data}            -> unified diff
@@ -18,40 +19,36 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
-HOME = Path.home()
-CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude")).expanduser()
-STX_HOME = Path(os.environ.get("STELLAXIS_HOME", HOME / ".stellaxis")).expanduser()
-REPO_DIR = Path(__file__).resolve().parent.parent
+from core import util
+from core.server import ApiError, host_ok, read_body, send_json
+from core.undo import pre
+from core.util import short_path
+
+REPO_DIR = Path(__file__).resolve().parents[3]
 SCOPES = {"user", "project", "local"}
 DEFAULT_FORMAT = {"indent": 2, "ascii": False, "newline": False}  # what Claude Code itself writes
-MAX_BODY = 2_000_000
 
 HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Notification",
                "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "PreCompact", "SessionStart",
                "SessionEnd"]
 
 
-class ApiError(Exception):
-    def __init__(self, status: int, msg: str, **extra):
-        super().__init__(msg)
-        self.status, self.msg, self.extra = status, msg, extra
-
-
 # ---------------------------------------------------------------- files
 
-def known_projects() -> list[str]:
+def known_projects(ctx) -> list[str]:
     """Folders the user may pick for project/local scope: this repo plus every project in the snapshot."""
     out = [str(_main_checkout(REPO_DIR))]
     try:
-        snap = json.loads((STX_HOME / "snapshot.json").read_text(encoding="utf-8"))
+        snap = json.loads((ctx.home / "snapshot.json").read_text(encoding="utf-8"))
         out += [p["path"] for p in snap.get("projects", []) if p.get("path")]
     except (OSError, ValueError, TypeError, KeyError):
         pass
     seen, res = set(), []
     for p in out:
         p = str(Path(p).expanduser())
-        if p not in seen and p != str(HOME):
+        if p not in seen and p != str(util.HOME):
             seen.add(p)
             res.append(p)
     return res
@@ -67,15 +64,15 @@ def _main_checkout(p: Path) -> Path:
     return p
 
 
-def settings_path(scope: str, project: str | None) -> Path:
+def settings_path(ctx, scope: str, project: str | None) -> Path:
     if scope not in SCOPES:
         raise ApiError(400, f"unknown scope {scope!r}")
     if scope == "user":
-        return CLAUDE_DIR / "settings.json"
+        return ctx.claude_dir / "settings.json"
     if not project:
         raise ApiError(400, "project scope needs a project folder")
     proj = str(Path(project).expanduser())
-    if proj not in known_projects():
+    if proj not in known_projects(ctx):
         raise ApiError(400, f"{proj} is not a known project folder")
     name = "settings.json" if scope == "project" else "settings.local.json"
     return Path(proj) / ".claude" / name
@@ -210,8 +207,8 @@ def validate(data) -> list[str]:
 
 # ---------------------------------------------------------------- operations
 
-def load(scope: str, project: str | None) -> dict:
-    p = settings_path(scope, project)
+def load(ctx, scope: str, project: str | None) -> dict:
+    p = settings_path(ctx, scope, project)
     raw = read_bytes(p)
     data, error = ({}, None) if raw is None else (None, None)
     if raw is not None:
@@ -222,16 +219,16 @@ def load(scope: str, project: str | None) -> dict:
     fmt = detect_format(raw, data)
     return {"scope": scope, "project": project, "path": str(p), "exists": raw is not None,
             "text": None if raw is None else raw.decode("utf-8", "replace"), "data": data,
-            "sha": sha(raw), "format": fmt, "error": error, "projects": known_projects(),
-            "default_project": known_projects()[0], "hook_events": HOOK_EVENTS}
+            "sha": sha(raw), "format": fmt, "error": error, "projects": known_projects(ctx),
+            "default_project": known_projects(ctx)[0], "hook_events": HOOK_EVENTS}
 
 
-def _plan(body: dict):
+def _plan(ctx, body: dict):
     scope, project, data = body.get("scope", "user"), body.get("project"), body.get("data")
     errs = validate(data)
     if errs:
         raise ApiError(422, "settings did not validate", errors=errs)
-    p = settings_path(scope, project)
+    p = settings_path(ctx, scope, project)
     raw = read_bytes(p)
     old = None
     if raw is not None:
@@ -246,8 +243,8 @@ def _plan(body: dict):
     return p, raw, new, unchanged
 
 
-def preview(body: dict) -> dict:
-    p, raw, new, unchanged = _plan(body)
+def preview(ctx, body: dict) -> dict:
+    p, raw, new, unchanged = _plan(ctx, body)
     old_text = "" if raw is None else raw.decode("utf-8", "replace")
     diff = "".join(difflib.unified_diff(old_text.splitlines(True), new.decode("utf-8").splitlines(True),
                                         fromfile=f"{p} (on disk)", tofile=f"{p} (after save)", n=3))
@@ -255,19 +252,25 @@ def preview(body: dict) -> dict:
             "sha": sha(raw), "exists": raw is not None}
 
 
-def save(body: dict) -> dict:
-    p, raw, new, unchanged = _plan(body)
+def backup_name(p: Path) -> Path:
+    """<name>.bak-<stamp> beside the file, with -1, -2, ... when that name is taken."""
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    b = p.with_name(f"{p.name}.bak-{stamp}")
+    n = 1
+    while b.exists():
+        b = p.with_name(f"{p.name}.bak-{stamp}-{n}")
+        n += 1
+    return b
+
+
+def save(ctx, body: dict) -> dict:
+    p, raw, new, unchanged = _plan(ctx, body)
     if body.get("base_sha", "missing") != sha(raw):
         raise ApiError(409, "the file changed on disk since you loaded it; reload and re-apply your edits",
                        sha=sha(raw))
     backup = None
     if raw is not None:
-        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        b = p.with_name(f"{p.name}.bak-{stamp}")
-        n = 1
-        while b.exists():
-            b = p.with_name(f"{p.name}.bak-{stamp}-{n}")
-            n += 1
+        b = backup_name(p)
         atomic_write(b, raw, p.stat().st_mode & 0o777)
         backup = str(b)
     atomic_write(p, new)
@@ -275,52 +278,60 @@ def save(body: dict) -> dict:
             "bytes_identical": raw == new}
 
 
+# ---------------------------------------------------------------- action and undo
+
+def save_settings(plan, ctx, body: dict) -> bool:
+    if not plan.apply:
+        plan.result = preview(ctx, body)
+        plan.say(f"save {short_path(plan.result['path'])}")
+        return True
+    plan.result = save(ctx, body)
+    plan.say(f"save {short_path(plan.result['path'])}")
+    plan.manifest["entries"].append({"op": "claude_management.settings_file", "file": plan.result["path"], "backup": plan.result["backup"],
+                                     "sha": plan.result["sha"]})
+    return True
+
+
+save_settings.private = ("body",)
+
+
+def _keep_changed(f: Path, entry: dict, apply: bool) -> str:
+    """When the file is not what the save wrote, keep a copy of it beside it first. The words to add to the undo's line."""
+    raw = read_bytes(f)
+    if raw is None or sha(raw) == entry.get("sha"):   # an entry without "sha" (older code) counts as changed
+        return ""
+    copy = backup_name(f)
+    if apply:
+        atomic_write(copy, raw, f.stat().st_mode & 0o777)
+        return f"; it changed since the save, a copy is kept as {short_path(copy)}"
+    return f"; it changed since the save, a copy would be kept as {short_path(copy)}"
+
+
+def settings_file(entry: dict, apply: bool, out, ctx) -> bool:
+    """Undo a save: the file gets the bytes and mode of its backup back, or goes when the save made it. A file changed
+    since the save is copied beside it first, so no edit is lost."""
+    f = Path(entry["file"])
+    if entry["backup"] is None:
+        kept = _keep_changed(f, entry, apply)
+        out(f"{pre(apply)}remove {short_path(f)}: it did not exist before the save{kept}")
+        if apply and f.exists():
+            f.unlink()
+        return True
+    backup = Path(entry["backup"])
+    if not backup.is_file():
+        out(f"{pre(apply)}{short_path(backup)} is missing: {short_path(f)} was not put back")
+        return False
+    kept = _keep_changed(f, entry, apply)
+    out(f"{pre(apply)}put {short_path(f)} back from {short_path(backup)}{kept}")
+    if apply:
+        atomic_write(f, backup.read_bytes(), backup.stat().st_mode & 0o777)
+    return True
+
+
 # ---------------------------------------------------------------- http
 
-def host_ok(handler) -> bool:
-    # reject DNS-rebinding and cross-site requests: only our own localhost origin may read or write
-    port = handler.server.server_address[1]
-    allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
-    if handler.headers.get("Host", "") not in allowed:
-        return False
-    origin = handler.headers.get("Origin")
-    return origin is None or origin.split("://", 1)[-1] in allowed
-
-
-def _send(handler, status: int, obj):
-    body = json.dumps(obj).encode()
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-def read_body(handler) -> dict:
-    """The JSON object a POST sent; ApiError for a wrong content type, a big body or bad JSON."""
-    if "application/json" not in handler.headers.get("Content-Type", ""):
-        raise ApiError(415, "send application/json")
-    try:
-        n = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        n = -1
-    if n < 0:
-        raise ApiError(400, "bad Content-Length")
-    if n > MAX_BODY:
-        raise ApiError(413, "request too large")
-    try:
-        body = json.loads(handler.rfile.read(n) or b"{}")
-    except ValueError as e:
-        raise ApiError(400, f"request body is not JSON: {e}")
-    if not isinstance(body, dict):
-        raise ApiError(400, "request body must be an object")
-    return body
-
-
-def handle(handler, method: str) -> bool:
+def handle(handler, method: str, ctx) -> bool:
     """Serve /api/settings*. Returns False when the path is not ours."""
-    from urllib.parse import parse_qs, urlsplit
     u = urlsplit(handler.path)
     if not u.path.startswith("/api/settings"):
         return False
@@ -329,15 +340,15 @@ def handle(handler, method: str) -> bool:
             raise ApiError(403, "settings API only answers same-origin localhost requests")
         if method == "GET" and u.path == "/api/settings":
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
-            _send(handler, 200, load(q.get("scope", "user"), q.get("project")))
+            send_json(handler, 200, load(ctx, q.get("scope", "user"), q.get("project")))
             return True
         if method == "POST" and u.path in ("/api/settings/preview", "/api/settings/save"):
             body = read_body(handler)
-            _send(handler, 200, (preview if u.path.endswith("preview") else save)(body))
+            send_json(handler, 200, ctx.act("save_settings", {"body": body}, u.path.endswith("save"))["result"])
             return True
         raise ApiError(404, "no such settings endpoint")
     except ApiError as e:
-        _send(handler, e.status, {"error": e.msg, **e.extra})
+        send_json(handler, e.status, {"error": e.msg, **e.extra})
     except OSError as e:
-        _send(handler, 500, {"error": f"{type(e).__name__}: {e}"})
+        send_json(handler, 500, {"error": f"{type(e).__name__}: {e}"})
     return True

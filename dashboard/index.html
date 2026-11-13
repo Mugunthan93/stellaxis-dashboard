@@ -91,6 +91,20 @@ header.top .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: 
 /* budget bar */
 .budget { display: flex; height: 34px; border-radius: 6px; overflow: hidden; background: var(--sunk); }
 .budget span { display: block; height: 100%; min-width: 2px; }
+/* story strip: baseline -> today's sessions -> the month's cost, played once as one move */
+.story-stage { position: relative; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px 32px; align-items: start; }
+.st-block { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.st-now { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); min-height: 1.4em; }
+.st-bar { display: flex; height: 26px; border-radius: 13px; overflow: hidden; background: var(--sunk); }
+.st-bar span { display: block; height: 100%; min-width: 2px; transform-origin: left center; }
+.st-dots { display: grid; grid-template-columns: repeat(12, 12px); gap: 6px; width: max-content; max-width: 100%; min-height: 26px; align-content: start; }
+.st-dots i { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); opacity: 0.75; }
+.st-dots i.on { background: var(--good); opacity: 1; }
+.st-fig { font-size: 0.86rem; color: var(--muted); }
+.st-fig b { font: 600 1.15rem var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.st-big { font: 700 2.7rem/1 var(--display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; transform-origin: left center; }
+.st-carry { position: absolute; left: 0; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--accent); opacity: 0; pointer-events: none; }
+@media (max-width: 860px) { .story-stage { grid-template-columns: minmax(0, 1fr); } }
 .legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px 18px; margin: 0; padding: 0; list-style: none; }
 .legend li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; font-size: 0.86rem; }
 .legend i { width: 12px; height: 12px; border-radius: 3px; }
@@ -150,7 +164,34 @@ footer { font-size: 0.8rem; color: var(--muted); }
   .chips { gap: 8px; }
   .reels summary { min-height: 44px; align-items: center; }
 }
-@media (prefers-reduced-motion: no-preference) { .budget span { transition: flex-basis 0.4s ease; } }
+/* Motion: each piece moves once, when it first has something to show, then holds still. All of it is off for
+   readers who ask for less motion, and nothing is hidden if a script fails. */
+@media (prefers-reduced-motion: no-preference) {
+  .budget span { transition: flex-basis 0.4s ease; }
+  .wrap > * { animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .wrap > :nth-child(2) { animation-delay: 0.04s; }
+  .wrap > :nth-child(3) { animation-delay: 0.08s; }
+  .wrap > :nth-child(4) { animation-delay: 0.12s; }
+  .wrap > :nth-child(5) { animation-delay: 0.16s; }
+  .wrap > :nth-child(n+6) { animation-delay: 0.2s; }
+  .budget.drawn { animation: wipe 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .legend.drawn li { animation: rise 0.4s ease-out both; }
+  .legend.drawn li:nth-child(2) { animation-delay: 0.05s; }
+  .legend.drawn li:nth-child(3) { animation-delay: 0.1s; }
+  .legend.drawn li:nth-child(4) { animation-delay: 0.15s; }
+  .legend.drawn li:nth-child(n+5) { animation-delay: 0.2s; }
+  svg.draw .ln { stroke-dasharray: 1; animation: draw 0.9s ease-out both; }
+  svg.draw .ar { animation: fade 0.6s 0.4s ease-out both; }
+  svg.draw .pt { transform-box: fill-box; transform-origin: center; animation: pop 0.3s 0.8s ease-out both; }
+  [role="tabpanel"]:not([hidden]) { animation: fade 0.25s ease-out; }
+  .btn, .chip, .seg button, .tabs button, tbody tr.row { transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s; }
+  .btn:active, .chip:active, .seg button:active { transform: translateY(1px); }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes fade { from { opacity: 0; } }
+@keyframes wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes pop { from { opacity: 0; transform: scale(0); } }
 </style>
 
 <div class="wrap">
@@ -167,6 +208,34 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
   <div class="notice" id="feed-note" hidden></div>
   <div class="notice" id="feed-diag" style="border-style:solid">Checking data sources…</div>
+
+  <section class="panel" aria-labelledby="story-h" id="story" hidden>
+    <div class="panel-head">
+      <h2 id="story-h">How it adds up</h2>
+      <p>What every session loads, how many sessions paid it today, and what the month came to.</p>
+      <span class="spacer"></span>
+      <button class="btn" type="button" id="story-replay">Replay</button>
+    </div>
+    <div class="story-stage" id="story-stage">
+      <div class="st-block" id="st-base">
+        <span class="eyebrow">Before you type</span>
+        <div class="st-now" id="st-now"></div>
+        <div class="st-bar" id="st-bar" role="img" aria-label="Baseline context by source"></div>
+        <div class="st-fig"><b id="st-total"></b> tokens loaded into the latest session</div>
+      </div>
+      <div class="st-block" id="st-today">
+        <span class="eyebrow">Today</span>
+        <div class="st-dots" id="st-dots" aria-hidden="true"></div>
+        <div class="st-fig"><b id="st-sess"></b> <span id="st-sess-sub"></span></div>
+      </div>
+      <div class="st-block" id="st-month">
+        <span class="eyebrow">Last 30 days</span>
+        <div class="st-big" id="st-cost"></div>
+        <div class="st-fig" id="st-cost-sub"></div>
+      </div>
+      <i class="st-carry" id="st-carry" aria-hidden="true"></i>
+    </div>
+  </section>
 
   <section class="kpis" id="kpis" aria-label="Summary">
     <div class="kpi"><span class="eyebrow">Baseline context</span><span class="v">—</span><span class="s">tokens loaded before your first message</span></div>
@@ -468,7 +537,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     $("#status-text").textContent = !s ? "Waiting for data" : st.mode === "live" ? `Live · ${s.host}` : st.mode === "local" ? `Local · ${s.host}` : `Snapshot · ${s.host}`;
     $("#updated").textContent = s ? "updated " + ago(s.generated_at) : "";
     if (!s) return;
-    renderKpis(s); renderBudget(s); renderChart(s); renderCold(s); renderReels(s); renderNotes(s); renderTabs(s);
+    renderStory(s); renderKpis(s); renderBudget(s); renderChart(s); renderCold(s); renderReels(s); renderNotes(s); renderTabs(s);
   }
 
   function renderCold(s) {
@@ -517,14 +586,106 @@ footer { font-size: 0.8rem; color: var(--muted); }
     }).join("");
   }
 
+  // A figure counts up to its value the first time, and from its old value when it changes.
+  const calm = matchMedia("(prefers-reduced-motion: reduce)");
+  function countTo(el, to, fmt, dur = 700) {
+    const from = el._n ?? 0;
+    cancelAnimationFrame(el._raf);
+    if (typeof to !== "number" || !isFinite(to) || calm.matches || from === to) { el._n = to; el.textContent = fmt(to); return; }
+    el._n = to;
+    const t0 = performance.now();
+    const step = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      const v = from + (to - from) * (1 - Math.pow(1 - p, 3));
+      el.textContent = fmt(Number.isInteger(to) ? Math.round(v) : v);
+      if (p < 1) el._raf = requestAnimationFrame(step);
+    };
+    el._raf = requestAnimationFrame(step);
+  }
+
+  // ---------- story strip. One pass of motion, then it rests as a plain summary of the same snapshot figures.
+  // A dot carries the eye from the baseline bar to today's sessions to the month's cost, so the three read as one chain.
+  function renderStory(s) {
+    const lc = s.latest_context, t = s.totals, box = $("#story");
+    const segs = lc ? CTX.filter(([k]) => lc[k]).map(([k, label, c]) => ({ label, c, n: lc[k] })) : [];
+    const total = segs.reduce((a, x) => a + x.n, 0);
+    if (!t || !total) { box.hidden = true; return; }
+    const key = [total, t.today.sessions, t.today.tokens, t.month.cost, t.active_sessions].join("|");
+    if (key === st.storyKey) return;  // same figures: leave the strip alone
+    const first = st.storyKey == null;
+    st.storyKey = key; box.hidden = false;
+    const shown = Math.min(t.today.sessions, 60), active = Math.min(t.active_sessions, shown);
+    $("#st-bar").innerHTML = segs.map(x => `<span style="flex-basis:${(x.n / total * 100).toFixed(2)}%;background:var(${x.c})" title="${x.label}: ${fmtT(x.n)}"></span>`).join("");
+    $("#st-dots").innerHTML = Array.from({ length: shown }, (_, i) => `<i${i < active ? ' class="on"' : ""}></i>`).join("");
+    st.story = { segs, total, t, shown, top: segs.reduce((a, x) => x.n > a.n ? x : a) };
+    storyRest();
+    $("#story-replay").hidden = calm.matches;
+    if (first && !calm.matches) playStory();
+  }
+  const whole = v => String(Math.round(v));
+  function storyRest() {
+    const { total, t, shown, top } = st.story;
+    const put = (id, n, fmt) => { const el = $(id); cancelAnimationFrame(el._raf); el._n = n; el.textContent = fmt(n); };
+    put("#st-total", total, fmtT); put("#st-sess", t.today.sessions, whole); put("#st-cost", t.month.cost, fmt$);
+    $("#st-now").textContent = `Largest: ${top.label}, ${fmtT(top.n)}`;
+    $("#st-sess-sub").textContent = `session${t.today.sessions === 1 ? "" : "s"} · ${fmtT(t.today.tokens)} tokens`
+      + (t.active_sessions ? ` · ${t.active_sessions} active now (green)` : "") + (shown < t.today.sessions ? ` · first ${shown} drawn` : "");
+    $("#st-cost-sub").textContent = `notional API cost · ${t.month.sessions} sessions`;
+  }
+  function playStory() {
+    const { segs, total, t, shown } = st.story, stage = $("#story-stage");
+    (st.storyTimers || []).forEach(clearTimeout); st.storyTimers = [];
+    stage.getAnimations({ subtree: true }).forEach(a => a.cancel());
+    storyRest();
+    const later = (ms, fn) => st.storyTimers.push(setTimeout(fn, ms));
+    const out = "cubic-bezier(0.2, 0.8, 0.2, 1)", back = "cubic-bezier(0.3, 1.4, 0.5, 1)";
+    const from = (el, frame, at, ms, easing = out) => el.animate([{ ...frame, offset: 0 }], { duration: ms, delay: at, fill: "backwards", easing });
+    const count = (id, to, fmt, at, ms) => { const el = $(id); el._n = 0; el.textContent = fmt(0); later(at, () => countTo(el, to, fmt, ms)); };
+    // the dot hops from the right edge of one block to the start of the next
+    const carry = (a, b, at) => later(at, () => {
+      const o = stage.getBoundingClientRect(), ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const ax = ra.right - o.left, ay = ra.top + ra.height / 2 - o.top, bx = rb.left + 6 - o.left, by = rb.top + 6 - o.top;
+      $("#st-carry").animate([
+        { opacity: 1, transform: `translate(${ax}px, ${ay}px) scale(1)` },
+        { opacity: 1, transform: `translate(${(ax + bx) / 2}px, ${Math.min(ay, by) - 26}px) scale(1.3)` },
+        { opacity: 1, transform: `translate(${bx}px, ${by}px) scale(1)` }], { duration: 550, easing: "ease-in-out" });
+    });
+
+    // 1. the baseline builds, one source at a time, while its total counts up
+    const gap = 220, t1 = 300 + segs.length * gap + 250;
+    segs.forEach((x, i) => {
+      from($("#st-bar").children[i], { transform: "scaleX(0)" }, 300 + i * gap, 260);
+      later(300 + i * gap, () => { $("#st-now").textContent = `${x.label} · ${fmtT(x.n)}`; });
+    });
+    $("#st-now").textContent = "";
+    count("#st-total", total, fmtT, 300, segs.length * gap + 200);
+    later(t1, () => { $("#st-now").textContent = `Largest: ${st.story.top.label}, ${fmtT(st.story.top.n)}`; });
+
+    // 2. it lands on today, and one dot appears per session
+    const t2 = t1 + 550, step = shown ? Math.min(30, 900 / shown) : 0, t3 = t2 + shown * step + 500;
+    carry($("#st-bar"), $("#st-dots"), t1);
+    from($("#st-today"), { opacity: 0 }, t2 - 150, 300);
+    [...$("#st-dots").children].forEach((d, i) =>
+      from(d, { opacity: 0, transform: `translate(${-(i % 12) * 18}px, ${-Math.floor(i / 12) * 18}px) scale(0)` }, t2 + i * step, 420, back));
+    count("#st-sess", t.today.sessions, whole, t2, shown * step + 300);
+
+    // 3. it lands on the month, and the cost counts up
+    const t4 = t3 + 550;
+    carry($("#st-dots"), $("#st-cost"), t3);
+    from($("#st-month"), { opacity: 0 }, t4 - 100, 300);
+    from($("#st-cost"), { opacity: 0, transform: "scale(0.6)" }, t4, 450, back);
+    count("#st-cost", t.month.cost, fmt$, t4, 900);
+  }
+  $("#story-replay").addEventListener("click", () => { if (st.story && !calm.matches) playStory(); });
+
   function renderKpis(s) {
     const t = s.totals, k = $$("#kpis .kpi");
-    const set = (i, v, sub) => { $(".v", k[i]).textContent = v; if (sub) $(".s", k[i]).textContent = sub; };
-    set(0, fmtT(t.baseline_latest), t.baseline_median ? `median ${fmtT(t.baseline_median)} over recent sessions` : "no sessions yet");
-    set(1, fmtT(t.global_always_tokens_est), "estimated from config files and listings");
-    set(2, fmtT(t.today.tokens), `${fmt$(t.today.cost)} · ${t.today.sessions} sessions`);
-    set(3, fmt$(t.month.cost), `${fmtT(t.month.tokens)} tokens · ${t.month.sessions} sessions`);
-    set(4, String(t.active_sessions), `of ${t.sessions} sessions in ${t.projects} projects${t.worktrees ? ` + ${t.worktrees} worktrees` : ""}`);
+    const set = (i, v, fmt, sub) => { countTo($(".v", k[i]), v, fmt); if (sub) $(".s", k[i]).textContent = sub; };
+    set(0, t.baseline_latest, fmtT, t.baseline_median ? `median ${fmtT(t.baseline_median)} over recent sessions` : "no sessions yet");
+    set(1, t.global_always_tokens_est, fmtT, "estimated from config files and listings");
+    set(2, t.today.tokens, fmtT, `${fmt$(t.today.cost)} · ${t.today.sessions} sessions`);
+    set(3, t.month.cost, fmt$, `${fmtT(t.month.tokens)} tokens · ${t.month.sessions} sessions`);
+    set(4, t.active_sessions, v => String(Math.round(v)), `of ${t.sessions} sessions in ${t.projects} projects${t.worktrees ? ` + ${t.worktrees} worktrees` : ""}`);
   }
 
   function renderBudget(s) {
@@ -536,6 +697,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
     const total = CTX.reduce((a, [k]) => a + (lc[k] || 0), 0) || 1;
     bar.innerHTML = CTX.map(([k, label, c]) => lc[k] ? `<span style="flex-basis:${(lc[k] / total * 100).toFixed(2)}%;background:var(${c})" title="${label}: ${fmtT(lc[k])}"></span>` : "").join("");
     leg.innerHTML = CTX.map(([k, label, c]) => `<li><i style="background:var(${c})"></i><span>${label}</span><b>${fmtT(lc[k] || 0)}</b></li>`).join("");
+    bar.classList.add("drawn"); leg.classList.add("drawn");  // set once: the bar wipes in the first time it has data
     const m = s.sessions[0]?.measured_context;
     const flags = [];
     if (m?.skill_count) flags.push(`<span class="pill acc">${m.skill_count} skills listed</span>`);
@@ -581,10 +743,13 @@ footer { font-size: 0.8rem; color: var(--muted); }
     let xl = "";
     data.forEach((d, i) => { if (i % step === 0 || i === data.length - 1) xl += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${label(d.t)}</text>`; });
     const last = data[data.length - 1];
-    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${st.metric} per ${st.unit}">
-      ${g}<path d="${area}" fill="var(--accent)" fill-opacity="0.12"/>
-      <polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
-      <circle cx="${x(data.length - 1)}" cy="${y(last.v)}" r="4" fill="var(--accent)"/>${xl}</svg>`;
+    // draw the line in only when the chart shows something new, not on every refresh of the same data
+    const key = [st.metric, st.unit, data.length, last.v].join("|"), fresh = key !== st.chartKey;
+    st.chartKey = key;
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${st.metric} per ${st.unit}"${fresh ? ' class="draw"' : ""}>
+      ${g}<path class="ar" d="${area}" fill="var(--accent)" fill-opacity="0.12"/>
+      <polyline class="ln" pathLength="1" points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+      <circle class="pt" cx="${x(data.length - 1)}" cy="${y(last.v)}" r="4" fill="var(--accent)"/>${xl}</svg>`;
     const total = data.reduce((a, d) => a + d.v, 0);
     $("#chart-note").textContent = st.metric === "baseline"
       ? `Latest ${fmtT(last.v)} tokens. Watch this drop after pruning.`

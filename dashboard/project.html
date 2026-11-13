@@ -1,9 +1,9 @@
-<title>Stellaxis Workspace</title>
+<title>Stellaxis Project</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Workspace: repo > branch > session rows from /api/workspaces, with open, message and start actions. Sessions, Tasks, Plans, Routines and Tests tabs. */
+/* Project: repo > branch > session rows from /api/projects, with open, message and start actions. Sessions, Tasks, Plans, Routines and Tests tabs. */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --sunk: #e9ebe6; --ink: #17201c; --muted: #5a6560; --line: #d8ddd7;
   --accent: #2c55c9; --accent-soft: #dfe6f8;
@@ -84,12 +84,13 @@ textarea.inp { resize: vertical; }
 .sw { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--muted); cursor: pointer; }
 </style>
 <div class="wrap">
-  <header><h1 id="title">Workspace</h1></header>
+  <header><h1 id="title">Project</h1></header>
+  <div class="notice" id="share" hidden></div>
   <div class="notice" id="live-note" hidden>Live status is unavailable, so session status can't be shown.</div>
   <div class="bad" id="sw-err" role="alert" hidden></div>
-  <div class="notice" id="load-note" hidden>Couldn't load workspaces. Retrying.</div>
+  <div class="notice" id="load-note" hidden>Couldn't load projects. Retrying.</div>
   <section class="panel">
-    <div class="tabs" role="tablist" aria-label="Workspace views">
+    <div class="tabs" role="tablist" aria-label="Project views">
       <button type="button" role="tab" id="tab-sessions" data-tab="sessions" aria-selected="true">Sessions</button>
       <button type="button" role="tab" id="tab-tasks" data-tab="tasks" aria-selected="false">Tasks</button>
       <button type="button" role="tab" id="tab-plans" data-tab="plans" aria-selected="false">Plans</button>
@@ -185,17 +186,17 @@ function drawWork() {
   for (const p of work.plans) (byRepo[p.repo] = byRepo[p.repo] || []).push(p);
   $("plans").innerHTML = work.plans.length
     ? Object.keys(byRepo).map(r => section(r, byRepo[r].map(p => `<li><span class="t">${esc(p.title)}</span><span class="m mono">${esc(p.repo)}</span><span class="m">${esc(when(p.modified))}</span></li>`))).join("")
-    : `<div class="empty">No plans in this workspace's repos.</div>`;
+    : `<div class="empty">No plans in this project's repos.</div>`;
   $("routines").innerHTML = `<p class="hint">Run history isn't available here.</p>` + (work.routines.length
     ? `<ul class="rows">` + work.routines.map(r => `<li><span class="t mono">${esc(r.name)}</span><span class="m">${esc(r.description)}</span></li>`).join("") + `</ul>`
-    : `<div class="empty">No routines for this workspace.</div>`);
+    : `<div class="empty">No routines for this project.</div>`);
   drawTests();
 }
 let testErr = "";
 function drawTests() {
   const rs = work ? work.tests : null;
   if (!rs) { $("tests").innerHTML = `<div class="empty">Loading…</div>`; return; }
-  const folders = (data && data.workspaces.find(x => x.id === id) || { repos: [] }).repos.map(x => x.path);
+  const folders = (data && data.projects.find(x => x.id === id) || { repos: [] }).repos.map(x => x.path);
   const shown = new Set(rs.map(t => t.repo));
   const state = t => t.running ? `<span class="pill acc">Running</span>` : t.ok === true ? `<span class="pill good">Passed</span>` : t.ok === false ? `<span class="pill crit">Failed</span>` : "";
   $("tests").innerHTML = (testErr ? `<div class="bad" role="alert">${esc(testErr)}</div>` : "")
@@ -210,7 +211,7 @@ $("tests").addEventListener("click", async e => {
   const b = e.target.closest("button[data-run]");
   if (!b) return;
   b.disabled = true; testErr = "";
-  try { await post("/api/workspaces/" + encodeURIComponent(id) + "/tests/run", { repo: b.dataset.run }); } catch (x) { testErr = x.message; }
+  try { await post("/api/projects/" + encodeURIComponent(id) + "/tests/run", { repo: b.dataset.run }); } catch (x) { testErr = x.message; }
   await loadWork(true);
   drawTests();
 });
@@ -218,7 +219,7 @@ async function loadWork(force) {
   if (workBusy || (!force && Date.now() - workAt < 60000)) return rearm();
   workBusy = true;
   try {
-    const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/work", { cache: "no-store" });
+    const r = await fetch("/api/projects/" + encodeURIComponent(id) + "/work", { cache: "no-store" });
     if (!r.ok) throw 0;
     work = await r.json(); workAt = Date.now(); drawWork();
   } catch { if (!work) $("plans").innerHTML = $("routines").innerHTML = $("tests").innerHTML = `<div class="empty">Couldn't load this view.</div>`; }
@@ -240,7 +241,7 @@ function drawTasks() {  // only the list is redrawn, and only when it changed, s
 }
 async function loadTasks() {
   const my = ++seq;
-  const r = await fetch("/api/workspaces/" + encodeURIComponent(id) + "/tasks", { cache: "no-store" });
+  const r = await fetch("/api/projects/" + encodeURIComponent(id) + "/tasks", { cache: "no-store" });
   if (!r.ok) throw 0;
   const rows = await r.json();
   if (my === seq) { taskRows = rows; drawTasks(); }  // an older answer must not overwrite a newer one
@@ -248,7 +249,7 @@ async function loadTasks() {
 async function taskPost(body) {
   const my = ++seq;
   try {
-    const rows = await post("/api/workspaces/" + encodeURIComponent(id) + "/tasks", body);
+    const rows = await post("/api/projects/" + encodeURIComponent(id) + "/tasks", body);
     if (my === seq) taskRows = rows;
     $("task-err").hidden = true; return true;
   }
@@ -275,9 +276,9 @@ document.querySelector(".tabs").addEventListener("click", e => {
 });
 const showSwitch = s => s.approve || (data.approve_ready && ["open", "running", "waiting"].includes(s.status));  // on stays visible so it can be turned off
 function drawTree() {
-  const w = data && data.workspaces.find(x => x.id === id);
+  const w = data && data.projects.find(x => x.id === id);
   $("live-note").hidden = !data || data.live_ok !== false;
-  if (!w) { $("tree").innerHTML = `<div class="empty">${data ? "No such workspace." : "Loading…"}</div>`; return; }
+  if (!w) { $("tree").innerHTML = `<div class="empty">${data ? "No such project." : "Loading…"}</div>`; return; }
   $("title").textContent = w.name;
   document.title = w.name + " · Stellaxis";
   const repos = w.repos.map(r => ({ r, bs: r.branches.map(b => ({ name: b.name, rows: b.sessions.filter(s => showArch || !s.archived) })).filter(b => b.rows.length) })).filter(x => x.bs.length || !x.r.branches.length);
@@ -351,7 +352,7 @@ $("tree").addEventListener("input", e => { const t = e.target; if (t.matches("te
 // New session form: only the option list is rebuilt on a poll; the prompt and result are never touched.
 let opts = "";
 function drawForm() {
-  const w = data && data.workspaces.find(x => x.id === id), rs = w ? w.repos.filter(r => r.exists && r.abs) : [];
+  const w = data && data.projects.find(x => x.id === id), rs = w ? w.repos.filter(r => r.exists && r.abs) : [];
   $("new-session").hidden = !rs.length;
   const key = rs.map(r => r.abs).join("\n");
   if (key !== opts) {
@@ -374,7 +375,7 @@ $("ns-bg").onclick = async () => {
   if (!folder || !prompt) { out.innerHTML = `<span class="bad">Pick a folder and write a prompt first.</span>`; return; }
   $("ns-bg").disabled = true; out.textContent = "Starting…";
   try {
-    const j = await post("/api/sessions/new", { workspace: id, folder, prompt });
+    const j = await post("/api/sessions/new", { project: id, folder, prompt });
     out.innerHTML = `Started session <b class="mono">${esc(j.id)}</b>. View it with <code class="mono">claude attach ${esc(j.id)}</code>. It shows in this list after the next collection, and won't appear in the Claude app until it is imported.`;
     $("ns-prompt").value = ""; appLink();
   } catch (e) { out.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
@@ -385,16 +386,29 @@ $("tree").addEventListener("toggle", e => {
   if (k) e.target.open ? shut.delete(k) : shut.add(k);
 }, true);
 $("arch").onclick = () => { showArch = !showArch; $("arch").setAttribute("aria-pressed", showArch); draw(); };
+let share = null;  // the last answer of /api/share; a failed fetch keeps it
+function drawShare() {  // one line: how much of this project's weekly share is used, or that it is used up
+  const p = share && share.budget != null && (share.projects.find(x => x.id === id) || (id === "unassigned" ? share.unassigned : null));
+  const el = $("share");
+  if (!p || p.allowance == null) { el.hidden = true; return; }
+  const end = when(share.week.end), n = v => `<span class="num">${esc(money(v))}</span>`;
+  el.innerHTML = p.over
+    ? `<span class="pill warn">Share used up</span> ${esc(p.name)} has used all of its weekly share: ${n(p.use)} of ${n(p.allowance)}. Nothing is stopped. A new week starts ${esc(end)}.`
+    : `Weekly share: ${n(p.use)} of ${n(p.allowance)} used. ${n(p.left)} left until ${esc(end)}.`;
+  el.hidden = false;
+}
 async function tick(force) {  // force: redraw even if nothing changed, so a switch that failed flips back
   let same = false;
   try {
-    const r = await fetch("/api/workspaces", { cache: "no-store" });
+    const r = await fetch("/api/projects", { cache: "no-store" });
     if (!r.ok) throw 0;
     const text = await r.text();
     same = text === dataText;
     if (!same) { data = JSON.parse(text); dataText = text; }
     $("load-note").hidden = true;
   } catch { $("load-note").hidden = false; }
+  try { const r = await fetch("/api/share", { cache: "no-store" }); if (!r.ok) throw 0; share = await r.json(); } catch {}
+  drawShare();
   if (!same || force) draw();
   if (tab === "tasks") loadTasks().then(() => { $("task-err").hidden = true; }).catch(() => {});
   if (tab === "plans" || tab === "routines") loadWork();  // throttled to once a minute
